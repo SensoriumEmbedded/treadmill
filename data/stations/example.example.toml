@@ -1,0 +1,30 @@
+# A station: one rig, one machine, one TeensyROM board. Copy to <id>.toml (git-ignored).
+# Name stations descriptively, e.g. rigA-sys29-trplus.
+id = "example"
+rig = "rigA"
+allow_eeprom_reset = false   # the 'e' letter resets settings; only on a dedicated board
+
+# The machine: a registry id from the validation tracker's systems.csv
+# (data/registry.toml names the file), or an inline [machine] table.
+# Top-level keys come before the first [table]: TOML puts later keys in that table.
+machine_id = "29"
+# [machine]
+# id = "bench-c64"
+# model = "C64"          # C64 | C128 | SX-64 | C64U
+# region = "NTSC"        # PAL | NTSC | switchable
+# kernal = "stock"
+
+[overrides]              # machine fields the registry does not carry
+kernal = "stock"
+boot_timeout_s = 60.0
+has_kawari = false
+
+[tr]
+uid = "00000000"         # the chip id from the version banner ("UID: ...")
+# port_hint = "COM91"    # tried first; discovery goes by uid
+# tcp_host = "192.0.2.20:2112"
+
+[settings_baseline]      # what the tests expect the board's settings to be
+tcp_listener = false
+reset_detect = true
+autolaunch = "none"

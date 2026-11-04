@@ -1,0 +1,3 @@
+# Where the machine registry is: the validation tracker's systems.csv.
+# Copy to registry.toml (git-ignored) or set TREADMILL_REGISTRY.
+systems_csv = "C:/path/to/TR Validation Tracker/systems.csv"

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Runs
+reports/
+
+# Private data: anything that names this lab's boards, machines, addresses or
+# holds assets that cannot be redistributed. The *.example files are committed.
+data/rigs/*
+!data/rigs/*.example.toml
+data/stations/*
+!data/stations/*.example.toml
+data/calib/
+data/glyphs/
+data/golden/
+data/sdcard/
+data/programs/private/
+data/results.sqlite
+data/registry.toml

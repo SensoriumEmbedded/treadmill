@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "treadmill"
+version = "0.0.1"
+description = "TReadmill: hardware-in-the-loop validation for TeensyROM firmware on real C64 and C128 machines"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "pytest>=8",
+    "pytest-html>=4",
+    "pytest-timeout>=2.3",
+    "pyserial>=3.5",
+    "opencv-python>=4.9",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+scope = ["pyvisa>=1.14"]
+capture-av = ["av>=12"]
+tracker = ["openpyxl>=3.1"]
+dev = ["ruff>=0.5"]
+
+[project.scripts]
+treadmill = "treadmill.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["treadmill*"]
+
+[tool.pytest.ini_options]
+# Hardware tests live under tests/ and need a --station; the self-tests under
+# selftest/ run anywhere. `pytest` with no arguments runs only the self-tests.
+testpaths = ["selftest"]
+addopts = "-p treadmill.pytest_plugin"
+markers = [
+    "needs(*caps): the station capabilities the test requires; skipped when one is missing",
+    "needs_fw(*defines): the firmware defines the flashed build must carry",
+    "needs_asset(*names): private assets from data/programs/private/manifest.json",
+    "timing_sensitive: skipped on timing-tolerant machines (C64U) unless --include-tolerant",
+    "destructive: changes board settings and restores them; needs a station that allows it",
+    "soak: long-running; selected only with --soak N",
+    "client_path: drives the board through TeensyROM-Web and trom instead of the suite's link",
+    "duration(minutes): the declared estimate used by --estimate until history exists",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

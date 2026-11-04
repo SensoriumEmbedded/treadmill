@@ -1,0 +1,7 @@
+# Store and check out LF everywhere; this is a Python project with no Windows-only files.
+* text=auto eol=lf
+*.png binary
+*.npz binary
+*.sqlite binary
+*.prg binary
+*.crt binary

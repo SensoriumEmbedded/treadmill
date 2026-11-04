@@ -1,0 +1,6 @@
+id,nickname,model,pca_number,region,pca_rev,status,baseline_diag,notes
+1,bench-a,C64,250425,NTSC,,active,pass,test rig with a Kawari
+2,bench-b,C64C,250469,PAL,,active,pass,
+3,flat-128,C128,310378,NTSC,,active,pass,
+4,ultimate,U64,,NTSC,,active,,C64 Ultimate
+5,,SX-64,250102,NTSC,,spare,,

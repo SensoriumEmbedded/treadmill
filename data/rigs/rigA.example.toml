@@ -1,0 +1,28 @@
+# A rig: the PC-side equipment that stays put. Copy to <id>.toml (git-ignored).
+# Top-level keys come before the first [table]: TOML puts later keys in that table.
+id = "rigA"
+# region_switch = "kawari"      # kawari | u64, when the machine's standard can be switched
+scope = false                   # the Tek TDS2024B is on this bench
+# firmware_checkout = "C:/path/to/TeensyROM"   # whose tools build and flash
+# mcp_checkout = "C:/path/to/TeensyROM"        # a checkout with tools/mcp (test 24)
+# trom_path = "C:/path/to/trom.exe"            # TeensyROM-Web's CLI, for client-path tests
+
+[capture]
+backend = "opencv"      # opencv | av
+device = 0              # OpenCV index, or a DirectShow device name
+fourcc = "MJPG"
+width = 1280
+height = 720
+fps = 30
+source = "svideo"       # what the machine outputs: svideo | composite | dvi
+converter = "generic"   # names the S-Video-to-HDMI converter; the glyph bank is per converter
+
+[power]
+backend = "none"        # none | serial-relay | http-plug | u64 | manual
+# port = "COM7"         # serial-relay: the micro driving the solid-state relay
+# url = "http://192.0.2.10"   # http-plug: the plug's local API base
+off_seconds = 5.0
+
+[keys]
+backend = "none"        # none | usbkeyboard
+# port = "COM8"         # the C64-USBKeyboard board's host serial port

@@ -2,9 +2,12 @@
 
 A ``FrameSource`` hands out the newest frame and keeps a short ring of
 recent ones with monotonic stamps, so a failure can save the last seconds.
-``CvCapture`` grabs on a thread from an OpenCV ``VideoCapture`` (Media
-Foundation first on Windows, then DirectShow); it discards the first frames
-after opening, which the MS2109 delivers before its signal settles. Nothing
+``CvCapture`` grabs on a thread from an OpenCV ``VideoCapture``: DirectShow
+on Windows unless the rig says otherwise (Media Foundation opens the MS2109
+on the bench PC but never delivers a frame), with the mode passed at open,
+since a format set afterwards is ignored by the DirectShow backend; it
+discards the first frames after opening, which the MS2109 delivers before
+its signal settles. Nothing
 here decides what a frame means: that is ``channels`` and ``liveness``.
 """
 
@@ -155,7 +158,7 @@ class CvCapture(FrameSource):
     def __init__(self, spec: CaptureSpec, backend: str | None = None, discard: int = DISCARD_FIRST):
         super().__init__()
         self.spec = spec
-        self.backend = backend or ("msmf" if os.name == "nt" else "any")
+        self.backend = backend or spec.api or ("dshow" if os.name == "nt" else "any")
         self._cap = self._open(spec, self.backend)
         self._discard = discard
         self._stop = threading.Event()
@@ -168,14 +171,13 @@ class CvCapture(FrameSource):
         api = CvCapture.BACKENDS.get(backend)
         if api is None:
             raise CaptureError(f"unknown capture backend {backend!r}; one of {', '.join(CvCapture.BACKENDS)}")
-        cap = cv2.VideoCapture(spec.device, api)
+        params = [cv2.CAP_PROP_FRAME_WIDTH, spec.width, cv2.CAP_PROP_FRAME_HEIGHT, spec.height,
+                  cv2.CAP_PROP_FPS, spec.fps]
+        if spec.fourcc:
+            params = [cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*spec.fourcc)] + params
+        cap = cv2.VideoCapture(spec.device, api, params)
         if not cap.isOpened():
             raise CaptureError(f"capture device {spec.device!r} did not open with {backend}")
-        if spec.fourcc:
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*spec.fourcc))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, spec.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, spec.height)
-        cap.set(cv2.CAP_PROP_FPS, spec.fps)
         return cap
 
     def _run(self) -> None:

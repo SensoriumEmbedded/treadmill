@@ -20,7 +20,7 @@ from treadmill.c64.screen import (
     CHARSET_CUSTOM, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_ROWS, code_as_text,
 )
 from treadmill.link.trlink import Link, ScreenDump
-from treadmill.observe.calibrate import Calibration, track
+from treadmill.observe.calibrate import Calibration, CalibrationError, refine, track
 from treadmill.observe.capture import Frame, FrameSource
 from treadmill.observe.glyphs import GlyphBank, screen_match, spill
 from treadmill.observe.normalize import (
@@ -35,6 +35,7 @@ XCHECK_LIMIT = 0.01              # fraction of cells video may disagree with DMA
 DEFAULT_TIMEOUT = 15.0
 POLL_S = 0.1
 PASSES = 3                       # decode, predict the neighbors' spill, decode again, once more with better levels
+REFINE_CONFIDENCE = 0.5          # cells at least this sure anchor the grid refinement of a read
 RESIDUAL_ABS = 2.4               # x noise floor: what a blank cell's margin may keep after spill is subtracted
 RESIDUAL_REL = 0.6               # x predicted spill: a cell's own ink is never a small fraction of the prediction
 
@@ -122,20 +123,36 @@ def decode_cells(cells: np.ndarray, bank: GlyphBank, noise_floor: float, edge_le
 
 
 def read_video(frame: Frame, calib: Calibration, bank: GlyphBank, charset: str | None = None,
-               follow: bool = True) -> ScreenRead:
+               follow: bool = True, refine_grid: bool = True) -> ScreenRead:
     """Decode one frame: normalize (following small drift of the picture
-    unless ``follow`` is off), foreground map, cells, spill-corrected glyphs."""
+    unless ``follow`` is off), foreground map, cells, spill-corrected glyphs;
+    then, unless ``refine_grid`` is off, refine the grid on the cells that
+    read confidently and decode again, since the picture's sub-pixel phase
+    moves between launches and a sharp template forgives half a pixel."""
     if not calib.fits(frame.image):
         raise ScreenError(f"frame is {frame.size[0]}x{frame.size[1]} but the calibration is for "
                           f"{calib.frame_w}x{calib.frame_h}")
     if follow:
         calib = track(frame.image, calib)
-    norm = calib.normalize(frame.image)
-    dmap = distance_map(norm, calib.background)
-    cells = core_cells(dmap)
     want = None if charset in (None, CHARSET_CUSTOM) else charset
-    m, corrected = decode_cells(cells, bank, calib.noise_floor,
-                                color_distance(calib.border, calib.background), want)
+    edge = color_distance(calib.border, calib.background)
+
+    def decode(cal: Calibration):
+        norm = cal.normalize(frame.image)
+        cells = core_cells(distance_map(norm, cal.background))
+        m, corrected = decode_cells(cells, bank, cal.noise_floor, edge, want)
+        return norm, m, corrected
+
+    norm, m, corrected = decode(calib)
+    if refine_grid:
+        sure = (m.confidence >= REFINE_CONFIDENCE) & (m.codes != 0x20)
+        try:
+            refined = refine(frame.image, calib, m.codes, m.charset, bank, use=sure, cells=corrected,
+                             fine_only=True)
+            norm, m, corrected = decode(refined)
+            calib = refined
+        except CalibrationError:
+            pass                                       # too little text to pin the grid: the tracked grid stands
     return ScreenRead(m.codes, m.charset, m.confidence, SOURCE_VIDEO, frame.at, frame,
                       cell_colors(core(norm), corrected), charset_scores=m.charset_scores, calibration=calib)
 

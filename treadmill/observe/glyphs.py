@@ -150,6 +150,11 @@ class GlyphBank:
             same = (t @ t.T) > 1.0 - IDENTICAL
             same |= (self._degenerate[:, None] & self._degenerate[None, :]
                      & (self._solid[:, None] == self._solid[None, :]))
+            # Within one character set only: the ROM draws A-Z at 1-26 in
+            # upper/graphics and at 65-90 in lower/upper, and a group that
+            # spanned both sets would hand lower/upper text the other set's code.
+            block = np.arange(t.shape[0]) // CODES
+            same &= block[:, None] == block[None, :]
             self._same = same
             self._canonical = np.argmax(same, axis=1)      # first True = lowest index in the group
         return self._same, self._canonical
@@ -211,13 +216,14 @@ def harvest(bank: GlyphBank, cells: np.ndarray, codes: np.ndarray, charset: str)
     for code in np.unique(codes):
         sample = cells[codes == code]
         n = sample.shape[0]
+        fresh = sample.mean(axis=0)
+        if fresh[CORE].max() < HARVEST_BLANK:
+            fresh = np.zeros_like(fresh)        # a code that shows nothing (space) stays nothing, not scaled noise
+        fresh = _peak_normalize(fresh[None])[0]
         old_n = int(bank.counts[s, code])
-        if old_n:
-            mean = (bank.templates[s, code] * old_n + sample.sum(axis=0)) / (old_n + n)
-        else:
-            mean = sample.mean(axis=0)
-        if mean[CORE].max() < HARVEST_BLANK:
-            mean = np.zeros_like(mean)          # a code that shows nothing (space) stays nothing, not scaled noise
+        # Templates are peak-normalized, so the running mean is over normalized
+        # contributions: a harvest in a dimmer color weighs the same as a brighter one.
+        mean = (bank.templates[s, code] * old_n + fresh * n) / (old_n + n) if old_n else fresh
         bank.templates[s, code] = _peak_normalize(mean[None])[0]
         bank.counts[s, code] = old_n + n
         updated += 1

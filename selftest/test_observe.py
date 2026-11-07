@@ -17,6 +17,7 @@ from treadmill.observe import (
     Liveness, ReplaySource, ScreenChannel, ScreenError, SyntheticSource, bootstrap_bank, classify, compare,
     diff_text, find_text_area, from_dump, read_video, refine, save_golden, synthetic_font, track, xcheck,
 )
+from treadmill.observe.glyphs import CELL, PAD, Font, match
 from treadmill.observe.liveness import cell_change_rate
 from treadmill.observe.render import DARK_GREY, LIGHT_GREY, Geometry
 from treadmill.link.trlink import ScreenDump
@@ -83,6 +84,17 @@ def test_decoding_is_exact_after_harvest_and_detects_the_charset(calib, bank):
     assert int((read.codes != codes).sum()) < 150
     # The harvested blank is nothing, not scaled-up noise.
     assert bank.templates[1, 0x20].max() == 0 and bank.counts[1, 0x20] > 0
+
+
+def test_identical_glyphs_in_both_charsets_keep_their_own_codes():
+    # The ROM draws A-Z at 1-26 in upper/graphics and again at 65-90 in lower/upper;
+    # lower/upper text must read as 65-90, not as the other set's code for the same glyph.
+    bits = FONT.bits.copy()
+    bits[1, 65:91] = bits[0, 1:27]
+    bank = bootstrap_bank(Font(bits, "rom-like"), "synthetic")
+    core = (slice(None), slice(PAD, PAD + CELL), slice(PAD, PAD + CELL))
+    assert match(bank, bank.templates[1, 65:91][core], CHARSET_LOWER_UPPER).codes.tolist() == list(range(65, 91))
+    assert match(bank, bank.templates[0, 1:27][core], CHARSET_UPPER_GRAPHICS).codes.tolist() == list(range(1, 27))
 
 
 def test_refine_keeps_a_good_fit_and_recovers_a_nudged_one(calib, bank):

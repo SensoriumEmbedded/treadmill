@@ -63,11 +63,15 @@ def find_acme(primary: Path | None = None) -> Path | None:
 
 
 def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None,
-             acme: Path | None = None) -> Path:
-    """``name`` from PROGRAMS, assembled to ``<out_dir>/<name>.prg``."""
+             acme: Path | None = None, extra: dict[str, int] | None = None) -> Path:
+    """``name`` from PROGRAMS, assembled to ``<out_dir>/<name>[-<extra>].prg``;
+    ``extra`` adds or overrides assembler defines (``{"COLOR": 14}``)."""
     if name not in PROGRAMS:
         raise AssembleError(f"no program {name!r}; one of {', '.join(PROGRAMS)}")
     source, defines = PROGRAMS[name]
+    if extra:
+        defines = {**defines, **extra}
+        name += "".join(f"-{k.lower()}{v}" for k, v in sorted(extra.items()))
     acme = acme or find_acme(primary)
     if acme is None:
         raise AssembleError(f"ACME not found: set {ACME_ENV}, put acme on PATH, or point at a firmware "

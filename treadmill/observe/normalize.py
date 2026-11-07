@@ -19,7 +19,6 @@ from treadmill.observe.glyphs import CELL, INTERIOR, PAD, TCELL
 
 NORM_W, NORM_H = SCREEN_COLUMNS * CELL, SCREEN_ROWS * CELL      # 640 x 400, the core
 PADDED_W, PADDED_H = NORM_W + 2 * PAD, NORM_H + 2 * PAD
-_MAX_DISTANCE = float(np.sqrt(3 * 255 ** 2))
 
 
 def warp_matrix(x0: float, y0: float, cell_w: float, cell_h: float) -> np.ndarray:
@@ -40,11 +39,25 @@ def core(padded: np.ndarray) -> np.ndarray:
     return padded[PAD:PAD + NORM_H, PAD:PAD + NORM_W]
 
 
+_LUMA = np.array([0.114, 0.587, 0.299], np.float32)     # BGR weights of Rec. 601 luma
+CHROMA_WEIGHT = 0.1
+
+
+def _distance(diff: np.ndarray) -> np.ndarray:
+    """Mostly the luma difference: an S-Video chain carries chroma at a
+    fraction of the luma bandwidth, so colored text is smeared sideways in
+    chroma while its luma keeps the glyph's shape. A tenth of the chroma
+    energy is kept so text that differs from its background only in hue
+    still registers (green on grey), dimly."""
+    luma = diff @ _LUMA
+    chroma = diff - luma[..., None]
+    return np.sqrt(luma * luma + CHROMA_WEIGHT * (chroma * chroma).sum(axis=-1)) / 255.0
+
+
 def distance_map(norm: np.ndarray, background: tuple[int, int, int]) -> np.ndarray:
-    """float32 in 0..1, the shape of ``norm`` less its channels: how far each
-    pixel is from the background color."""
-    diff = norm.astype(np.float32) - np.asarray(background, np.float32)
-    return np.sqrt((diff * diff).sum(axis=-1)) / _MAX_DISTANCE
+    """float32 in about 0..1, the shape of ``norm`` less its channels: how
+    far each pixel is from the background color (see ``_distance``)."""
+    return _distance(norm.astype(np.float32) - np.asarray(background, np.float32)).astype(np.float32)
 
 
 def core_cells(dmap: np.ndarray) -> np.ndarray:
@@ -90,9 +103,8 @@ def cell_colors(norm_core: np.ndarray, cells: np.ndarray) -> np.ndarray:
 
 
 def color_distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
-    """Two BGR colors' distance on the same 0..1 scale as the distance map."""
-    diff = np.asarray(a, np.float32) - np.asarray(b, np.float32)
-    return float(np.sqrt((diff * diff).sum()) / _MAX_DISTANCE)
+    """Two BGR colors' distance on the same scale as the distance map."""
+    return float(_distance(np.asarray(a, np.float32) - np.asarray(b, np.float32)))
 
 
 def median_color(image: np.ndarray) -> tuple[int, int, int]:

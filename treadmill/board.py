@@ -102,8 +102,15 @@ class Board:
     def reset(self) -> None:
         """Reset the C64 and start the hold-off a C128 needs before any DMA."""
         self.link.reset()
-        if self.station.machine.is_c128:
+        if self.is_c128:
             self.dma_hold_until = time.monotonic() + C128_RESET_HOLD_S
+
+    @property
+    def is_c128(self) -> bool:
+        """The machine is a C128 by the station file or by the board's own
+        machine line, whichever says so: the hold-off must not depend on a
+        station file naming the right machine."""
+        return self.station.machine.is_c128 or (self.banner is not None and self.banner.machine == "C128")
 
     # -- state and recovery ----------------------------------------------------
 

@@ -124,13 +124,16 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
 def cmd_harvest(args: argparse.Namespace) -> int:
     """Build the glyph bank for the rig's capture class: launch the allcodes
     program for each character set, average frames of it, save the bank."""
+    import cv2
     import numpy as np
 
-    from treadmill.c64.screen import CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS
-    from treadmill.observe.glyphs import GlyphBank, empty_bank, harvest
+    from treadmill.c64.screen import CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, SCREEN_BYTES
+    from treadmill.firmware.checkout import DEFAULT_WORK_ROOT
+    from treadmill.observe.calibrate import CalibrationError, refine
+    from treadmill.observe.glyphs import BLANK_CODE, GlyphBank, bootstrap_bank, empty_bank, harvest, load_chargen
     from treadmill.observe.normalize import distance_map, padded_cells
     from treadmill.programs.build import AssembleError, assemble, sparse_pages
-    from treadmill.session import bank_path, open_station
+    from treadmill.session import CHARGEN_ENV, bank_path, open_station
 
     log = _log_for(args)
     sets = {"lu": [CHARSET_LOWER_UPPER], "ug": [CHARSET_UPPER_GRAPHICS],
@@ -143,31 +146,53 @@ def cmd_harvest(args: argparse.Namespace) -> int:
                                EXIT_NO_STATION)
         primary = s.station.rig.firmware_checkout or os.environ.get("TREADMILL_FW_REPO")
         try:
-            prgs = {(cs, page): assemble(f"{programs[cs]}{page}", primary=Path(primary) if primary else None)
+            prgs = {(cs, page): assemble(f"{programs[cs]}{page}", primary=Path(primary) if primary else None,
+                                         extra={"COLOR": args.color})
                     for cs in sets for page in range(len(pages))}
         except AssembleError as e:
             raise CommandError(str(e), EXIT_USAGE) from e
-        path = bank_path(s.station)
+        path = Path(args.out) if args.out else bank_path(s.station)
         if path.is_file() and not args.fresh:
             bank = GlyphBank.load(path)
         else:
             bank = empty_bank(s.station.rig.capture.capture_class, s.bank.font if s.bank else "harvest")
-        cal = s.calibration
+        # Each page is its own launch, and the capture chain locks onto each
+        # picture with its own sub-pixel phase, so every page's grid is refined
+        # against the glyphs it is known to show before its cells are cut;
+        # the character ROM is the reference all pages are aligned to.
+        rom = os.environ.get(CHARGEN_ENV)
+        reference = bootstrap_bank(load_chargen(rom), s.station.rig.capture.capture_class) if rom else s.bank
+        if reference is None:
+            log(f"[harvest] no character ROM ({CHARGEN_ENV}) and no bank: pages are not aligned to each other")
+        keep = DEFAULT_WORK_ROOT / "harvest" / s.station.rig.capture.capture_class
+        keep.mkdir(parents=True, exist_ok=True)
         results = {}
         for (cs, page), prg in prgs.items():
             cells, shown = pages[page]
+            screen = np.full(SCREEN_BYTES, BLANK_CODE, np.uint8)
+            screen[np.asarray(cells)] = np.asarray(shown, np.uint8)
             remote = f"{args.folder.rstrip('/')}/{prg.name}"
             s.board.ensure_menu()
             s.link.push_file(prg.read_bytes(), remote, args.drive)
             s.link.launch(remote, args.drive)
             time.sleep(args.settle)
+            first = s.video.wait_stable(agree=2, timeout=10.0)
+            cal = s.calibration
+            if reference is not None:
+                try:
+                    cal = refine(first.image, cal, screen, cs, reference)
+                    log(f"[harvest] {cs} page {page}: grid refined, residual {cal.residual:.2f} px, "
+                        f"origin ({cal.x0:.2f}, {cal.y0:.2f})")
+                except CalibrationError as e:
+                    log(f"[harvest] {cs} page {page}: grid not refined ({e})")
+            cv2.imwrite(str(keep / f"{cs}-{page}-color{args.color}.png"), first.image)
             frames = 0
-            last = None
+            last = first
             for _ in range(args.frames):
-                last = s.video.next_frame(last, timeout=5.0)
                 dmap = distance_map(cal.normalize(last.image), cal.background)
                 harvest(bank, padded_cells(dmap, np.asarray(cells)), np.asarray(shown, np.uint8), cs)
                 frames += 1
+                last = s.video.next_frame(last, timeout=5.0)
             results[f"{cs}/{page}"] = frames
             log(f"[harvest] {cs} page {page}: {frames} frames")
             s.board.reset()
@@ -300,6 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--drive", default="sd", help="where the program is pushed: sd or usb")
     s.add_argument("--folder", default="/treadmill", help="folder on that drive for the program")
     s.add_argument("--fresh", action="store_true", help="start a new bank instead of refining the stored one")
+    s.add_argument("--color", type=int, default=15, choices=range(16), metavar="0-15",
+                   help="C64 color of the harvested text (15 light grey); harvest each color the tests will read")
+    s.add_argument("--out", help="write the bank here instead of data/glyphs/<capture class>.npz")
     s.set_defaults(func=cmd_harvest)
 
     s = sub.add_parser("screen", help="print the screen as text")

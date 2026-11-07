@@ -55,6 +55,7 @@ class CaptureSpec:
     fps: int = 30
     source: str = "svideo"         # svideo | composite | dvi: the machine's output
     converter: str = "generic"     # names the S-Video-to-HDMI converter; the glyph bank is per converter
+    api: str | None = None         # OpenCV backend: dshow | msmf | any; the platform's default when unset
 
     @property
     def capture_class(self) -> str:

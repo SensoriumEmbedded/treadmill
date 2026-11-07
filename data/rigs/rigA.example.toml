@@ -14,6 +14,7 @@ fourcc = "MJPG"
 width = 1280
 height = 720
 fps = 30
+# api = "dshow"         # OpenCV backend: dshow (the Windows default) | msmf | any
 source = "svideo"       # what the machine outputs: svideo | composite | dvi
 converter = "generic"   # names the S-Video-to-HDMI converter; the glyph bank is per converter
 

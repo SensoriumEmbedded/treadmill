@@ -8,7 +8,7 @@ TeensyROM menu the top row is a reverse-video bar in the border's own color
 (the default theme is dark grey on black with a dark grey border), so the
 rectangle found there is rows 1-24 and row 0 is one cell above it; the
 BASIC power-on screen is the full 25 rows. A station with DMA refines the
-fit by correlating the normalized frame with the screen it just read.
+fit against the screen it just read, by where the glyphs sit.
 """
 
 from __future__ import annotations
@@ -18,11 +18,14 @@ import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 
-from treadmill.c64.screen import SCREEN_COLUMNS, SCREEN_ROWS
-from treadmill.observe.glyphs import CELL, GlyphBank
-from treadmill.observe.normalize import core, distance_map, dominant_color, median_color, noise_floor_of, normalize
+from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_ROWS
+from treadmill.observe.glyphs import BLANK_CODE, CELL, GlyphBank
+from treadmill.observe.normalize import (
+    NORM_H, NORM_W, core, distance_map, dominant_color, median_color, noise_floor_of, normalize,
+)
 from treadmill.observe.render import expected_map
 
 LAYOUT_MENU = "menu"          # rows 1-24 are background; row 0 is the reverse bar
@@ -31,6 +34,8 @@ _ROWS_VISIBLE = {LAYOUT_MENU: SCREEN_ROWS - 1, LAYOUT_BASIC: SCREEN_ROWS}
 MIN_CONTRAST = 24.0           # BGR distance below which background and border cannot be told apart
 EDGE_BAND = 0.04              # fraction of the frame sampled as border, each side
 FILL = 0.5                    # a profile crosses the text area's edge at half its peak
+MIN_REFINE_CELLS = 20         # fewer known glyphs than this cannot pin an origin and a scale
+REFINE_MIN_CORRELATION = 0.2  # below this the picture is not the screen the codes describe
 
 
 class CalibrationError(Exception):
@@ -54,6 +59,8 @@ class Calibration:
     capture_class: str = ""
     machine_id: str = ""
     created: str = ""
+    left_edge: float | None = None        # the background rectangle's edges when calibrated:
+    bottom_edge: float | None = None      # tracking moves the origin by how far they move
 
     @property
     def text_area(self) -> tuple[float, float, float, float]:
@@ -160,7 +167,7 @@ def find_text_area(frame: np.ndarray, layout: str = LAYOUT_MENU) -> Calibration:
     norm = normalize(frame, x0, y0, cell_w, cell_h)
     noise = noise_floor_of(core(distance_map(norm, background))[CELL * (SCREEN_ROWS - visible):])
     return Calibration(x0, y0, cell_w, cell_h, w, h, background, border, noise, layout, residual,
-                       "bounding-box")
+                       "bounding-box", left_edge=float(left), bottom_edge=float(bottom))
 
 
 TRACK_LIMIT = 1.0             # cells: a larger apparent move is a different picture, not drift
@@ -169,9 +176,10 @@ TRACK_LIMIT = 1.0             # cells: a larger apparent move is a different pic
 def track(frame: np.ndarray, calib: Calibration) -> Calibration:
     """Follow small drift of the picture between frames: the left and bottom
     edges of the background rectangle are found again (both independent of
-    the menu's top bar) and the origin moves with them, cell sizes kept.
-    When no rectangle is found, or it moved more than a cell, the
-    calibration is returned unchanged."""
+    the menu's top bar) and the origin moves by as much as they moved since
+    the calibration, cell sizes kept, so a refined origin is not undone. When
+    no rectangle is found, or it moved more than a cell, the calibration is
+    returned unchanged."""
     if not calib.fits(frame):
         return calib
     f = frame.astype(np.float32)
@@ -181,49 +189,88 @@ def track(frame: np.ndarray, calib: Calibration) -> Calibration:
         left, _right, _top, bottom = _extents(d_bg < d_bd)
     except CalibrationError:
         return calib
-    x0 = left + calib.cell_w / (2 * CELL)
-    y0 = bottom - calib.cell_h * SCREEN_ROWS + calib.cell_h / (2 * CELL)
+    if calib.left_edge is None or calib.bottom_edge is None:   # a calibration saved before the edges were kept
+        x0 = left + calib.cell_w / (2 * CELL)
+        y0 = bottom - calib.cell_h * SCREEN_ROWS + calib.cell_h / (2 * CELL)
+    else:
+        x0 = calib.x0 + (left - calib.left_edge)
+        y0 = calib.y0 + (bottom - calib.bottom_edge)
     if abs(x0 - calib.x0) > TRACK_LIMIT * calib.cell_w or abs(y0 - calib.y0) > TRACK_LIMIT * calib.cell_h:
         return calib
-    return replace(calib, x0=x0, y0=y0, method=calib.method + "+tracked")
+    return replace(calib, x0=x0, y0=y0, left_edge=float(left), bottom_edge=float(bottom),
+                   method=calib.method if calib.method.endswith("+tracked") else calib.method + "+tracked")
 
 
-def refine(frame: np.ndarray, calib: Calibration, codes: np.ndarray, charset: str,
-           bank: GlyphBank) -> Calibration:
-    """Shift and scale the calibration to best match the screen the board
-    reports (TR+ DMA): the normalized foreground map against the one the
-    bank predicts, compared by correlation over the cells that show
-    something, so the text's brightness does not matter."""
-    expected = core(expected_map(codes, bank, charset))
-    mask = expected.reshape(SCREEN_ROWS, CELL, SCREEN_COLUMNS, CELL).max(axis=(1, 3)) > 0
-    if mask.sum() < 20:
-        raise CalibrationError("the screen is too empty to refine against")
-    mask_px = np.repeat(np.repeat(mask, CELL, axis=0), CELL, axis=1)
-    e = expected[mask_px]
-    e = (e - e.mean()) / max(float(np.linalg.norm(e - e.mean())), 1e-6)
+def _ncc(a: np.ndarray, b: np.ndarray) -> float:
+    a = a - a.mean()
+    b = b - b.mean()
+    return float((a * b).sum() / max(float(np.linalg.norm(a) * np.linalg.norm(b)), 1e-6))
 
-    def cost(x0: float, y0: float, cw: float, ch: float) -> float:
-        d = core(distance_map(normalize(frame, x0, y0, cw, ch), calib.background))[mask_px]
-        d = d - d.mean()
-        return float(1.0 - (d @ e) / max(float(np.linalg.norm(d)), 1e-6))
 
-    best = (calib.x0, calib.y0, calib.cell_w, calib.cell_h)
+def refine(frame: np.ndarray, calib: Calibration, codes: np.ndarray, charset: str, bank: GlyphBank,
+           use: np.ndarray | None = None, cells: np.ndarray | None = None, fine_only: bool = False) -> Calibration:
+    """Shift and scale the calibration so the glyphs sit where their
+    templates sit: the screen the codes describe is rendered from the bank,
+    and the shift and scale that best correlate it with the normalized frame
+    are searched coarse to fine, warping the rendering rather than the frame
+    (the map is a quarter of the frame and single-channel). ``use`` limits
+    the comparison to the cells a caller trusts; ``cells`` are (1000, 16, 16)
+    cores already cut under ``calib`` to compare against instead of the
+    frame, such as a decoder's spill-corrected ones; ``fine_only`` skips the
+    whole-pixel stage for a grid known to be close. Sub-pixel, and what
+    makes sharp real templates usable: the picture's scale moves a part in
+    a thousand between launches, which puts the last column a pixel off, and
+    a pixel is half a stroke. The residual is one minus the correlation at
+    the optimum."""
+    codes = np.asarray(codes, np.uint8).reshape(SCREEN_BYTES)
+    mask = np.ones(SCREEN_BYTES, bool) if use is None else np.asarray(use, bool).reshape(SCREEN_BYTES)
+    mask &= (codes & (REVERSE_VIDEO - 1)) != BLANK_CODE
+    if mask.sum() < MIN_REFINE_CELLS:
+        raise CalibrationError(f"only {int(mask.sum())} readable cells to refine against; {MIN_REFINE_CELLS} needed")
+    mask_px = np.repeat(np.repeat(mask.reshape(SCREEN_ROWS, SCREEN_COLUMNS), CELL, axis=0), CELL, axis=1)
+    expected = np.ascontiguousarray(core(expected_map(codes, bank, charset)), np.float32)
+    if expected.max() <= 0:
+        raise CalibrationError("the bank has no template for any cell shown; harvest or bootstrap it first")
+    if cells is not None:
+        actual = np.asarray(cells, np.float32).reshape(SCREEN_ROWS, SCREEN_COLUMNS, CELL, CELL)             .transpose(0, 2, 1, 3).reshape(NORM_H, NORM_W)
+    else:
+        actual = core(distance_map(calib.normalize(frame), calib.background))
+    actual = np.ascontiguousarray(actual, np.float32)
+    sel = mask_px
+    target = actual[sel]
+
+    cx, cy = NORM_W / 2, NORM_H / 2                           # scale about the center: offsets stay valid
+
+    def cost(dx: float, dy: float, sx: float, sy: float) -> float:
+        m = np.array([[sx, 0.0, dx + (1.0 - sx) * cx], [0.0, sy, dy + (1.0 - sy) * cy]], np.float32)
+        warped = cv2.warpAffine(expected, m, (NORM_W, NORM_H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+        return 1.0 - _ncc(warped[sel], target)
+
+    best = (0.0, 0.0, 1.0, 1.0)
     best_cost = cost(*best)
-    for span, steps in ((0.5, 9), (0.15, 7), (0.05, 5)):            # offsets in cells, coarse to fine
-        x0, y0, cw, ch = best
-        for dx in np.linspace(-span, span, steps):
-            for dy in np.linspace(-span, span, steps):
-                c = cost(x0 + dx * cw, y0 + dy * ch, cw, ch)
+    if fine_only:          # a tracked grid: within the pixel or two a launch moves the text against the border
+        stages = [("offset", 1.5, 0.5), ("scale", 0.004, 0.002), ("offset", 0.25, 0.125), ("scale", 0.001, 0.0005)]
+    else:
+        stages = [("offset", 3.0, 1.0), ("offset", 0.75, 0.25), ("scale", 0.008, 0.002), ("offset", 0.2, 0.1),
+                  ("scale", 0.002, 0.0005), ("offset", 0.1, 0.05)]
+    for kind, span, step in stages:                            # offsets in normalized px, scales as fractions
+        dx, dy, sx, sy = best
+        for a in np.arange(-span, span + step / 2, step):
+            for b in np.arange(-span, span + step / 2, step):
+                cand = (dx + a, dy + b, sx, sy) if kind == "offset" else (dx, dy, sx + a, sy + b)
+                c = cost(*cand)
                 if c < best_cost:
-                    best, best_cost = (x0 + dx * cw, y0 + dy * ch, cw, ch), c
-    for span, steps in ((0.03, 7), (0.006, 5)):                      # scale, as a fraction
-        x0, y0, cw, ch = best
-        for sx in np.linspace(1 - span, 1 + span, steps):
-            for sy in np.linspace(1 - span, 1 + span, steps):
-                c = cost(x0, y0, cw * sx, ch * sy)
-                if c < best_cost:
-                    best, best_cost = (x0, y0, cw * sx, ch * sy), c
-    x0, y0, cw, ch = best
+                    best, best_cost = cand, c
+    if best_cost > 1.0 - REFINE_MIN_CORRELATION:
+        raise CalibrationError(f"the frame does not correlate with the screen it should show ({1 - best_cost:.2f})")
+    dx, dy, sx, sy = best
+    # The rendering warped this way lands on the frame, so the frame's grid is the old
+    # one moved by the warp's translation (in its own cells) and scaled by sx, sy.
+    x0 = calib.x0 + (dx + (1.0 - sx) * cx) * calib.cell_w / CELL
+    y0 = calib.y0 + (dy + (1.0 - sy) * cy) * calib.cell_h / CELL
+    cw = calib.cell_w * sx
+    ch = calib.cell_h * sy
     noise = noise_floor_of(core(distance_map(normalize(frame, x0, y0, cw, ch), calib.background)))
-    return replace(calib, x0=x0, y0=y0, cell_w=cw, cell_h=ch, residual=best_cost, method="refined",
+    method = "refined" + ("+tracked" if calib.method.endswith("+tracked") else "")
+    return replace(calib, x0=x0, y0=y0, cell_w=cw, cell_h=ch, residual=best_cost, method=method,
                    noise_floor=noise)

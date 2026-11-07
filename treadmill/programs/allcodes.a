@@ -5,11 +5,13 @@
 ; shows codes 0-227 and page 1 codes 228-255.
 ; Assemble with -DCHARSET=0 for upper/graphics or 1 for lower/upper, and
 ; -DPAGE=0 or 1. Colors are the TeensyROM menu's: black background, dark
-; grey border, text in light grey, so the harvest and the menu calibration
-; see the same picture.
+; grey border, text in light grey unless -DCOLOR=n says otherwise: the
+; capture chain blurs colored text more than grey, so a bank is harvested
+; in the colors the tests will read.
 
 !ifndef CHARSET { CHARSET = 1 }
 !ifndef PAGE { PAGE = 0 }
+!ifndef COLOR { COLOR = $0f }
 
 CELLS = 228
 FIRST = PAGE * CELLS
@@ -27,7 +29,7 @@ start:
     lda #$15 + 2 * CHARSET    ; screen at $0400; $15 upper/graphics, $17 lower/upper
     sta $d018
     ldx #$00
--   lda #$0f                  ; light grey
+-   lda #COLOR
     sta $d800,x
     sta $d900,x
     sta $da00,x

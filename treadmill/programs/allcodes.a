@@ -1,0 +1,64 @@
+; allcodes.a: the screen codes of one character set on a sparse grid (every
+; other row and column, so each glyph has blank neighbors and its spill into
+; them can be harvested as part of its template through the real capture
+; chain). The grid holds 228 cells (rows 1-23, columns 1-37, step 2); page 0
+; shows codes 0-227 and page 1 codes 228-255.
+; Assemble with -DCHARSET=0 for upper/graphics or 1 for lower/upper, and
+; -DPAGE=0 or 1. Colors are the TeensyROM menu's: black background, dark
+; grey border, text in light grey, so the harvest and the menu calibration
+; see the same picture.
+
+!ifndef CHARSET { CHARSET = 1 }
+!ifndef PAGE { PAGE = 0 }
+
+CELLS = 228
+FIRST = PAGE * CELLS
+!if PAGE = 0 { COUNT = CELLS } else { COUNT = 256 - CELLS }
+
+* = $0801
+!byte $0b,$08,$0a,$00,$9e,$32,$30,$36,$31,$00,$00,$00   ; 10 SYS2061
+
+start:
+    sei
+    lda #$00
+    sta $d021                 ; background black
+    lda #$0b
+    sta $d020                 ; border dark grey
+    lda #$15 + 2 * CHARSET    ; screen at $0400; $15 upper/graphics, $17 lower/upper
+    sta $d018
+    ldx #$00
+-   lda #$0f                  ; light grey
+    sta $d800,x
+    sta $d900,x
+    sta $da00,x
+    sta $db00,x
+    lda #$20
+    sta $0400,x
+    sta $0500,x
+    sta $0600,x
+    sta $0700,x
+    inx
+    bne -
+    ldx #$00                  ; place code FIRST+x at the x-th grid cell
+-   lda places_lo,x
+    sta $fb
+    lda places_hi,x
+    sta $fc
+    txa
+    clc
+    adc #FIRST
+    ldy #$00
+    sta ($fb),y
+    inx
+    cpx #COUNT
+    bne -
+!source "heartbeat.i"
+
+places_lo:
+!for i, 0, COUNT - 1 {
+    !byte <($0400 + (1 + 2 * (i / 19)) * 40 + 1 + 2 * (i % 19))
+}
+places_hi:
+!for i, 0, COUNT - 1 {
+    !byte >($0400 + (1 + 2 * (i / 19)) * 40 + 1 + 2 * (i % 19))
+}

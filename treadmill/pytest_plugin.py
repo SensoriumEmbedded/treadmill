@@ -24,11 +24,20 @@ from treadmill.firmware.flash import REAPPEAR_S, FlashError, flash, relaunch
 from treadmill.firmware.hexinfo import HexInfo, inspect_hex
 from treadmill.firmware.spec import FirmwareSpec, SpecError, parse_spec
 from treadmill.link import Link, LinkError, NotFound, TransportError, find_port, open_serial
+from treadmill.observe.calibrate import Calibration, CalibrationError
+from treadmill.observe.capture import CaptureError, FrameSource, SyntheticSource, save_strip
+from treadmill.observe.channels import XCHECK_LIMIT, ScreenChannel, XCheck
+from treadmill.observe.glyphs import GlyphBank
 from treadmill.report import RunDir
+from treadmill.session import load_bank, load_or_calibrate, open_video
 from treadmill.station import ConfigError, load_station
 from treadmill.station.model import unknown_caps
 
 FAKE_ENV = "TREADMILL_FAKE_BOARD"   # the self-tests: a fake board instead of a port
+
+
+def _log(message: str) -> None:
+    print(message)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -61,6 +70,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="build but do not flash; run against whatever the board carries")
     g.addoption("--fw-defines", action="store", default="",
                 help="with --fw none or hex=: the defines the flashed build carries")
+    g.addoption("--no-video", action="store_true", default=False,
+                help="leave the capture device closed; tests that need video skip")
+    g.addoption("--chargen", action="store", default=None,
+                help="a C64 character ROM to bootstrap a glyph bank from when none is harvested")
+    g.addoption("--no-xcheck", action="store_true", default=False,
+                help="record video-vs-DMA disagreement but never fail a test on it")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -291,6 +306,111 @@ def at_menu(request: pytest.FixtureRequest, board: Board, run_dir: RunDir):
 @pytest.fixture
 def link(at_menu: Board) -> Link:
     return at_menu.link
+
+
+# -- video ----------------------------------------------------------------------
+
+def _drop_video(board: Board, run_dir: RunDir, why: str) -> None:
+    _log(f"[video] {why}; tests that need video skip")
+    if "video" in board.station.caps:
+        board.station = board.station.masked({"video"})
+    run_dir.meta["video"] = {"available": False, "reason": why}
+
+
+@pytest.fixture(scope="session")
+def video(request: pytest.FixtureRequest, board: Board, run_dir: RunDir) -> FrameSource | None:
+    """The rig's capture (the fake board's rendered screen under the fake),
+    or None when the rig has none, --no-video was given, or it will not open."""
+    if os.environ.get(FAKE_ENV):
+        from selftest.synth import fake_frame_source
+        src = fake_frame_source(request.config._treadmill_fake)  # type: ignore[attr-defined]
+        run_dir.meta["video"] = {"available": True, **src.describe()}
+        yield src
+        src.close()
+        return
+    if request.config.getoption("--no-video"):
+        _drop_video(board, run_dir, "--no-video")
+        yield None
+        return
+    src = open_video(board.station, log=_log)
+    if src is None:
+        _drop_video(board, run_dir, "no capture device" if board.station.rig.capture is None
+                    else "the capture device did not open")
+        yield None
+        return
+    run_dir.meta["video"] = {"available": True, **src.describe()}
+    yield src
+    src.close()
+
+
+@pytest.fixture(scope="session")
+def glyph_bank(request: pytest.FixtureRequest, board: Board, video: FrameSource | None,
+               run_dir: RunDir) -> GlyphBank | None:
+    if video is None:
+        return None
+    if os.environ.get(FAKE_ENV):
+        from selftest.synth import calibrated, harvested_bank
+        return harvested_bank(calibrated())
+    bank = load_bank(board.station, request.config.getoption("--chargen"), log=_log)
+    if bank is None:
+        _drop_video(board, run_dir, "no glyph bank for this capture class")
+        return None
+    run_dir.meta["glyph_bank"] = {"capture_class": bank.capture_class, "font": bank.font,
+                                  "harvested": bank.harvested(), "created": bank.created}
+    return bank
+
+
+@pytest.fixture(scope="session")
+def calibration(board: Board, video: FrameSource | None, glyph_bank: GlyphBank | None,
+                run_dir: RunDir) -> Calibration | None:
+    if video is None or glyph_bank is None:
+        return None
+    if os.environ.get(FAKE_ENV):
+        from selftest.synth import calibrated
+        return calibrated()
+    try:
+        cal = load_or_calibrate(board, video, glyph_bank, log=_log)
+    except (CalibrationError, CaptureError, LinkError, TransportError, Wedged) as e:
+        _drop_video(board, run_dir, f"calibration failed: {e}")
+        return None
+    run_dir.meta["calibration"] = {
+        "method": cal.method, "residual": round(cal.residual, 4), "cell": [round(cal.cell_w, 3), round(cal.cell_h, 3)],
+        "origin": [round(cal.x0, 2), round(cal.y0, 2)], "noise_floor": round(cal.noise_floor, 4),
+        "frame": [cal.frame_w, cal.frame_h],
+    }
+    return cal
+
+
+@pytest.fixture
+def screen(request: pytest.FixtureRequest, at_menu: Board, video: FrameSource | None,
+           calibration: Calibration | None, glyph_bank: GlyphBank | None, run_dir: RunDir) -> ScreenChannel:
+    """The screen through the channel policy; after the test, the video-vs-DMA
+    cross-checks it made are written out and the worst one is an invariant."""
+    checks: list[XCheck] = []
+    has_video = video is not None and calibration is not None and glyph_bank is not None
+    channel = ScreenChannel(at_menu.link, video if has_video else None, calibration, glyph_bank,
+                            dma_allowed=at_menu.dma_allowed, on_xcheck=checks.append)
+    yield channel
+    folder = run_dir.for_test(request.node.nodeid)
+    if has_video and request.node.rep_failed:   # set by the report hook below
+        save_strip(video.ring(), folder / "frames.png")
+    if not checks:
+        return
+    worst = max(checks, key=lambda x: x.disagreement)
+    run_dir.write_json("xcheck.json", [
+        {"disagreement": round(x.disagreement, 4), "charset_agrees": x.charset_agrees, "cells": x.cells[:50]}
+        for x in checks], folder)
+    if worst.disagreement > XCHECK_LIMIT and not request.config.getoption("--no-xcheck"):
+        raise AssertionError(f"video disagrees with DMA on {worst.disagreement:.1%} of cells "
+                             f"(limit {XCHECK_LIMIT:.0%}); see xcheck.json")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call):
+    outcome = yield
+    rep = outcome.get_result()
+    if rep.when == "call":
+        item.rep_failed = rep.failed  # type: ignore[attr-defined]
 
 
 @pytest.fixture(autouse=True)

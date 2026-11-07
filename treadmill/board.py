@@ -24,6 +24,8 @@ from treadmill.station.model import Station
 from treadmill.station.power import Power, PowerUnavailable, make_power
 
 BOOT_POLL_S = 0.5
+C128_RESET_HOLD_S = 0.25        # no DMA within ~80 ms of a C128 reset release (Constraints.md); margin on top
+
 
 
 class Wedged(Exception):
@@ -44,6 +46,9 @@ class Board:
     reboot_hook: Callable[[], None] | None = None
     reconnect_hook: Callable[[], Link] | None = None
     recoveries: list[str] = field(default_factory=list)
+    # The DMA policy (plan 2.2): no DMA for a moment after a C128 reset, none while a test says the REU is live.
+    dma_hold_until: float = 0.0
+    reu_live: bool = False
 
     # -- opening ----------------------------------------------------------
 
@@ -84,6 +89,21 @@ class Board:
         finally:
             if self.lock:
                 self.lock.release()
+
+    # -- DMA policy ----------------------------------------------------------
+
+    def dma_allowed(self) -> bool:
+        """DMA memory access is allowed: the link probed a TR+ main image,
+        the C128's post-reset hold-off has passed, and no test declared the
+        REU live."""
+        return (self.link.dma_allowed and not self.reu_live
+                and time.monotonic() >= self.dma_hold_until)
+
+    def reset(self) -> None:
+        """Reset the C64 and start the hold-off a C128 needs before any DMA."""
+        self.link.reset()
+        if self.station.machine.is_c128:
+            self.dma_hold_until = time.monotonic() + C128_RESET_HOLD_S
 
     # -- state and recovery ----------------------------------------------------
 
@@ -140,7 +160,7 @@ class Board:
         raise Wedged(self.wedged_reason)
 
     def _rung_reset(self) -> None:
-        self.link.reset()
+        self.reset()
 
     def _rung_reboot(self) -> None:
         assert self.reboot_hook is not None

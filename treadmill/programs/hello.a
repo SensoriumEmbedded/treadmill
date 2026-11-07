@@ -1,0 +1,43 @@
+; hello.a: a line of text at a known place and a heartbeat, for the launch
+; path test: the menu launches it, video shows the text and the heartbeat,
+; Ping says Busy, reset brings the menu back.
+
+* = $0801
+!byte $0b,$08,$0a,$00,$9e,$32,$30,$36,$31,$00,$00,$00   ; 10 SYS2061
+
+ROW = 12
+COL = 12
+CELL = $0400 + ROW * 40 + COL
+
+start:
+    sei
+    lda #$00
+    sta $d021                 ; background black
+    lda #$0b
+    sta $d020                 ; border dark grey
+    lda #$17                  ; screen at $0400, lower/upper
+    sta $d018
+    ldx #$00
+-   lda #$0f                  ; light grey
+    sta $d800,x
+    sta $d900,x
+    sta $da00,x
+    sta $db00,x
+    lda #$20
+    sta $0400,x
+    sta $0500,x
+    sta $0600,x
+    sta $0700,x
+    inx
+    bne -
+    ldx #$00
+-   lda message,x
+    beq +
+    sta CELL,x
+    inx
+    bne -
++
+!source "heartbeat.i"
+
+message:
+    !scr "treadmill hello", 0

@@ -1,17 +1,20 @@
 """The ``treadmill`` command. Every subcommand takes ``--json`` and exits
 non-zero on failure, so an agent can drive it from structured output.
 
-Step 1 ships ``stations``; ``run``, ``matrix``, ``sweep``, ``shell``, ``exec``,
-``calibrate``, ``harvest``, ``viewer``, ``bisect`` and ``export`` arrive with
-their modules.
+``stations`` lists what is configured; ``calibrate``, ``harvest``, ``screen``,
+``frame`` and ``viewer`` are the video channel's tools on a live station
+(``calibrate`` also works on a saved frame); ``run``, ``matrix``, ``sweep``,
+``shell``, ``exec``, ``bisect`` and ``export`` arrive with their modules.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
-from dataclasses import asdict
+import time
+from pathlib import Path
 
 from treadmill import __version__
 from treadmill.station import ConfigError, list_stations, load_station
@@ -20,12 +23,25 @@ from treadmill.station.model import tier
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_NO_STATION = 0, 1, 2, 4
 
 
+class CommandError(Exception):
+    def __init__(self, message: str, code: int = EXIT_FAILED):
+        super().__init__(message)
+        self.code = code
+
+
 def _emit(payload: dict, as_json: bool, text: str) -> None:
     if as_json:
         print(json.dumps(payload, indent=2, default=str))
     else:
         print(text)
 
+
+def _log_for(args: argparse.Namespace):
+    """Diagnostics go to stderr, so --json output on stdout stays clean."""
+    return lambda m: print(m, file=sys.stderr)
+
+
+# -- stations -------------------------------------------------------------------
 
 def cmd_stations(args: argparse.Namespace) -> int:
     ids = list_stations()
@@ -54,6 +70,210 @@ def cmd_stations(args: argparse.Namespace) -> int:
     return EXIT_FAILED if any(r.get("error") for r in rows) else EXIT_OK
 
 
+# -- video tools ------------------------------------------------------------------
+
+def _calibration_payload(cal) -> dict:
+    return {"origin": [round(cal.x0, 2), round(cal.y0, 2)], "cell": [round(cal.cell_w, 3), round(cal.cell_h, 3)],
+            "frame": [cal.frame_w, cal.frame_h], "background": list(cal.background), "border": list(cal.border),
+            "noise_floor": round(cal.noise_floor, 4), "layout": cal.layout, "method": cal.method,
+            "residual": round(cal.residual, 4)}
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """Find the text area: on a saved frame, or on the station's live picture
+    at the menu (refined against DMA where allowed), saved per capture class
+    and machine."""
+    import cv2
+
+    from treadmill.observe.calibrate import Calibration, CalibrationError, calibration_path, find_text_area
+    from treadmill.session import load_or_calibrate, open_station
+    from treadmill.station.config import data_dir
+
+    log = _log_for(args)
+    try:
+        if args.frame:
+            image = cv2.imread(str(args.frame), cv2.IMREAD_COLOR)
+            if image is None:
+                raise CommandError(f"cannot read {args.frame}", EXIT_USAGE)
+            cal = find_text_area(image, args.layout)
+            saved = None
+            if args.station and not args.no_save:
+                st = load_station(args.station)
+                cal = Calibration(**{**cal.__dict__, "capture_class": st.rig.capture.capture_class,
+                                     "machine_id": st.machine.id})
+                saved = cal.save(calibration_path(data_dir(), st.rig.capture.capture_class, st.machine.id))
+        else:
+            if not args.station:
+                raise CommandError("--station or --frame is needed", EXIT_USAGE)
+            with open_station(args.station, attended=args.attended, calibrate=False, log=log) as s:
+                if s.video is None:
+                    raise CommandError("the station has no capture, or it did not open", EXIT_NO_STATION)
+                cal = load_or_calibrate(s.board, s.video, s.bank, force=True, save=not args.no_save, log=log)
+                saved = None if args.no_save else calibration_path(
+                    data_dir(), s.station.rig.capture.capture_class, s.station.machine.id)
+    except CalibrationError as e:
+        raise CommandError(str(e)) from e
+    payload = {"calibration": _calibration_payload(cal), "saved": str(saved) if saved else None}
+    text = (f"text area at ({cal.x0:.1f}, {cal.y0:.1f}), cells {cal.cell_w:.2f}x{cal.cell_h:.2f} px in a "
+            f"{cal.frame_w}x{cal.frame_h} frame; background {cal.background}, border {cal.border}; "
+            f"{cal.method}, residual {cal.residual:.3f}" + (f"\nsaved {saved}" if saved else ""))
+    _emit(payload, args.json, text)
+    return EXIT_OK
+
+
+def cmd_harvest(args: argparse.Namespace) -> int:
+    """Build the glyph bank for the rig's capture class: launch the allcodes
+    program for each character set, average frames of it, save the bank."""
+    import numpy as np
+
+    from treadmill.c64.screen import CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS
+    from treadmill.observe.glyphs import GlyphBank, empty_bank, harvest
+    from treadmill.observe.normalize import distance_map, padded_cells
+    from treadmill.programs.build import AssembleError, assemble, sparse_pages
+    from treadmill.session import bank_path, open_station
+
+    log = _log_for(args)
+    sets = {"lu": [CHARSET_LOWER_UPPER], "ug": [CHARSET_UPPER_GRAPHICS],
+            "both": [CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS]}[args.charset]
+    programs = {CHARSET_LOWER_UPPER: "allcodes_lu", CHARSET_UPPER_GRAPHICS: "allcodes_ug"}
+    pages = sparse_pages()
+    with open_station(args.station, attended=args.attended, log=log) as s:
+        if s.video is None or s.calibration is None:
+            raise CommandError("harvest needs the capture open and a calibration (treadmill calibrate first)",
+                               EXIT_NO_STATION)
+        primary = s.station.rig.firmware_checkout or os.environ.get("TREADMILL_FW_REPO")
+        try:
+            prgs = {(cs, page): assemble(f"{programs[cs]}{page}", primary=Path(primary) if primary else None)
+                    for cs in sets for page in range(len(pages))}
+        except AssembleError as e:
+            raise CommandError(str(e), EXIT_USAGE) from e
+        path = bank_path(s.station)
+        if path.is_file() and not args.fresh:
+            bank = GlyphBank.load(path)
+        else:
+            bank = empty_bank(s.station.rig.capture.capture_class, s.bank.font if s.bank else "harvest")
+        cal = s.calibration
+        results = {}
+        for (cs, page), prg in prgs.items():
+            cells, shown = pages[page]
+            remote = f"{args.folder.rstrip('/')}/{prg.name}"
+            s.board.ensure_menu()
+            s.link.push_file(prg.read_bytes(), remote, args.drive)
+            s.link.launch(remote, args.drive)
+            time.sleep(args.settle)
+            frames = 0
+            last = None
+            for _ in range(args.frames):
+                last = s.video.next_frame(last, timeout=5.0)
+                dmap = distance_map(cal.normalize(last.image), cal.background)
+                harvest(bank, padded_cells(dmap, np.asarray(cells)), np.asarray(shown, np.uint8), cs)
+                frames += 1
+            results[f"{cs}/{page}"] = frames
+            log(f"[harvest] {cs} page {page}: {frames} frames")
+            s.board.reset()
+        bank.save(path)
+    payload = {"bank": str(path), "frames": results, "harvested": bank.harvested()}
+    _emit(payload, args.json, f"glyph bank {path}: {bank.harvested()} of 512 codes harvested "
+                              f"({', '.join(f'{k} x{v}' for k, v in results.items())})")
+    return EXIT_OK
+
+
+def cmd_screen(args: argparse.Namespace) -> int:
+    """Print the screen as the policy reads it (video unless --exact and DMA is allowed)."""
+    from treadmill.observe.channels import ScreenError
+    from treadmill.session import open_station
+
+    log = _log_for(args)
+    with open_station(args.station, attended=args.attended, log=log) as s:
+        if args.menu:
+            s.board.ensure_menu()
+        try:
+            read = s.screen_channel().read(exact=args.exact, xcheck_now=args.xcheck)
+        except ScreenError as e:
+            raise CommandError(str(e), EXIT_NO_STATION) from e
+        x = s.xchecks[-1] if s.xchecks else None
+    payload = {"screen": read.rows(), **read.summary(),
+               "xcheck": None if x is None else {"disagreement": x.disagreement, "cells": x.cells[:50]}}
+    text = "\n".join(f"|{r}|" for r in read.rows()) + f"\n({read.source}, charset {read.charset}, " \
+           f"confidence {read.mean_confidence():.2f})"
+    if x is not None:
+        text += f"\nvideo vs DMA: {x.disagreement:.1%} of cells differ"
+    _emit(payload, args.json, text)
+    return EXIT_OK
+
+
+def cmd_frame(args: argparse.Namespace) -> int:
+    """Save one frame (and the normalized text area when calibrated) as PNG."""
+    import cv2
+
+    from treadmill.session import open_station
+
+    log = _log_for(args)
+    with open_station(args.station, attended=args.attended, calibrate=not args.raw, log=log) as s:
+        if s.video is None:
+            raise CommandError("the station has no capture, or it did not open", EXIT_NO_STATION)
+        frame = s.video.wait_stable(agree=2, timeout=10.0) if args.stable else s.video.next_frame()
+        out = Path(args.out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out), frame.image)
+        norm_path = None
+        if s.calibration is not None:
+            norm_path = out.with_name(out.stem + "_norm" + out.suffix)
+            cv2.imwrite(str(norm_path), s.calibration.normalize(frame.image))
+    payload = {"frame": str(out), "normalized": str(norm_path) if norm_path else None,
+               "size": list(frame.size), "seq": frame.seq}
+    _emit(payload, args.json, f"saved {out}" + (f" and {norm_path}" if norm_path else ""))
+    return EXIT_OK
+
+
+def cmd_viewer(args: argparse.Namespace) -> int:
+    """A live window: the frame with the cell grid, and the decoded text. q quits."""
+    import cv2
+
+    from treadmill.observe.channels import read_video
+    from treadmill.session import open_station
+
+    log = _log_for(args)
+    with open_station(args.station, attended=args.attended, log=log) as s:
+        if s.video is None:
+            raise CommandError("the station has no capture, or it did not open", EXIT_NO_STATION)
+        cal = s.calibration
+        last = None
+        while True:
+            try:
+                last = s.video.next_frame(last, timeout=5.0)
+            except Exception as e:  # noqa: BLE001 - a viewer keeps going
+                log(f"[viewer] {e}")
+                continue
+            img = last.image.copy()
+            if cal is not None:
+                x0, y0, w, h = cal.text_area
+                cv2.rectangle(img, (int(x0), int(y0)), (int(x0 + w), int(y0 + h)), (0, 255, 0), 1)
+                for c in range(1, 40):
+                    x = int(x0 + c * cal.cell_w)
+                    cv2.line(img, (x, int(y0)), (x, int(y0 + h)), (0, 96, 0), 1)
+                for r in range(1, 25):
+                    y = int(y0 + r * cal.cell_h)
+                    cv2.line(img, (int(x0), y), (int(x0 + w), y), (0, 96, 0), 1)
+                if s.has_video:
+                    read = read_video(last, cal, s.bank)
+                    for i, row in enumerate(read.rows()):
+                        cv2.putText(img, row, (8, 16 + 14 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            cv2.imshow(f"treadmill viewer: {args.station}", img)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+        cv2.destroyAllWindows()
+    return EXIT_OK
+
+
+# -- parser -----------------------------------------------------------------------
+
+def _station_args(s: argparse.ArgumentParser, required: bool = True) -> None:
+    s.add_argument("--station", required=required, help="the station id (data/stations/<id>.toml)")
+    s.add_argument("--attended", action="store_true", help="a person is at the bench: manual power may prompt")
+    s.add_argument("--json", action="store_true")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="treadmill", description="TeensyROM hardware-in-the-loop validation")
     p.add_argument("--version", action="version", version=f"treadmill {__version__}")
@@ -63,18 +283,59 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--station", help="only this station")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_stations)
+
+    s = sub.add_parser("calibrate", help="find the text area in the picture and save the calibration")
+    _station_args(s, required=False)
+    s.add_argument("--frame", help="calibrate from this PNG instead of the live picture")
+    s.add_argument("--layout", choices=["menu", "basic"], default="menu",
+                   help="what the frame shows: the TeensyROM menu (row 0 is a bar) or a BASIC-like screen")
+    s.add_argument("--no-save", action="store_true", help="report only; do not write data/calib")
+    s.set_defaults(func=cmd_calibrate)
+
+    s = sub.add_parser("harvest", help="build the glyph bank from the allcodes program on the live station")
+    _station_args(s)
+    s.add_argument("--charset", choices=["lu", "ug", "both"], default="both")
+    s.add_argument("--frames", type=int, default=20, help="frames averaged per character set")
+    s.add_argument("--settle", type=float, default=2.5, help="seconds after launch before the first frame")
+    s.add_argument("--drive", default="sd", help="where the program is pushed: sd or usb")
+    s.add_argument("--folder", default="/treadmill", help="folder on that drive for the program")
+    s.add_argument("--fresh", action="store_true", help="start a new bank instead of refining the stored one")
+    s.set_defaults(func=cmd_harvest)
+
+    s = sub.add_parser("screen", help="print the screen as text")
+    _station_args(s)
+    s.add_argument("--exact", action="store_true", help="prefer DMA where the board allows it")
+    s.add_argument("--xcheck", action="store_true", help="read both channels and report their disagreement")
+    s.add_argument("--menu", action="store_true", help="bring the board to the menu first")
+    s.set_defaults(func=cmd_screen)
+
+    s = sub.add_parser("frame", help="save one frame as PNG")
+    _station_args(s)
+    s.add_argument("--out", required=True, help="the PNG to write")
+    s.add_argument("--stable", action="store_true", help="wait for two frames that agree")
+    s.add_argument("--raw", action="store_true", help="skip calibration (no normalized image)")
+    s.set_defaults(func=cmd_frame)
+
+    s = sub.add_parser("viewer", help="live picture with the cell grid and decoded text (q quits)")
+    _station_args(s)
+    s.set_defaults(func=cmd_viewer)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    as_json = getattr(args, "json", False)
     try:
         return args.func(args)
     except ConfigError as e:
-        print(json.dumps({"error": str(e)}) if getattr(args, "json", False) else f"error: {e}",
-              file=sys.stderr)
+        print(json.dumps({"error": str(e)}) if as_json else f"error: {e}", file=sys.stderr)
         return EXIT_USAGE
+    except CommandError as e:
+        print(json.dumps({"error": str(e)}) if as_json else f"error: {e}", file=sys.stderr)
+        return e.code
+    except KeyboardInterrupt:
+        return 130
 
 
 if __name__ == "__main__":

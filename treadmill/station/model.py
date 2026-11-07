@@ -56,6 +56,7 @@ class CaptureSpec:
     source: str = "svideo"         # svideo | composite | dvi: the machine's output
     converter: str = "generic"     # names the S-Video-to-HDMI converter; the glyph bank is per converter
     api: str | None = None         # OpenCV backend: dshow | msmf | any; the platform's default when unset
+    no_signal: str | None = None   # PNG of what the device shows with no input (relative to data/rigs); such frames are dropped
 
     @property
     def capture_class(self) -> str:

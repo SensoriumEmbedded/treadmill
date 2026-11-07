@@ -7,7 +7,8 @@ on Windows unless the rig says otherwise (Media Foundation opens the MS2109
 on the bench PC but never delivers a frame), with the mode passed at open,
 since a format set afterwards is ignored by the DirectShow backend; it
 discards the first frames after opening, which the MS2109 delivers before
-its signal settles. Nothing
+its signal settles (the dongle hands out its own color bars for the first
+part of a second). Nothing
 here decides what a frame means: that is ``channels`` and ``liveness``.
 """
 
@@ -25,10 +26,13 @@ from typing import Callable, Iterable
 import cv2
 import numpy as np
 
+from treadmill.station.config import data_dir
 from treadmill.station.model import CaptureSpec
 
 RING_SECONDS = 3.0
 DISCARD_FIRST = 5
+SETTLE_S = 1.5                # after opening, the MS2109 shows its color bars for about 0.7 s before the picture
+NO_SIGNAL_MATCH = 6.0         # mean absolute difference from the rig's no-signal pattern below which a frame is that pattern
 STABLE_TOLERANCE = 2.0        # mean absolute pixel difference between "the same" frames
 DEFAULT_TIMEOUT = 10.0
 
@@ -155,16 +159,33 @@ class CvCapture(FrameSource):
 
     BACKENDS = {"msmf": cv2.CAP_MSMF, "dshow": cv2.CAP_DSHOW, "any": cv2.CAP_ANY}
 
-    def __init__(self, spec: CaptureSpec, backend: str | None = None, discard: int = DISCARD_FIRST):
+    def __init__(self, spec: CaptureSpec, backend: str | None = None, discard: int = DISCARD_FIRST,
+                 settle: float = SETTLE_S):
         super().__init__()
         self.spec = spec
         self.backend = backend or spec.api or ("dshow" if os.name == "nt" else "any")
         self._cap = self._open(spec, self.backend)
         self._discard = discard
+        self._settle_until = time.monotonic() + settle
+        self._no_signal = self._load_pattern(spec.no_signal)
+        self.no_signal_frames = 0           # dropped because they were the device's no-input pattern
+        self.last_no_signal: float | None = None
         self._stop = threading.Event()
         self._errors = 0
         self._thread = threading.Thread(target=self._run, name="treadmill-capture", daemon=True)
         self._thread.start()
+
+    @staticmethod
+    def _load_pattern(name: str | None) -> np.ndarray | None:
+        if not name:
+            return None
+        path = Path(name)
+        if not path.is_absolute():
+            path = data_dir() / "rigs" / path
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if image is None:
+            raise CaptureError(f"no-signal pattern {path} cannot be read")
+        return image
 
     @staticmethod
     def _open(spec: CaptureSpec, backend: str) -> cv2.VideoCapture:
@@ -188,8 +209,12 @@ class CvCapture(FrameSource):
                 self._errors += 1
                 time.sleep(0.02)
                 continue
-            if skipped < self._discard:
+            if skipped < self._discard or time.monotonic() < self._settle_until:
                 skipped += 1
+                continue
+            if self._no_signal is not None and frame_difference(image, self._no_signal) < NO_SIGNAL_MATCH:
+                self.no_signal_frames += 1      # the device's own pattern: nothing from the machine is in it
+                self.last_no_signal = time.monotonic()
                 continue
             self._push(image)
 
@@ -201,7 +226,7 @@ class CvCapture(FrameSource):
                 "mode": f"{self.spec.fourcc} {self.spec.width}x{self.spec.height}@{self.spec.fps}",
                 "actual": f"{int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
                           f"{int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}@{self._cap.get(cv2.CAP_PROP_FPS):g}",
-                "read_errors": self._errors}
+                "read_errors": self._errors, "no_signal_frames": self.no_signal_frames}
 
     def close(self) -> None:
         self._stop.set()

@@ -142,3 +142,64 @@ C128 at the TeensyROM menu. Dates are 2026-11-06.
   tree reads dirty, version `TeensyROM+ v0.9-tim*`, file
   `TeensyROM+_0.9-tim-dirty_full.hex`, memory report captured (RAM1 free
   for locals 79868 clean, 75772 with the define). Nothing flashed.
+
+## The Kawari C64, PAL (same TR+, same evening)
+
+The 250425 C64 with the small-board Kawari, set to PAL, after the C128.
+
+- **S2:** machine line `C64 PAL Vid 50 Hz`, boot complete, DMA allowed;
+  same board and build as before.
+- **S1 under PAL:** the converter takes the 50 Hz input and the dongle still
+  delivers 1280x720, at about 53 fps; the text area is 1029 x 526 px (cells
+  25.7 x 21.0 px) against 993 x 631 under NTSC, so the PAL picture arrives
+  vertically squashed. The bounding-box calibration finds it (residual
+  0.10, a purple border again).
+- **The dongle's no-signal pattern is a set of color bars**, and it shows
+  them for the first part of a second after every open, sometimes longer,
+  and after a reset until the converter's HDMI output comes back; a stable
+  pair of frames right after opening was the bars, which calibrated to
+  nonsense (origin (0.6, -29), magenta background). A frame of the bars is
+  now the rig's `no_signal` pattern (`data/rigs/rigA-nosignal.png`,
+  `[capture] no_signal`), and `CvCapture` drops frames that match it and
+  counts them; it also discards the first 1.5 s after opening. Liveness
+  should treat "all frames dropped" as NO_SIGNAL; a reset that leaves the
+  picture on the bars is answered by another reset (seen once).
+- **Harvest on the Kawari** (`--out`, a separate bank): four pages, grid
+  refined to residual 0.02-0.03 against the ROM rendering. The templates
+  correlate 0.98 with the C128 bank's (246-248 of 256 best-match their own
+  code; the rest are the usual look-alikes), but the margins differ: the
+  solid block spills 0.17 downward and 0.11 rightward here against 0.11
+  and 0.04 on the C128 picture.
+- **Cross-check on the PAL menu, DMA-refined grid:** Kawari bank 3.0% and
+  4.6% on two runs (confidence 0.87-0.89); the C128 bank 5.5% on the same
+  picture (confidence 0.73). One bank per capture chain is not enough:
+  the picture's standard, or the machine, belongs in the bank's key, or
+  the bank is harvested per station. Same leftovers as on the C128.
+- S4 (chip model over DMA, mains cycle) is scripted in `spikes/s4_kawari.py`
+  from the Kawari's REGISTERS.md; see below for the run.
+
+## S4: the Kawari's chip model over DMA, then a mains cycle
+
+`spikes/s4_kawari.py --uid <chip id> --read` / `--set 0 --persist`
+
+- **Works.** Unlock with "VIC2" at $D03F, overlay on with persist
+  ($D03F = $60, the port function bit added later made no difference),
+  CHIP_MODEL at overlay $1F through $D039/$D03A/$D03B, deactivate; after
+  the mains cycle the TR's machine line went from `C64 PAL Vid 50 Hz` to
+  `C64 NTSC` and the picture from 25.7 x 21.0 px cells to 24.8 x 25.2.
+  Written back to 1 (6569R3, PAL) at the end of the session.
+- **The readback of CHIP_MODEL is the live model**, not the stored one: it
+  read 1 right after 0 was written, and only the cold boot showed the
+  change. So a write is verified by the boot, never by the readback.
+- **The unlock misses about every other time** when the four bytes arrive
+  600 ms apart over DMA (every read then returns $FF); the script verifies
+  that $D03F reads back as written before touching anything else, and
+  retries. A WriteC64Spans command would deliver the four bytes in one DMA
+  session; worth using once the link has it.
+- **The TOD line did not follow the standard:** `NTSC 50 Hz`. The Kawari
+  changes the VIC's timing, the TOD clock comes from the keyboard board,
+  so the PAL/NTSC x TOD matrix (test 18) is two independent knobs on this
+  station, as the plan assumed.
+- The register path is usable for the suite; driving the Kawari utility
+  from the TR menu with DMA keystrokes remains the fallback if a firmware
+  revision changes the registers.

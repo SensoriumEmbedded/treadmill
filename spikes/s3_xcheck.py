@@ -44,6 +44,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--uid", required=True)
     ap.add_argument("--port-hint")
+    ap.add_argument("--station", help="take the capture spec (device, backend, no-signal pattern) from this station's rig")
     ap.add_argument("--device", type=int, default=1)
     ap.add_argument("--api", default="dshow")
     ap.add_argument("--chargen")
@@ -60,7 +61,11 @@ def main() -> int:
         bank = bootstrap_bank(load_chargen(args.chargen), "svideo-generic")
         print("bank bootstrapped from the character ROM")
 
-    spec = CaptureSpec(device=args.device, api=args.api)
+    if args.station:
+        from treadmill.station import load_station
+        spec = load_station(args.station).rig.capture
+    else:
+        spec = CaptureSpec(device=args.device, api=args.api)
     with CvCapture(spec) as src:
         print("capture:", src.describe())
         frame = src.wait_stable(agree=2, timeout=15.0)

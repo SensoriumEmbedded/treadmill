@@ -23,7 +23,7 @@ from treadmill.errors import TreadmillError
 from treadmill.link.trlink import Link, ScreenDump
 from treadmill.observe.calibrate import Calibration, CalibrationError, refine, track
 from treadmill.observe.capture import Frame, FrameSource
-from treadmill.observe.glyphs import GlyphBank, screen_match, spill
+from treadmill.observe.glyphs import CELL, GlyphBank, screen_match, spill
 from treadmill.observe.normalize import (
     cell_colors, color_distance, core, core_cells, distance_map, interior_blank,
 )
@@ -37,8 +37,14 @@ DEFAULT_TIMEOUT = 15.0
 POLL_S = 0.1
 PASSES = 3                       # decode, predict the neighbors' spill, decode again, once more with better levels
 REFINE_CONFIDENCE = 0.5          # cells at least this sure anchor the grid refinement of a read
+REFINE_ROUNDS = 3                # a grid a pixel or two off reads its far cells unsurely, so one round on the
+REFINE_SETTLED = (0.25, 0.001)   # sure ones lands short; each further round goes only when the last moved (px, scale)
 RESIDUAL_ABS = 2.4               # x noise floor: what a blank cell's margin may keep after spill is subtracted
 RESIDUAL_REL = 0.6               # x predicted spill: a cell's own ink is never a small fraction of the prediction
+# x the brightest neighbor's mean level (the border counts at the edges): a run of solid cells spills more
+# than one harvested block does, a third of its level into the row below on the PAL picture and up to four
+# tenths from the border, while a cell's own stroke is at its text level, which is the neighbor's or close.
+SPILL_FRACTION = 0.5
 
 
 class ScreenError(TreadmillError):
@@ -102,22 +108,41 @@ def from_dump(dump: ScreenDump, at: float | None = None) -> ScreenRead:
                       at if at is not None else time.monotonic(), address=dump.address)
 
 
+def neighbor_level(cells: np.ndarray, edge_level: float) -> np.ndarray:
+    """(1000,) the mean level of the brightest of each cell's eight neighbors,
+    the border standing in beyond the edges: how much the cell's margins may
+    hold from spill alone."""
+    mean = cells.reshape(SCREEN_BYTES, -1).mean(axis=1).reshape(SCREEN_ROWS, SCREEN_COLUMNS)
+    padded = np.full((SCREEN_ROWS + 2, SCREEN_COLUMNS + 2), edge_level, np.float32)
+    padded[1:-1, 1:-1] = mean
+    best = np.zeros((SCREEN_ROWS, SCREEN_COLUMNS), np.float32)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dy or dx:
+                np.maximum(best, padded[1 + dy:SCREEN_ROWS + 1 + dy, 1 + dx:SCREEN_COLUMNS + 1 + dx], out=best)
+    return best.reshape(SCREEN_BYTES)
+
+
 def decode_cells(cells: np.ndarray, bank: GlyphBank, noise_floor: float, edge_level: float,
-                 charset: str | None = None, passes: int = PASSES):
+                 charset: str | None = None, passes: int = PASSES,
+                 bleed: dict[str, list[float]] | None = None):
     """Match the cell cores, predict what the neighbors spilled into each
     from that reading, subtract it and match again. After subtraction a
     cell is blank when its interior is at the noise floor and what is left
-    in its margins is a small fraction of the spill predicted there: the
-    model is not exact, a cell's own ink is never that small."""
+    in its margins is a small fraction of the spill predicted there, or of
+    the brightest neighbor's level: the model is not exact, a cell's own
+    ink is never that small."""
     m = screen_match(bank, cells, charset, noise_floor=noise_floor,
                      blank=interior_blank(cells, noise_floor))
     corrected = cells
+    from_neighbors = SPILL_FRACTION * neighbor_level(cells, edge_level)
     for _ in range(passes - 1):
-        predicted = spill(bank, m.codes, m.amplitude, m.charset, edge_level)
+        predicted = spill(bank, m.codes, m.amplitude, m.charset, edge_level, bleed)
         corrected = np.maximum(cells - predicted, 0.0)
         residual = corrected.reshape(corrected.shape[0], -1).max(axis=1)
         allowed = np.maximum(RESIDUAL_ABS * noise_floor,
                              RESIDUAL_REL * predicted.reshape(predicted.shape[0], -1).max(axis=1))
+        allowed = np.maximum(allowed, from_neighbors)
         blank = interior_blank(corrected, noise_floor) & (residual < allowed)
         m = screen_match(bank, corrected, charset, noise_floor=noise_floor, blank=blank)
     return m, corrected
@@ -141,19 +166,25 @@ def read_video(frame: Frame, calib: Calibration, bank: GlyphBank, charset: str |
     def decode(cal: Calibration):
         norm = cal.normalize(frame.image)
         cells = core_cells(distance_map(norm, cal.background))
-        m, corrected = decode_cells(cells, bank, cal.noise_floor, edge, want)
+        m, corrected = decode_cells(cells, bank, cal.noise_floor, edge, want, bleed=cal.bleed)
         return norm, m, corrected
 
     norm, m, corrected = decode(calib)
     if refine_grid:
-        sure = (m.confidence >= REFINE_CONFIDENCE) & (m.codes != 0x20)
-        try:
-            refined = refine(frame.image, calib, m.codes, m.charset, bank, use=sure, cells=corrected,
-                             fine_only=True)
+        for _ in range(REFINE_ROUNDS):
+            sure = (m.confidence >= REFINE_CONFIDENCE) & (m.codes != 0x20)
+            try:
+                refined = refine(frame.image, calib, m.codes, m.charset, bank, use=sure, cells=corrected,
+                                 fine_only=True)
+            except CalibrationError:
+                break                                  # too little text to pin the grid: the grid stands
+            moved = max(abs(refined.x0 - calib.x0) * CELL / calib.cell_w,
+                        abs(refined.y0 - calib.y0) * CELL / calib.cell_h)
+            scaled = max(abs(refined.cell_w / calib.cell_w - 1.0), abs(refined.cell_h / calib.cell_h - 1.0))
             norm, m, corrected = decode(refined)
             calib = refined
-        except CalibrationError:
-            pass                                       # too little text to pin the grid: the tracked grid stands
+            if moved < REFINE_SETTLED[0] and scaled < REFINE_SETTLED[1]:
+                break
     return ScreenRead(m.codes, m.charset, m.confidence, SOURCE_VIDEO, frame.at, frame,
                       cell_colors(core(norm), corrected), charset_scores=m.charset_scores, calibration=calib)
 

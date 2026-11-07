@@ -2,15 +2,17 @@
 tracking, goldens, liveness, capture sources and the screen channel."""
 
 import time
+from dataclasses import replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
 from selftest.synth import (
     FONT, GEOMETRY, calibrated, frame_of, harvested_bank, menu_like_screen, text_screen,
 )
-from treadmill.c64.screen import CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS
+from treadmill.c64.screen import CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, SCREEN_COLUMNS
 from treadmill.link.unsolicited import EventLog
 from treadmill.observe import (
     LAYOUT_BASIC, LAYOUT_MENU, Calibration, CalibrationError, CaptureTimeout, Frame, FrameSource, Golden,
@@ -18,9 +20,10 @@ from treadmill.observe import (
     Liveness, ReplaySource, ScreenChannel, ScreenError, SyntheticSource, bootstrap_bank, classify, compare,
     diff_text, find_text_area, from_dump, read_video, refine, save_golden, synthetic_font, track, xcheck,
 )
-from treadmill.observe.glyphs import CELL, PAD, Font, match
+from treadmill.observe.glyphs import CELL, PAD, Font, composite, match
 from treadmill.observe.liveness import cell_change_rate
-from treadmill.observe.render import DARK_GREY, LIGHT_GREY, Geometry
+import treadmill.observe.channels as channels
+from treadmill.observe.render import DARK_GREY, LIGHT_GREY, PALETTE_BGR, Geometry
 from treadmill.link.trlink import ScreenDump
 
 
@@ -109,6 +112,53 @@ def test_refine_keeps_a_good_fit_and_recovers_a_nudged_one(calib, bank):
     assert int((read_video(Frame(frame, 0.0, 1), fixed, bank, follow=False).codes != codes).sum()) == 0
     with pytest.raises(CalibrationError):
         refine(frame, calib, np.full(1000, 0x20, np.uint8), CHARSET_LOWER_UPPER, bank)
+
+
+def test_border_bleed_is_measured_and_taken_off_the_edge_cells(bank):
+    codes = text_screen({r: " menu row" for r in range(1, 23)})          # columns 0 and 39 blank throughout
+    codes[:SCREEN_COLUMNS] = 0xA0                                         # the menu's reverse top bar
+    frame = frame_of(codes, seed=11)
+    # A border edge that ramps into the last column, as one C128's does: blur a band at the right edge.
+    right = int(GEOMETRY.x0 + GEOMETRY.width)
+    band = slice(right - 14, right + 14)
+    frame[:, band] = cv2.blur(frame[:, band], (11, 1))
+    cal = find_text_area(frame, LAYOUT_MENU)
+    assert cal.bleed is not None
+    ramp = cal.bleed["right"]
+    assert ramp[0] > ramp[4] + 0.05 > ramp[12]                             # it ramps, and decays within the cell
+    assert cal.bleed["top"] == cal.bleed["bottom"]                        # under the reverse bar: the bottom's
+    canvas = composite(bank, codes, 1.0, CHARSET_LOWER_UPPER, 0.3, cal.bleed)
+    assert canvas[PAD + 10 * CELL + 8, PAD + SCREEN_COLUMNS * CELL - 1] == pytest.approx(ramp[0], abs=1e-4)
+    read = read_video(Frame(frame, 0.0, 1), cal, bank, follow=False)
+    assert int((read.codes != codes).sum()) == 0
+    solid_block = read_video(Frame(frame, 0.0, 1), replace(cal, bleed=None), bank, follow=False)
+    assert int((solid_block.codes[SCREEN_COLUMNS - 1::SCREEN_COLUMNS] != 0x20).sum()) > 0   # what the block missed
+
+
+def test_spill_under_a_bar_reads_blank_while_a_bar_glyph_stays(calib, bank, monkeypatch):
+    codes = text_screen({1: "a bar below"})
+    codes[3 * SCREEN_COLUMNS:4 * SCREEN_COLUMNS] = 0xA0                   # a full-width reverse row
+    codes[6 * SCREEN_COLUMNS:7 * SCREEN_COLUMNS] = 0xA0
+    codes[7 * SCREEN_COLUMNS + 2:7 * SCREEN_COLUMNS + 30] = 99            # top-bar glyphs right under a run
+    frame = frame_of(codes, seed=12)
+    # What a run spills past one block's harvested margin: a strip at a third of the bar's level under row 3.
+    y = int(round(GEOMETRY.y0 + 4 * GEOMETRY.cell_h))
+    x0, x1 = int(GEOMETRY.x0), int(GEOMETRY.x0 + GEOMETRY.width)
+    frame[y:y + 2, x0:x1] = (PALETTE_BGR[LIGHT_GREY] * 0.35).astype(np.uint8)
+    read = read_video(Frame(frame, 0.0, 1), calib, bank, follow=False)
+    assert int((read.codes != codes).sum()) == 0
+    monkeypatch.setattr(channels, "SPILL_FRACTION", 0.0)
+    without = read_video(Frame(frame, 0.0, 1), calib, bank, follow=False)
+    assert int((without.codes[4 * SCREEN_COLUMNS:5 * SCREEN_COLUMNS] != 0x20).sum()) > 10
+
+
+def test_a_read_refines_a_grid_a_pixel_and_a_part_in_a_thousand_off(calib, bank):
+    codes, colors = menu_like_screen(13)
+    frame = Frame(frame_of(codes, colors, seed=13), 0.0, 1)
+    off = replace(calib, x0=calib.x0 + 1.4, cell_w=calib.cell_w * 1.003)
+    read = read_video(frame, off, bank, follow=False)
+    assert int((read.codes != codes).sum()) == 0
+    assert abs(read.calibration.cell_w / calib.cell_w - 1.0) < 0.001
 
 
 def test_tracking_follows_a_shifted_picture(calib, bank):

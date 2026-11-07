@@ -119,8 +119,8 @@ C128 at the TeensyROM menu. Dates are 2026-11-06.
     samples on a second harvest; it now averages normalized contributions.
 - **Cross-check with the final bank, live, DMA-refined grid: 2.4%
   disagreement (24 of 1000 cells), mean confidence 0.83.** The ROM
-  bootstrap scores 3.0% on the same frames. Not yet at the 1% gate. What
-  is left: blank cells under the green highlight bar read as a top-line
+  bootstrap scores 3.0% on the same frames. Not yet at the 1% gate at that
+  point (it is now; see below). What was left: blank cells under the green highlight bar read as a top-line
   glyph (the bar's spill downward is larger than an isolated block's in the
   harvest; also true for the ROM bank), the border's bleed into columns 0
   and 39 read as thin bars, and a few look-alikes in the reverse-video
@@ -130,6 +130,41 @@ C128 at the TeensyROM menu. Dates are 2026-11-06.
 - Per-launch geometry, measured: the launched picture is up and steady
   0.75 s after the launch command; frame-to-frame alternation of 0.05 px
   only; the border edge does not move between pictures while the text does.
+
+### The 1% gate, offline (2026-11-07)
+
+The saved frames of both pictures, replayed against their DMA reads after
+three decoder changes; nothing was re-run on the bench.
+
+- A run of solid cells (the menu's reverse banner and its highlight bar)
+  spills more into the blank row beside it than one harvested block's
+  margin predicts: a third of the bar's level into the top pixel row on the
+  PAL picture and some into the second, where the margin predicted a fifth
+  and nothing. Chroma is not the cause: the luma-only numbers are the same.
+  The blank decision now also allows a margin residual up to half the
+  brightest neighbor's mean level (`SPILL_FRACTION`), since a stroke of the
+  cell's own is at its text level.
+- The border's edge is not a glyph's: on the C128 it ramps over ten frame
+  pixels into the last column (the left edge is sharp), far wider than the
+  solid block's margin that stood in for the border in the composite. Each
+  calibration now measures the border's bleed per edge from its own frame
+  (`with_bleed`: a low quantile over the edge's cells, the reverse top bar
+  taking the bottom edge's profile) and the composite subtracts that.
+- A read's own grid refinement, from a stored calibration a pixel or two
+  off, landed short: the cells it trusted were all on the near side. It
+  now refines up to three rounds while the grid keeps moving.
+
+| Picture | Bank | Grid refined against DMA | Stored calibration, a read's own refinement |
+|---|---|---|---|
+| C128 menu, four frames | C128 | 0.3-0.8% | 0.3-0.6% |
+| Kawari C64 PAL menu | Kawari | 0.3% | 0.3% |
+| Kawari C64 PAL menu | C128 | 0.3% | 0.3% |
+
+Of the cells left, two or three per frame are the clock's digits, which
+ticked between the frame and the DMA read that followed it; the rest are
+one or two cells at the border that read at a confidence too low to
+print. The gate holds on both pictures with either bank.
+`treadmill score --frame --dma --charset` replays a saved frame this way.
 
 ## S5: build from a worktree
 

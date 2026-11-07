@@ -25,7 +25,7 @@ from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SC
 from treadmill.errors import TreadmillError
 from treadmill.observe.glyphs import BLANK_CODE, CELL, GlyphBank
 from treadmill.observe.normalize import (
-    NORM_H, NORM_W, core, distance_map, dominant_color, median_color, noise_floor_of, normalize,
+    NORM_H, NORM_W, core, core_cells, distance_map, dominant_color, median_color, noise_floor_of, normalize,
 )
 from treadmill.observe.render import expected_map
 
@@ -36,6 +36,8 @@ MIN_CONTRAST = 24.0           # BGR distance below which background and border c
 EDGE_BAND = 0.04              # fraction of the frame sampled as border, each side
 FILL = 0.5                    # a profile crosses the text area's edge at half its peak
 MIN_REFINE_CELLS = 20         # fewer known glyphs than this cannot pin an origin and a scale
+BLEED_DECAY = 2.0             # x noise floor: a border bleed is back at the floor by the middle of the edge cell
+BLEED_QUANTILE = 25           # percentile over an edge's cells: a quarter of them are blank on any text screen
 REFINE_MIN_CORRELATION = 0.2  # below this the picture is not the screen the codes describe
 
 
@@ -62,6 +64,8 @@ class Calibration:
     created: str = ""
     left_edge: float | None = None        # the background rectangle's edges when calibrated:
     bottom_edge: float | None = None      # tracking moves the origin by how far they move
+    # What the border bleeds into the edge cells, per edge, pixel by pixel inward (see with_bleed).
+    bleed: dict[str, list[float]] | None = None
 
     @property
     def text_area(self) -> tuple[float, float, float, float]:
@@ -167,8 +171,42 @@ def find_text_area(frame: np.ndarray, layout: str = LAYOUT_MENU) -> Calibration:
     residual = float(1.0 - min(inside, outside))
     norm = normalize(frame, x0, y0, cell_w, cell_h)
     noise = noise_floor_of(core(distance_map(norm, background))[CELL * (SCREEN_ROWS - visible):])
-    return Calibration(x0, y0, cell_w, cell_h, w, h, background, border, noise, layout, residual,
-                       "bounding-box", left_edge=float(left), bottom_edge=float(bottom))
+    cal = Calibration(x0, y0, cell_w, cell_h, w, h, background, border, noise, layout, residual,
+                      "bounding-box", left_edge=float(left), bottom_edge=float(bottom))
+    return with_bleed(frame, cal)
+
+
+def with_bleed(frame: np.ndarray, calib: Calibration) -> Calibration:
+    """The calibration with the border's bleed into the edge cells measured
+    from this frame: per edge, a low quantile over that edge's cells of the
+    distance at each pixel inward, which is what the blank cells among them
+    hold. The border's edge is not a glyph's: on one C128 it ramps over ten
+    frame pixels into the last column while a stroke is sharp, so a solid
+    block's harvested margin cannot stand in for it. An edge whose profile
+    does not decay to the floor (the menu's reverse top bar) takes the
+    opposite edge's. Measured once the geometry is final: a read's own
+    sub-pixel refinement shifts the ramp by less than a pixel."""
+    cells = core_cells(distance_map(calib.normalize(frame), calib.background))
+    grid = cells.reshape(SCREEN_ROWS, SCREEN_COLUMNS, CELL, CELL)
+    raw = {
+        "left": np.percentile(grid[:, 0].mean(axis=1), BLEED_QUANTILE, axis=0),
+        "right": np.percentile(grid[:, -1].mean(axis=1), BLEED_QUANTILE, axis=0)[::-1],
+        "top": np.percentile(grid[0].mean(axis=2), BLEED_QUANTILE, axis=0),
+        "bottom": np.percentile(grid[-1].mean(axis=2), BLEED_QUANTILE, axis=0)[::-1],
+    }
+    limit = BLEED_DECAY * calib.noise_floor
+    decays = {k: float(v[CELL // 2:].max()) <= limit for k, v in raw.items()}
+    opposite = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}
+    bleed = {}
+    for k, v in raw.items():
+        if decays[k]:
+            use = v
+        elif decays[opposite[k]]:
+            use = raw[opposite[k]]
+        else:
+            use = np.zeros(CELL, np.float32)
+        bleed[k] = [round(float(x), 4) for x in use]
+    return replace(calib, bleed=bleed)
 
 
 TRACK_LIMIT = 1.0             # cells: a larger apparent move is a different picture, not drift

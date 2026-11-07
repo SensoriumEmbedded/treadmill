@@ -299,11 +299,13 @@ def screen_match(bank: GlyphBank, cells: np.ndarray, charset: str | None = None,
 
 
 def composite(bank: GlyphBank, codes: np.ndarray, amplitude: np.ndarray | float, charset: str,
-              edge_level: float = 0.0) -> np.ndarray:
+              edge_level: float = 0.0, bleed: dict[str, list[float]] | None = None) -> np.ndarray:
     """The padded normalized foreground map a screen of these codes at these
     levels should produce: every template placed at its cell, overlapping
-    margins added, and the border drawn around the text area as a solid
-    block at ``edge_level`` so its spill into the edge cells is predicted too."""
+    margins added, and the border's share of the edge cells: the ``bleed``
+    a calibration measured (``calibrate.with_bleed``), pixel by pixel inward
+    from each edge, or without one the border drawn as a solid block at
+    ``edge_level`` so the block's margin stands in for it."""
     codes = np.asarray(codes, np.uint8).reshape(SCREEN_BYTES)
     amp = np.broadcast_to(np.asarray(amplitude, np.float32), (SCREEN_BYTES,))
     s = charset_index(charset)
@@ -316,7 +318,14 @@ def composite(bank: GlyphBank, codes: np.ndarray, amplitude: np.ndarray | float,
         r, c = divmod(i, SCREEN_COLUMNS)
         y, x = r * CELL, c * CELL
         canvas[y:y + TCELL, x:x + TCELL] += amp[i] * templates[codes[i]]
-    if edge_level > 0:
+    if edge_level > 0 and bleed is not None:
+        core_h, core_w = SCREEN_ROWS * CELL, SCREEN_COLUMNS * CELL
+        for k in range(CELL):
+            canvas[PAD:PAD + core_h, PAD + k] += bleed["left"][k]
+            canvas[PAD:PAD + core_h, PAD + core_w - 1 - k] += bleed["right"][k]
+            canvas[PAD + k, PAD:PAD + core_w] += bleed["top"][k]
+            canvas[PAD + core_h - 1 - k, PAD:PAD + core_w] += bleed["bottom"][k]
+    elif edge_level > 0:
         solid = templates[SOLID_CODE] if bank.counts[s, SOLID_CODE] or templates[SOLID_CODE].max() > 0 \
             else bank.templates[1 - s][SOLID_CODE]
         level = float(solid[CORE].mean())
@@ -340,11 +349,11 @@ def _add_clipped(canvas: np.ndarray, block: np.ndarray, y: int, x: int) -> None:
 
 
 def spill(bank: GlyphBank, codes: np.ndarray, amplitude: np.ndarray, charset: str,
-          edge_level: float = 0.0) -> np.ndarray:
+          edge_level: float = 0.0, bleed: dict[str, list[float]] | None = None) -> np.ndarray:
     """(1000, 16, 16): what the neighbors (and the border) are predicted to
     have spilled into each cell's core: the composite minus the cell's own
     template."""
-    canvas = composite(bank, codes, amplitude, charset, edge_level)
+    canvas = composite(bank, codes, amplitude, charset, edge_level, bleed)
     total = canvas[PAD:-PAD, PAD:-PAD].reshape(SCREEN_ROWS, CELL, SCREEN_COLUMNS, CELL).transpose(0, 2, 1, 3)
     total = total.reshape(SCREEN_BYTES, CELL, CELL)
     s = charset_index(charset)

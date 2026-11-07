@@ -43,10 +43,11 @@ cost or a wart with a known, small fix.
 ## Video
 
 5. **low** Every video read refines the grid. `read_video()` in
-   `treadmill/observe/channels.py` decodes, refines (about 160 ms) and
-   decodes again on each read, so `wait_text()` polls at about four reads
-   a second. Reuse the last refined calibration while the frame has not
-   moved, and refine when the decode confidence drops.
+   `treadmill/observe/channels.py` decodes, refines (about 160 ms a round,
+   up to three rounds while the grid keeps moving) and decodes again on
+   each read, so `wait_text()` polls at a few reads a second. Reuse the
+   last refined calibration while the frame has not moved, and refine when
+   the decode confidence drops.
 
 ## Firmware builds
 

@@ -16,7 +16,7 @@ from pathlib import Path
 
 from treadmill.board import Board
 from treadmill.observe.calibrate import (
-    LAYOUT_MENU, Calibration, CalibrationError, calibration_path, find_text_area, refine,
+    LAYOUT_MENU, Calibration, CalibrationError, calibration_path, find_text_area, refine, with_bleed,
 )
 from treadmill.observe.capture import CaptureError, FrameSource, open_capture
 from treadmill.observe.channels import ScreenChannel, XCheck, from_dump
@@ -78,6 +78,8 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
     if path.is_file() and not force:
         cal = Calibration.load(path)
         if cal.fits(frame.image):
+            if cal.bleed is None:                      # saved before the border's bleed was part of one
+                cal = with_bleed(frame.image, cal)
             log(f"[video] calibration {path.name}: cell {cal.cell_w:.1f}x{cal.cell_h:.1f} px, {cal.method}")
             return cal
         log(f"[video] calibration {path.name} is for {cal.frame_w}x{cal.frame_h}, frames are "
@@ -87,7 +89,7 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
     cal = find_text_area(frame.image, LAYOUT_MENU)
     if bank is not None and board.dma_allowed():
         dma = from_dump(board.link.read_screen())
-        cal = refine(frame.image, cal, dma.codes, dma.charset, bank)
+        cal = with_bleed(frame.image, refine(frame.image, cal, dma.codes, dma.charset, bank))
     cal = Calibration(**{**cal.__dict__, "capture_class": station.rig.capture.capture_class,
                          "machine_id": station.machine.id})
     if save:

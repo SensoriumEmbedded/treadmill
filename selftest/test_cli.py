@@ -63,3 +63,23 @@ def test_hardware_errors_keep_the_json_contract(monkeypatch, capsys):
     monkeypatch.setattr(treadmill.session, "open_station", feed_stopped)
     assert main(["frame", "--station", "s1", "--out", "x.png", "--json"]) == EXIT_FAILED
     assert "no new frame" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_score_a_saved_frame_against_its_dma_read(tmp_path: Path, capsys):
+    import numpy as np
+
+    from selftest.synth import calibrated, harvested_bank
+
+    codes, colors = menu_like_screen(4)
+    cal = calibrated()
+    bank = harvested_bank(cal)
+    cv2.imwrite(str(tmp_path / "frame.png"), frame_of(codes, colors, seed=4))
+    np.save(tmp_path / "dma.npy", codes)
+    bank.save(tmp_path / "bank.npz")
+    cal.save(tmp_path / "cal.json")
+    assert main(["score", "--frame", str(tmp_path / "frame.png"), "--dma", str(tmp_path / "dma.npy"),
+                 "--charset", "lower_upper", "--bank", str(tmp_path / "bank.npz"),
+                 "--calib", str(tmp_path / "cal.json"), "--json"]) == EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["dma_refined"]["disagreement"] == 0 and out["stored"]["disagreement"] == 0
+    assert out["stored"]["charset"] == "lower_upper"

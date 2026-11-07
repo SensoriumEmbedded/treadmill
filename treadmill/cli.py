@@ -3,7 +3,8 @@ non-zero on failure, so an agent can drive it from structured output.
 
 ``stations`` lists what is configured; ``calibrate``, ``harvest``, ``screen``,
 ``frame`` and ``viewer`` are the video channel's tools on a live station
-(``calibrate`` also works on a saved frame); ``run``, ``matrix``, ``sweep``,
+(``calibrate`` also works on a saved frame, and ``score`` compares a saved
+frame with the DMA read taken with it); ``run``, ``matrix``, ``sweep``,
 ``shell``, ``exec``, ``bisect`` and ``export`` arrive with their modules.
 """
 
@@ -257,6 +258,57 @@ def cmd_frame(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_score(args: argparse.Namespace) -> int:
+    """Score a saved frame against the DMA screen read taken with it, as the
+    live cross-check does: on the grid refined against those codes (the best
+    the decoder can do) and on the stored calibration, as a plain read uses it."""
+    import cv2
+    import numpy as np
+
+    from treadmill.c64.screen import SCREEN_BYTES
+    from treadmill.observe.calibrate import Calibration, calibration_path, find_text_area, refine, with_bleed
+    from treadmill.observe.capture import Frame
+    from treadmill.observe.channels import SOURCE_DMA, ScreenRead, read_video, xcheck
+    from treadmill.observe.glyphs import GlyphBank
+    from treadmill.session import bank_path
+    from treadmill.station.config import data_dir
+
+    image = cv2.imread(str(args.frame), cv2.IMREAD_COLOR)
+    if image is None:
+        raise CommandError(f"cannot read {args.frame}", EXIT_USAGE)
+    codes = np.load(args.dma).astype(np.uint8).reshape(-1)
+    if codes.size != SCREEN_BYTES:
+        raise CommandError(f"{args.dma} holds {codes.size} codes, not {SCREEN_BYTES}", EXIT_USAGE)
+    bank_file, calib_file = args.bank, args.calib
+    if args.station:
+        st = load_station(args.station)
+        bank_file = bank_file or bank_path(st)
+        calib_file = calib_file or calibration_path(data_dir(), st.rig.capture.capture_class, st.machine.id)
+    if not bank_file:
+        raise CommandError("--station or --bank is needed", EXIT_USAGE)
+    bank = GlyphBank.load(bank_file)
+    dma = ScreenRead(codes, args.charset, np.ones(SCREEN_BYTES, np.float32), SOURCE_DMA, 0.0)
+    frame = Frame(image, 0.0, 1)
+    cal = with_bleed(image, refine(image, find_text_area(image, args.layout), codes, args.charset, bank))
+    reads = {"dma_refined": read_video(frame, cal, bank, args.charset, follow=False)}
+    if calib_file and Path(calib_file).is_file():
+        stored = Calibration.load(calib_file)
+        if stored.fits(image):
+            if stored.bleed is None:
+                stored = with_bleed(image, stored)
+            reads["stored"] = read_video(frame, stored, bank)
+    payload, lines = {}, []
+    for name, read in reads.items():
+        x = xcheck(read, dma)
+        payload[name] = {"disagreement": x.disagreement, "cells": x.cells, "charset": read.charset,
+                         "confidence": round(read.mean_confidence(), 3)}
+        lines.append(f"{name}: {x.disagreement:.1%} ({len(x.cells)} cells), charset {read.charset}, "
+                     f"confidence {read.mean_confidence():.2f}")
+        lines += [f"   row {r:2d} col {c:2d}: video {v:3d} dma {d:3d}" for r, c, v, d in x.cells[:40]]
+    _emit(payload, args.json, "\n".join(lines))
+    return EXIT_OK
+
+
 def cmd_viewer(args: argparse.Namespace) -> int:
     """A live window: the frame with the cell grid, and the decoded text. q quits."""
     import cv2
@@ -349,6 +401,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--stable", action="store_true", help="wait for two frames that agree")
     s.add_argument("--raw", action="store_true", help="skip calibration (no normalized image)")
     s.set_defaults(func=cmd_frame)
+
+    s = sub.add_parser("score", help="score a saved frame against the DMA read taken with it")
+    s.add_argument("--frame", required=True, help="the frame PNG")
+    s.add_argument("--dma", required=True, help="the 1000 screen codes the DMA read gave, as .npy")
+    s.add_argument("--charset", required=True, choices=["lower_upper", "upper_graphics"])
+    s.add_argument("--station", help="the station whose glyph bank and calibration to use")
+    s.add_argument("--bank", help="a glyph bank .npz instead of the station's")
+    s.add_argument("--calib", help="a calibration .json instead of the station's")
+    s.add_argument("--layout", choices=["menu", "basic"], default="menu")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_score)
 
     s = sub.add_parser("viewer", help="live picture with the cell grid and decoded text (q quits)")
     _station_args(s)

@@ -17,8 +17,8 @@ from treadmill.c64.keys import (
     CRSR_DOWN, CRSR_LEFT, CRSR_RIGHT, CRSR_UP, F1, F3, F5, F6, HOME, RETURN, SPACE, UP_ARROW,
 )
 from treadmill.c64.menu import (
-    ANY_ROW, EMPTY, FIRST_ITEM_ROW, ITEMS_PER_PAGE, MARK_DIR, MARK_NONE, SCREEN_COLUMNS, UP_DIR, Entry,
-    mark_for, render_listing,
+    ANY_ROW, EMPTY, FIRST_ITEM_ROW, ITEMS_PER_PAGE, MARK_DIR, MARK_NONE, MARK_UNKNOWN, SCREEN_COLUMNS, UP_DIR,
+    Entry, mark_for, render_listing,
 )
 from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
 from treadmill.observe.golden import save_golden
@@ -120,8 +120,12 @@ class FakeMenu:
                     " This Machine: C64 NTSC 60Hz TOD"]
             rows += [""] * (22 - len(rows)) + ["   Space Back to Main menu", "", ""]
             return [r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS] for r in rows[:25]]
-        return render_listing(self.source, self.path, self.page_entries(), (self.page, self.pages()),
-                              clock=CLOCK, banner=banner)
+        entries = self.page_entries()
+        if self.board.over_margin() > 0:
+            # The NTSC item-type misread: past the read margin every other item's type comes back wrong.
+            entries = [Entry(e.name, MARK_UNKNOWN if i % 2 == 0 and e.mark != MARK_NONE else e.mark, e.handler)
+                       for i, e in enumerate(entries)]
+        return render_listing(self.source, self.path, entries, (self.page, self.pages()), clock=CLOCK, banner=banner)
 
     def render(self) -> None:
         codes = bytearray()

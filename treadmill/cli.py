@@ -147,6 +147,46 @@ def cmd_shell(args: argparse.Namespace) -> int:
         return shell(h)
 
 
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """Walk one timing knob until the probe fails, bisect the edge, restore
+    the defaults, report the margin."""
+    from treadmill.driver import Harness
+    from treadmill.observe.golden import Golden
+    from treadmill.programs.build import AssembleError, assemble
+    from treadmill.station.config import repo_root
+    from treadmill.sweeps import IdReadProbe, MenuProbe, SearchSpec, Sweep, SweepError, current_value, knob_named
+
+    try:
+        knob = knob_named(args.knob)
+    except SweepError as e:
+        raise CommandError(str(e), EXIT_USAGE) from e
+    log = _log_for(args)
+    with Harness(_harness_options(args), f"sweep-{knob.letter}", log) as h:
+        ns = h.namespace
+        board, dbg = ns["board"], ns["dbg"]
+        if not dbg.available("t"):
+            raise CommandError(f"the flashed build lacks {knob.define}: build with --fw ... --define {knob.define}, "
+                               f"or name the defines a build flashed by other means carries with --fw-defines",
+                               EXIT_USAGE)
+        if args.probe == "idread":
+            try:
+                program = assemble("idread", primary=h.firmware.primary if h.firmware else None)
+            except AssembleError as e:
+                raise CommandError(str(e), EXIT_USAGE) from e
+            probe = IdReadProbe(board, program, dwell=args.dwell, log=log)
+        else:
+            golden_dir = Path(args.golden_dir) if args.golden_dir else repo_root() / "tests" / "golden"
+            probe = MenuProbe(board, ns["screen"], Golden.load(golden_dir / "menu" / "root.screen.txt"), h.folder)
+        start = args.start if args.start is not None else current_value(dbg, knob)
+        spec = SearchSpec(stop=args.to if args.to is not None else start + 100, start=args.start,
+                          step=args.step, fine=args.fine, repeat=args.repeat)
+        margin = Sweep(dbg, knob, probe, spec, log=log).run()
+        h.run_dir.write_json("sweep.json", margin.to_dict(), h.folder)
+        payload = {**margin.to_dict(), "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
+    _emit(payload, args.json, margin.describe() + f"\nsweep.json in {h.folder}")
+    return EXIT_OK
+
+
 # -- video tools ------------------------------------------------------------------
 
 def _calibration_payload(cal) -> dict:
@@ -498,6 +538,24 @@ def build_parser() -> argparse.ArgumentParser:
     _station_args(s, json_flag=False)
     _harness_args(s)
     s.set_defaults(func=cmd_shell, json=False)
+
+    s = sub.add_parser("sweep", help="find a timing knob's margin: raise it until the probe fails, bisect, restore",
+                       description="A build with Dbg_SerTimChg. The knob (p, tp or nS_PLAprop) walks from --from "
+                                   "(default: its current value) toward --to in --step steps until a point fails, "
+                                   "then the edge is bisected to --fine; the defaults are restored whatever happens. "
+                                   "The idread probe counts wrong register reads on the C64 (a TR+, by DMA); the "
+                                   "menu probe resets and compares the menu with its golden (any TR, by video).")
+    _station_args(s)
+    _harness_args(s)
+    s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
+    s.add_argument("--probe", choices=["idread", "menu"], default="idread")
+    s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's current value")
+    s.add_argument("--to", type=int, help="the last value to try; default: 100 past the first")
+    s.add_argument("--step", type=int, default=10, help="the coarse step (default 10)")
+    s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
+    s.add_argument("--repeat", type=int, default=1, help="samples a point (default 1)")
+    s.add_argument("--dwell", type=float, default=1.0, help="idread: seconds of counting per sample (default 1)")
+    s.set_defaults(func=cmd_sweep)
 
     s = sub.add_parser("stations", help="list the configured stations and their capabilities")
     s.add_argument("--station", help="only this station")

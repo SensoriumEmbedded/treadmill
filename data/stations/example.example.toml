@@ -28,3 +28,6 @@ uid = "00000000"         # the chip id from the version banner ("UID: ...")
 tcp_listener = false
 reset_detect = true
 autolaunch = "none"
+
+[margins]                # timing floors: a sweep of the knob must find every value up to this one clean
+# nS_PLAprop = 200       # the read margin the item-type fix left on NTSC (Constraints.md)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 
 from selftest.fake_menu import TREE, UP_DIR, FakeMenu
@@ -30,6 +31,36 @@ READY_LINE = "TeensyROM+ v0.9 ready!\n"
 # Commands the firmware answers whatever else it is doing (ProcessCommand's first switch).
 ALWAYS = {FW_CHECK, VERSION_INFO, RESET_C64, LAUNCH_FILE, C64_PAUSE_ON, C64_PAUSE_OFF,
           READ_C64_MEM, WRITE_C64_MEM}
+# The timing knobs at the firmware's NTSC C64 defaults (Common_Defs.h Def_nS_*), by their 't' letter.
+KNOB_DEFAULTS = {"m": 993, "r": 135, "p": 150, "s": 220, "h": 390, "v": 210, "i": 365, "a": 40, "b": 200,
+                 "e": 430, "w": 410, "y": 390, "k": 35}
+# idread.a as the fake runs it: passes a second, and the share of reads that go wrong per
+# nanosecond of nS_PLAprop past the margin.
+IDREAD_RESULTS = 0xC000
+IDREAD_PASSES_PER_S = 1500.0
+IDREAD_WRONG_PER_NS = 0.02
+
+
+@dataclass
+class IdRead:
+    """The counters idread.a would leave at $C000, advanced by the clock each
+    time they are read: wrong reads accrue only while nS_PLAprop is past the
+    fake's margin."""
+    last: float
+    passes: float = 0.0
+    wrong: float = 0.0
+
+    def advance(self, now: float, over_margin_ns: int) -> None:
+        dt = max(0.0, now - self.last)
+        self.last = now
+        self.passes += dt * IDREAD_PASSES_PER_S
+        if over_margin_ns > 0:
+            reads = dt * IDREAD_PASSES_PER_S * 512
+            self.wrong += reads * min(1.0, over_margin_ns * IDREAD_WRONG_PER_NS)
+
+    def bytes(self) -> bytes:
+        passes, wrong = int(self.passes) & 0xFFFF, int(self.wrong) & 0xFFFFFF
+        return bytes([passes & 0xFF, passes >> 8, wrong & 0xFF, (wrong >> 8) & 0xFF, wrong >> 16])
 
 
 @dataclass
@@ -50,6 +81,10 @@ class FakeBoard:
     booting_for: int = 0
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
     menu: object = field(default=None, repr=False)
+    # The bus timing model: a knob past its margin makes the C64's reads of TR-served bytes go
+    # wrong, which shows as wrong item-type marks on the menu and as idread's error counter.
+    margins: dict = field(default_factory=lambda: {"p": 210})
+    idread: IdRead | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         # A C64 at the TeensyROM menu: screen at $0400, lower/upper charset, VIC bank 0, no key waiting.
@@ -66,6 +101,8 @@ class FakeBoard:
         and starts its heartbeat; anything else leaves the screen as the menu
         left it. Either way the board is busy until a reset."""
         self.busy = True
+        if path.lower().endswith("idread.prg"):
+            self.idread = IdRead(time.monotonic())
         if path.lower().endswith("hello.prg"):
             self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = b"\x20" * SCREEN_BYTES
             self.memory[0xD018] = 0x17
@@ -76,7 +113,11 @@ class FakeBoard:
 
     debug_defines: set = field(default_factory=set)   # the Dbg_* defines this build carries
     letters: list[str] = field(default_factory=list) # every letter command received
-    knobs: dict = field(default_factory=lambda: {"m": 996, "r": 225, "p": 150, "s": 90, "h": 410})
+    knobs: dict = field(default_factory=lambda: dict(KNOB_DEFAULTS))
+
+    def over_margin(self) -> int:
+        """How far nS_PLAprop is past the value reads stay clean at; 0 or less is clean."""
+        return self.knobs["p"] - self.margins["p"]
 
     def serve(self, end: PipeEnd) -> None:
         while True:
@@ -131,11 +172,13 @@ class FakeBoard:
                 digits = end.read(TIMING_KNOBS[sub], WAIT_S).decode("latin-1")
                 self.knobs[sub] = int(digits)
                 self.letters.append(f"t{sub}{digits}")
-                head = f"{sub} set to {int(digits)}\n"
+                head = f"\nVal Set to: {int(digits)}\n\n"          # GetDigits()
+                self.menu.render()                                 # the marks follow the margin at once
             elif sub == "d":
-                self.knobs = {"m": 996, "r": 225, "p": 150, "s": 90, "h": 410}
+                self.knobs = dict(KNOB_DEFAULTS)
                 self.letters.append("td")
-                head = "Timing defaults restored\nDefaults set (NTSC C64)\n"
+                head = "Defaults set (NTSC C64)\n"
+                self.menu.render()
             else:
                 self.letters.append(f"t{sub}")
                 head = "No changes\n"
@@ -145,7 +188,8 @@ class FakeBoard:
         end.write(f"ok {letter}\n".encode("latin-1"))
 
     def _knob_listing(self) -> str:
-        """The block the firmware prints after every 't' command."""
+        """The block the firmware prints after every 't' command, as
+        SerUSBIO.ino formats it (a TR build: no Kernal Replace lines)."""
         k = self.knobs
         return ("Current:    Variable  Val (Command)\n"
                 f"\t nS_MaxAdj   {k['m']:04d} (tm####)\n"
@@ -153,6 +197,14 @@ class FakeBoard:
                 f"\t nS_PLAprop   {k['p']:03d} (tp###)\n"
                 f"\t nS_DataSetup {k['s']:03d} (ts###)\n"
                 f"\t nS_DataHold  {k['h']:03d} (th###)\n"
+                f"\t nS_VICStart  {k['v']:03d} (tv###)\n"
+                f"\t nS_VICDHold  {k['i']:03d} (ti###)\n"
+                f"\t nS_DMAAssert {k['a']:03d} (ta###)\n"
+                f"\t nS_DMABAWait {k['b']:03d} (tb###)\n"
+                f"\t nS_DMASetup  {k['e']:03d} (te###)\n"
+                f"\t nS_DMADataHold  {k['w']:03d} (tw###)\n"
+                f"\t nS_DMADataSetup {k['y']:03d} (ty###)\n"
+                f"\t Cyc_KernProp  {k['k']:02d} (tk##)\n"
                 "\tSet Defaults      (td)\n"
                 "\tList current vals (t)\n-----\n")
 
@@ -202,6 +254,7 @@ class FakeBoard:
         self.booting_for = self.boot_polls
         self.busy = False
         self.heartbeat = False
+        self.idread = None
         self.memory[0xD018] = 0x17
         self.menu.reset()
         end.write(b"Reset cmd received\nLoading IO handler: TeensyROM\n")
@@ -214,6 +267,9 @@ class FakeBoard:
             return
         address = self._number(end, 2)
         length = self._number(end, 2)
+        if self.idread is not None:
+            self.idread.advance(time.monotonic(), self.over_margin())
+            self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 5] = self.idread.bytes()
         self._reply(end, ACK)
         end.write(bytes(self.memory[address:address + length]))
 

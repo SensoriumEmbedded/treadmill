@@ -22,6 +22,7 @@ PROGRAMS = {
     "allcodes_lu0": ("allcodes.a", {"CHARSET": 1, "PAGE": 0}),
     "allcodes_lu1": ("allcodes.a", {"CHARSET": 1, "PAGE": 1}),
     "hello": ("hello.a", {}),
+    "idread": ("idread.a", {}),
 }
 # The sparse grid allcodes.a draws: cell i of page p shows code p * 228 + i.
 SPARSE_ROWS, SPARSE_COLS, SPARSE_CELLS = 12, 19, 228

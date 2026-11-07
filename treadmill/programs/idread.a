@@ -1,0 +1,47 @@
+; idread.a: the C64 side of a read-margin sweep. Reads the TeensyROM's two
+; presence registers (IO1 $DE05 = $55, $DE06 = $AA; Menu_Regs.h rRegPresence1/2)
+; in a loop and counts the wrong answers at $C000, where the sweep reads them
+; by DMA: the TeensyROM cannot see its own read errors, only the C64 can.
+;   $C000/1  passes, 16-bit (256 rounds of both reads each)
+;   $C002-4  wrong reads, 24-bit
+; Launched from the menu it keeps the TeensyROM IO handler, so the registers
+; it reads are the handler's own; a timing knob raised until these reads fail
+; measures the margin the menu's item-type read lost in the NTSC misread.
+
+* = $0801
+!byte $0b,$08,$0a,$00,$9e,$32,$30,$36,$31,$00,$00,$00   ; 10 SYS2061
+
+RES = $c000
+
+start:
+    sei
+    lda #$00
+    ldx #$04
+-   sta RES,x
+    dex
+    bpl -
+loop:
+    ldy #$00
+inner:
+    lda $de05
+    cmp #$55
+    beq +
+    jsr wrong
++   lda $de06
+    cmp #$aa
+    beq +
+    jsr wrong
++   iny
+    bne inner
+    inc RES
+    bne loop
+    inc RES+1
+    jmp loop
+
+wrong:
+    inc RES+2
+    bne +
+    inc RES+3
+    bne +
+    inc RES+4
++   rts

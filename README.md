@@ -13,8 +13,9 @@ The firmware runs for hours without going anywhere, and you measure it.
 ```
 treadmill/            the package: station model, link, observation, firmware, driver, reports
   pytest_plugin.py    options, markers, fixtures, the run record
-  cli.py              treadmill run | exec | shell | stations | calibrate | harvest | screen | frame | score | viewer
+  cli.py              treadmill run | exec | shell | sweep | stations | calibrate | harvest | screen | frame | score | viewer
   driver.py           run, exec and shell as library calls
+  sweeps.py           the timing-knob sweep engine: knob x probe x search, and the margin it reports
 tests/                the hardware tests, one concern per file, selected by markers and --station
 selftest/             tests that need no hardware (fake board, rendered frames, config)
 scripts/              one-off investigation scripts for `treadmill exec`; kept, never part of the suite
@@ -111,6 +112,24 @@ the `*` the firmware's builder puts on a dirty tree. The flash is skipped
 when the board already runs that exact build; `--no-flash` builds without
 flashing. Any build with defines, a tag or a dirty tree is a variant and is
 recorded as one.
+
+## Sweeps
+
+`treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg` finds a
+bus timing knob's margin: the knob (`p`, `tp` or `nS_PLAprop`; any of the
+firmware's `t` knobs) walks from its default toward `--to` in `--step` steps
+until the probe fails, the edge is bisected down to `--fine`, the defaults are
+restored whatever happened, and the result is the last clean value, the first
+failing one and every point probed, as text or `--json` and as `sweep.json` in
+the run's folder. The TeensyROM cannot see its own read errors, so the probes
+are the C64's: `idread` launches a program that reads the TeensyROM's presence
+registers in a loop and counts wrong answers, read back by DMA over `--dwell`
+seconds per sample (a TR+); `menu` resets, lets the menu boot and compares it
+with its golden (any TR, by video). `--repeat N` takes several samples a
+point, so an intermittent edge is a rate, not a coin toss.
+`tests/sweep/test_tp_margin.py` runs the same sweep as a regression guard: the
+default must be clean, and a station that names a floor in its `[margins]`
+table (`nS_PLAprop = 200`) fails the test when reads go wrong below it.
 
 ## Scripting
 

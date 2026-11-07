@@ -147,6 +147,7 @@ def load_station(station_id: str, base: Path | None = None) -> Station:
         tr=tr,
         allow_eeprom_reset=bool(t.get("allow_eeprom_reset", False)),
         settings_baseline=dict(t.get("settings_baseline") or {}),
+        margins={str(k): int(v) for k, v in (t.get("margins") or {}).items()},
     )
     return replace(st, caps=capabilities(st))
 

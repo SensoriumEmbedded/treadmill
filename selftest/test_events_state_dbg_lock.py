@@ -74,9 +74,9 @@ def test_debug_letters_are_gated_on_defines(board_and_link):
     assert board.letters == []
     board.debug_defines = {"Dbg_SerTimChg"}
     dbg = DebugCommands(link, defines={"Dbg_SerTimChg"}, allow_eeprom_reset=True)
-    assert "set to 210" in dbg.set_knob("p", 210)
+    assert "Val Set to: 210" in dbg.set_knob("p", 210)
     assert board.knobs["p"] == 210 and board.letters[-1] == "tp210"
-    assert "restored" in dbg.restore_defaults() and board.knobs["p"] == 150
+    assert "Defaults set" in dbg.restore_defaults() and board.knobs["p"] == 150
     with pytest.raises(NotAllowed):
         dbg.set_knob("m", 10000)
     with pytest.raises(NotAllowed):

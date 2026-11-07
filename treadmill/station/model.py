@@ -131,6 +131,7 @@ class Station:
     tr: TRBoard
     allow_eeprom_reset: bool = False
     settings_baseline: Mapping[str, object] = field(default_factory=dict)
+    margins: Mapping[str, int] = field(default_factory=dict)   # knob name -> value a sweep must find clean
     caps: frozenset[str] = frozenset()
 
     def with_probe(self, kind: str, listener_on: bool = False,

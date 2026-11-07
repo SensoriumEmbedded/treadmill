@@ -1,6 +1,6 @@
 ---
 name: treadmill
-description: Drive TReadmill, the hardware-in-the-loop validation suite for TeensyROM firmware, from a Claude Code session. Covers which `treadmill` command fits which ask (run the hardware tests against a station, test a branch or a debug build, prove the plain-TR tier, run or draft an investigation script, poke a board from a shell, read a screen, calibrate or harvest a rig), how to read run.json and report.html, the --json and exit-code contract, and the go-ahead a board needs before it is flashed or driven. Use whenever the user wants to run hardware tests, validate firmware on a real C64 or C128, reproduce a bug on the bench, or asks about TReadmill, a station, a rig or a run.
+description: Drive TReadmill, the hardware-in-the-loop validation suite for TeensyROM firmware, from a Claude Code session. Covers which `treadmill` command fits which ask (run the hardware tests against a station, test a branch or a debug build, prove the plain-TR tier, sweep a bus timing knob for its margin, run or draft an investigation script, poke a board from a shell, read a screen, calibrate or harvest a rig), how to read run.json and report.html, the --json and exit-code contract, and the go-ahead a board needs before it is flashed or driven. Use whenever the user wants to run hardware tests, validate firmware on a real C64 or C128, measure a timing margin, reproduce a bug on the bench, or asks about TReadmill, a station, a rig or a run.
 ---
 
 # TReadmill from a session
@@ -31,6 +31,7 @@ Never write a port name, host, IP address or chip id into a committed file.
 | Prove the plain-TR tier on a TR+ station | `--caps-mask dma,screen_dma,reset_sense,keys_kernal` |
 | Some tests only | `--tests tests/smoke` (repeatable) or, after `--`, pytest's own `-k EXPR`, `-x`, `-v` |
 | How long a selection takes | `--estimate` (runs nothing) |
+| A timing knob's margin (how far `nS_PLAprop` can rise before reads fail) | `treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --json` (`--probe idread` on a TR+, `--probe menu` on any TR; `--to`, `--step`, `--fine`, `--repeat`, `--dwell`); the defaults are restored on exit; `sweep.json` in the run folder |
 | An investigation script under the harness | `treadmill exec --station <id> script.py [-- args] --json`; a `result` the script sets comes back |
 | Poke the board interactively | `treadmill shell --station <id>` (`link.ping()`, `screen.read().rows()`, `menu.open("/Games")`, `keys.press(F1)`, `dbg.letter("t")`) |
 | What is on the screen now | `treadmill screen --station <id> --json` (`--exact` prefers DMA, `--xcheck` compares both) |

@@ -24,10 +24,15 @@ LETTERS: dict[str, str | None] = {
     "e": None,              # settings to defaults: destructive
 }
 
-# The timing knobs behind 't' and how many digits GetDigits() reads for each.
-TIMING_KNOBS = {"m": 4, "r": 3, "p": 3, "s": 3, "h": 3}
-TIMING_NAMES = {"m": "nS_MaxAdj", "r": "nS_RWnReady", "p": "nS_PLAprop",
-                "s": "nS_DataSetup", "h": "nS_DataHold"}
+# The timing knobs behind 't' and how many digits GetDigits() reads for each,
+# as SerUSBIO.ino's case 't' lists them (the Kernal Replace knobs tx and tn
+# exist only on a TR+ build and are not here).
+TIMING_KNOBS = {"m": 4, "r": 3, "p": 3, "s": 3, "h": 3, "v": 3, "i": 3, "a": 3, "b": 3, "e": 3, "w": 3,
+                "y": 3, "k": 2}
+TIMING_NAMES = {"m": "nS_MaxAdj", "r": "nS_RWnReady", "p": "nS_PLAprop", "s": "nS_DataSetup",
+                "h": "nS_DataHold", "v": "nS_VICStart", "i": "nS_VICDHold", "a": "nS_DMAAssert",
+                "b": "nS_DMABAWait", "e": "nS_DMASetup", "w": "nS_DMADataHold", "y": "nS_DMADataSetup",
+                "k": "Cyc_KernProp"}
 
 TEXT_REPLY = (3.0, 0.3, 20.0)
 

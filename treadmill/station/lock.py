@@ -17,12 +17,14 @@ import sys
 import time
 from pathlib import Path
 
-from treadmill.errors import TreadmillError
+from treadmill.errors import EXIT_NO_STATION, TreadmillError
 
 HELD_ENV = "TREADMILL_LOCK_HELD"
 
 
 class RigBusy(TreadmillError):
+    code = EXIT_NO_STATION
+
     def __init__(self, rig: str, holder: str):
         super().__init__(f"rig {rig!r} is in use by {holder or 'another process'}")
         self.holder = holder

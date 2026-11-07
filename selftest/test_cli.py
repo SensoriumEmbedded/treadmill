@@ -39,6 +39,17 @@ def test_calibrate_reports_an_unreadable_frame(tmp_path: Path, capsys):
     assert "alike" in json.loads(capsys.readouterr().err)["error"]
 
 
+def test_the_cli_loads_without_the_capture_stack():
+    """`treadmill stations` and a usage error must not pay for OpenCV: the
+    driver and the video tools are imported inside their commands."""
+    import subprocess
+    import sys
+
+    code = ("import sys, treadmill.cli; treadmill.cli.build_parser(); "
+            "sys.exit(1 if 'cv2' in sys.modules or 'treadmill.driver' in sys.modules else 0)")
+    assert subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).returncode == 0
+
+
 def test_usage_errors_exit_two():
     with pytest.raises(SystemExit) as e:
         main(["harvest"])                      # --station is required

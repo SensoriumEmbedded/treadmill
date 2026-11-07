@@ -11,27 +11,61 @@ The firmware runs for hours without going anywhere, and you measure it.
 ## Layout
 
 ```
-treadmill/            the package: station model, link, observation, firmware, sweeps, reports
-  pytest_plugin.py    options, markers, fixtures
-  cli.py              treadmill run | matrix | sweep | shell | exec | calibrate | harvest | viewer | bisect | export
+treadmill/            the package: station model, link, observation, firmware, driver, reports
+  pytest_plugin.py    options, markers, fixtures, the run record
+  cli.py              treadmill run | exec | shell | stations | calibrate | harvest | screen | frame | score | viewer
+  driver.py           run, exec and shell as library calls
 tests/                the hardware tests, one concern per file, selected by markers and --station
-selftest/             tests that need no hardware (fake board, recorded frames, config)
+selftest/             tests that need no hardware (fake board, rendered frames, config)
+scripts/              one-off investigation scripts for `treadmill exec`; kept, never part of the suite
 data/                 rigs, stations, calibrations, glyph banks, goldens, SD fixtures (private parts are git-ignored)
+reports/              one folder per run: run.json, report.html, one folder per test
 ```
 
 ## Quick start
 
 ```
 pip install -e .
-treadmill stations                      # the stations data/stations/*.toml describes
-pytest                                  # the self-tests, no hardware
-pytest tests --station <id>             # the hardware tests against one station
+treadmill stations                                   # the stations data/stations/*.toml describes
+TREADMILL_FW_REPO=<TeensyROM checkout> pytest        # the self-tests, no hardware (about eight minutes)
+treadmill run --station <id>                         # the hardware tests against the firmware on the board
+treadmill run --station <id> --fw ref=main           # build main for the board, flash it, verify it, then test
+treadmill run --station <id> --caps-mask dma,reset_sense,keys_kernal   # the plain-TR tier on a TR+ station
+treadmill run --station <id> --fw ref=main --define Dbg_SerTimChg --tests tests/debug
+treadmill run --station <id> -- -k "identity or reset" -x            # after --, pytest's own arguments
+treadmill exec --station <id> scripts/example.py     # a script with the station's objects as globals
+treadmill shell --station <id>                       # the same names at a Python prompt
 ```
 
+Every command takes `--json` (the shell excepted) and exits 0 when all is
+well, 1 when what ran is not right (a failed test, a build that broke), 2
+when the request is wrong (an option, a firmware spec, a station file) and 4
+when the station could not be had (no board with that chip id, a busy rig, a
+port that will not open). Under `--json` the data is on stdout and
+everything else on stderr.
+
+## Rigs and stations
+
 A station is a rig (capture device and optional controls) plus a machine from
-the registry plus a TeensyROM board. See `data/rigs/example.toml` and
-`data/stations/example.toml`; copy them without the `example` and fill in your
-own. Files that name your own boards and machines stay out of git.
+the registry plus a TeensyROM board. To add one:
+
+1. Copy `data/rigs/rigA.example.toml` to `data/rigs/<rig>.toml`: the capture
+   device and mode (`treadmill frame --station ... --raw` shows what it
+   delivers), `firmware_checkout` for the TeensyROM checkout whose tools
+   build and flash, and the power or keyboard backends when the rig has them.
+2. Copy `data/stations/example.example.toml` to `data/stations/<id>.toml`:
+   the rig, the machine (a registry id from the validation tracker's
+   `systems.csv`, named in `data/registry.toml`, or an inline `[machine]`
+   table) and the board's chip id as its version banner prints it. Name
+   stations descriptively (`rigA-sys29-trplus`); `treadmill stations` shows
+   the capabilities each one has.
+3. `treadmill calibrate --station <id>` finds the text area in the picture
+   from the menu's banner row, and `treadmill harvest --station <id>` builds
+   the glyph bank for the rig's capture class from the suite's own program.
+   `treadmill screen --station <id> --xcheck` then shows how far the video
+   read is from the DMA read.
+
+Files that name your own boards and machines stay out of git.
 
 ## The hardware tests
 
@@ -44,12 +78,71 @@ build lacks it; `--caps-mask dma,keys_kernal` takes capabilities away to prove
 the plain-TR tier on a richer station, and `--fw-defines` names the defines a
 build flashed by other means carries. Screen goldens live in `tests/golden/`
 (`--golden-dir` for another set); the SD fixtures a test needs are put under
-`/treadmill` on the card by the run itself. Every run leaves what each test saw
-under `reports/<timestamp>/<test>/`.
+`/treadmill` on the card by the run itself.
+
+### Adding a test
+
+A test is a function in a file under `tests/` that takes the fixtures it
+needs: `at_menu` (the board, at the menu before and after; the invariants
+after it: no crash report, no boot banner, no unknown command), `link` (the
+remote protocol), `screen` (the screen through the channel policy: video
+unless `exact=True` and DMA is allowed; every read is cross-checked against
+DMA where both exist), `menu` (the main menu driver), `keys`, `dbg` (the
+debug letters, gated on the build's defines), `programs("hello")` (an
+assembled C64 program), `sd_card` and `sd_fixtures` (the generated type set,
+on the card), `goldens` (`goldens.check(read, "menu/root")`), `artifacts` (the
+test's folder). Mark what it needs; declare its length with
+`@pytest.mark.duration(minutes)` so `--estimate` can add it up. The fake
+board runs the whole tree offline (`selftest/test_hw_tests_offline.py`), so
+a new test should pass or skip there before it meets a board; what the fake
+cannot show (timing, a real card, the picture) is the bench's to confirm.
+
+## Special builds
+
+`--fw` names the firmware under test: `ref=<git ref>` builds it in a
+disposable worktree of the configured checkout (cached by commit, target,
+defines and tag), `path=<checkout>` builds a tree as it is, `hex=<file>` uses
+a prebuilt image, and `none` (the default) tests whatever the board carries.
+`--define NAME` (repeatable) compiles a debug define in; the build is tagged
+with the define's mark (`Dbg_SerTimChg` gives `v0.9-tim`) so the banner and
+every version reply say what the build is, and `--tag` names it otherwise. A
+checkout with uncommitted changes needs `--allow-dirty` and its build carries
+the `*` the firmware's builder puts on a dirty tree. The flash is skipped
+when the board already runs that exact build; `--no-flash` builds without
+flashing. Any build with defines, a tag or a dirty tree is a variant and is
+recorded as one.
+
+## Scripting
+
+`treadmill exec --station <id> script.py [-- args]` opens the station the way
+a test session does (the firmware under test prepared, the rig held, the
+board at the menu unless `--as-is`) and runs the script as `__main__` with
+these names as globals: `session`, `station`, `board`, `link`, `screen`,
+`menu`, `keys`, `dbg`, `video`, `firmware`, `artifacts` (a folder of the run
+to write into), `run_dir`, `log`. A `result` the script leaves is reported
+(`--json` returns it), and what the board said meanwhile lands in the run's
+folder like a test's. `treadmill shell --station <id>` gives the same names at
+a prompt. `scripts/example.py` is a ten-line example.
+
+From Python, `treadmill.session.open_station("<id>")` returns the same
+session (`board`, `link`, `screen_channel()`, `menu()`, `keys()`, `dbg()`),
+and `treadmill.driver.run_tests(RunOptions(...))` is what `treadmill run` does.
+
+## Reports
+
+Every run leaves `reports/<timestamp>/`: `run.json` (station, board, the
+firmware spec with its commit, dirty hash, defines, tag, hex and stamp,
+capabilities, capture mode, calibration residual, the suite's own commit, the
+options, every test's outcome, duration and message, the summary and exit
+status), `report.html` rendered from it with each failure's serial tail,
+golden diff and frame strip, and one folder per test with `serial.log`,
+`events.json`, every screen a golden check read and the diff when it
+differed, and `xcheck.json` when video was cross-checked against DMA.
 
 ## Conventions
 
-- Every command takes `--json` and exits non-zero on failure.
-- Every run writes `reports/<timestamp>/run.json` and its results to `data/results.sqlite`.
-- The suite refuses to start when another program holds the station's serial port.
+- Every command but the shell takes `--json`, and every one exits non-zero on failure; the codes are above.
+- Every run writes `reports/<timestamp>/run.json` and `report.html`; `data/results.sqlite` comes with the nightly runs.
+- The suite refuses to start when another program holds the station's rig or serial port.
 - DMA commands are never sent to a plain TR; debug letters are never sent to a build without their define.
+- Nothing is flashed or driven without the person's go-ahead; the station files that name boards stay private.

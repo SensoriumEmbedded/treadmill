@@ -36,6 +36,36 @@ def test_reconnect_probes_again_and_keeps_the_caps(lab):  # noqa: F811
         board.close()
 
 
+def test_open_on_a_port_attaches_the_ladder_s_upper_rungs(lab, monkeypatch):  # noqa: F811
+    """On a real port the board can always be found again by chip id; the
+    USB reboot needs the run to know the hex and the checkout that flashed it."""
+    from pathlib import Path
+
+    import treadmill.board as board_module
+    from treadmill.firmware.hexinfo import HexInfo
+    from treadmill.firmware.prepare import FirmwareRun
+    from treadmill.firmware.spec import parse_spec
+    from treadmill.link.discover import Found
+
+    streams = iter([start_fake_board()[1], start_fake_board()[1]])
+    monkeypatch.setattr(board_module, "find_port", lambda uid, hint=None, timeout=0.0: Found("COM0", uid, "banner"))
+    monkeypatch.setattr(board_module, "open_serial", lambda port: next(streams))
+    station = load_station("s1")
+    board = Board.open(station)
+    try:
+        assert board.reconnect_hook is not None and board.reboot_hook is None
+    finally:
+        board.close()
+    run = FirmwareRun(parse_spec("hex=x.hex"), hex=HexInfo(Path("x.hex"), "tr-plus", "TeensyROM+ v0.9",
+                                                             "Oct 30 2026, 10:00:00", "Oct 30 2026", "10:00:00"),
+                      primary=Path("."))
+    board = Board.open(station, firmware=run)
+    try:
+        assert board.reconnect_hook is not None and board.reboot_hook is not None
+    finally:
+        board.close()
+
+
 def test_open_holds_nothing_when_the_probe_fails(lab):  # noqa: F811
     _, stream = start_fake_board()
     stream.close()                                      # a port that opens, with nothing answering through it

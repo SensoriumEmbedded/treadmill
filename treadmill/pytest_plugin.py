@@ -1,44 +1,46 @@
-"""The pytest side of TReadmill: options, markers, fixtures, invariants.
+"""The pytest side of TReadmill: options, markers, fixtures, invariants, the
+run record.
 
 Every hardware test gets a ``board`` at the menu, a per-test artifact folder
 with the serial log and events of its run, and after it the invariants that
 hold whatever it asserted: no crash report, no unexpected boot banner, no
-unknown-command reply, and the board back at the menu.
+unknown-command reply, and the board back at the menu. The session leaves
+``run.json`` (what ran against what, and how every test came out) and
+``report.html`` rendered from it in the run's folder.
 """
 
 from __future__ import annotations
 
-import os
-import platform
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from treadmill import __version__
 from treadmill.board import Board, Wedged
-from treadmill.c64.keys import KernalKeys, Keys
+from treadmill.c64.keys import Keys
 from treadmill.c64.menu import MenuDriver
-from treadmill.firmware.build import BuildError, build
-from treadmill.firmware.checkout import CheckoutError
-from treadmill.firmware.flash import REAPPEAR_S, FlashError, flash, relaunch
-from treadmill.firmware.hexinfo import HexInfo, inspect_hex
-from treadmill.firmware.spec import FirmwareSpec, SpecError, parse_spec
+from treadmill.firmware.prepare import FirmwareError, FirmwareRun, prepare_firmware, primary_checkout
+from treadmill.firmware.spec import SpecError, parse_spec
 from treadmill.fixtures.sdcard import FIXTURE_ROOT, FixtureError, provision, type_set
-from treadmill.link import DebugCommands, Link, LinkError, NotFound, TransportError, find_port, open_serial
+from treadmill.link import DebugCommands, Link, LinkError, TransportError
 from treadmill.observe.calibrate import Calibration, CalibrationError
-from treadmill.observe.capture import CaptureError, FrameSource, SyntheticSource, save_strip
+from treadmill.observe.capture import CaptureError, FrameSource, save_strip
 from treadmill.observe.channels import XCHECK_LIMIT, ScreenChannel, ScreenRead, XCheck
 from treadmill.observe.glyphs import GlyphBank
 from treadmill.observe.golden import Golden, compare, diff_text, save_golden
 from treadmill.programs.build import AssembleError, assemble
-from treadmill.report import RunDir
-from treadmill.session import load_bank, load_or_calibrate, open_video
+from treadmill.report import (
+    RunDir, describe_board, describe_station, host_record, render_report, write_board_artifacts,
+)
+from treadmill.session import (
+    FAKE_ENV, dbg_for, fake_requested, keys_for, load_bank, load_or_calibrate, menu_for, open_video,  # noqa: F401
+)
 from treadmill.station import ConfigError, load_station
+from treadmill.station.lock import RigBusy, RigLock
 from treadmill.station.model import unknown_caps
 
-FAKE_ENV = "TREADMILL_FAKE_BOARD"   # the self-tests: a fake board instead of a port
+RUN_ATTR = "_treadmill_run"          # the RunDir on the pytest config, for hooks and fixtures alike
+FAKE_ATTR = "_treadmill_fake"
 
 
 def _log(message: str) -> None:
@@ -59,6 +61,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="print the expected duration of the selected tests and exit")
     g.addoption("--reports", action="store", default="reports",
                 help="where run folders go (default: reports/)")
+    g.addoption("--run-dir", action="store", default=None,
+                help="this run's folder, made by the driver; default: <reports>/<timestamp>")
     g.addoption("--attended", action="store_true", default=False,
                 help="a person is at the bench: manual power control may prompt")
     g.addoption("--fw", action="store", default="none",
@@ -86,6 +90,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    if config.getoption("--station") and not config.getoption("--estimate") and not config.getoption("collectonly"):
+        config.pluginmanager.register(_RunRecorder(config), "treadmill_run_recorder")
     for line in (
         "needs(*caps): station capabilities the test requires",
         "needs_fw(*defines): firmware defines the flashed build must carry",
@@ -129,22 +135,76 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         items.clear()
 
 
+# -- the run record -------------------------------------------------------------
+
+def _run_record(config: pytest.Config) -> RunDir:
+    """The run's folder and record, made once per session."""
+    rd = getattr(config, RUN_ATTR, None)
+    if rd is None:
+        chosen = config.getoption("--run-dir")
+        rd = RunDir(path=Path(chosen)) if chosen else RunDir(Path(config.getoption("--reports")))
+        rd.meta.update({
+            **host_record(config.invocation_params.args),
+            "options": {k: config.getoption(k) for k in
+                        ("--station", "--caps-mask", "--soak", "--include-tolerant", "--fw", "--fw-target",
+                         "--define", "--tag", "--allow-dirty", "--no-flash", "--fw-defines", "--no-video",
+                         "--no-xcheck")},
+        })
+        setattr(config, RUN_ATTR, rd)
+    return rd
+
+
+class _RunRecorder:
+    """Registered for a hardware run (``--station`` given): keeps the run
+    record from the first hook to the last, whatever the tests do."""
+
+    def __init__(self, config: pytest.Config):
+        self.config = config
+
+    def pytest_sessionstart(self, session: pytest.Session) -> None:
+        _run_record(self.config)
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        """Every phase of every test folds into one record: failed in the
+        call, error in setup or teardown, skipped, else passed."""
+        rd = _run_record(self.config)
+        rec = rd.tests.setdefault(report.nodeid, {"nodeid": report.nodeid, "outcome": "passed",
+                                                  "duration": 0.0, "message": None})
+        rec["duration"] += report.duration
+        if report.failed:
+            if rec["outcome"] in ("failed", "error"):
+                # A failure in the call and another in teardown (the invariants, say): the first is the
+                # outcome, the second is added so neither is lost.
+                rec["message"] = f"{rec['message']}\n\n--- {report.when} ---\n{report.longreprtext[-2000:]}"
+            else:
+                rec["outcome"] = "failed" if report.when == "call" else "error"
+                rec["failed_in"] = report.when
+                rec["message"] = report.longreprtext[-4000:]
+        elif report.skipped and rec["outcome"] == "passed":
+            rec["outcome"] = "skipped"
+            reason = report.longrepr[2] if isinstance(report.longrepr, tuple) else str(report.longrepr)
+            rec["message"] = reason.removeprefix("Skipped: ")
+
+    def pytest_keyboard_interrupt(self, excinfo) -> None:
+        """Also called for ``pytest.exit()``: a firmware or station problem
+        that ended the session before any test is the run's abort."""
+        _run_record(self.config).meta["aborted"] = str(excinfo.value)
+
+    def pytest_sessionfinish(self, session: pytest.Session, exitstatus: int) -> None:
+        rd = _run_record(self.config)
+        rd.finish(int(exitstatus))
+        rd.write_run()
+        try:
+            render_report(rd.path)
+        except Exception as e:  # noqa: BLE001 - the record is written; a report that will not render is a line
+            print(f"[treadmill] report.html not rendered: {e}")
+
+
 # -- fixtures ---------------------------------------------------------------
 
 @pytest.fixture(scope="session")
 def run_dir(request: pytest.FixtureRequest) -> RunDir:
-    rd = RunDir(Path(request.config.getoption("--reports")))
-    rd.meta.update({
-        "suite": __version__,
-        "python": platform.python_version(),
-        "host": platform.node(),
-        "options": {k: request.config.getoption(k) for k in
-                    ("--station", "--caps-mask", "--soak", "--include-tolerant", "--fw", "--fw-target",
-                     "--define", "--tag", "--allow-dirty", "--no-flash", "--fw-defines")},
-    })
-    yield rd
-    rd.meta["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    rd.write_run()
+    return _run_record(request.config)
 
 
 @pytest.fixture(scope="session")
@@ -159,34 +219,12 @@ def station(request: pytest.FixtureRequest):
         pytest.exit(f"station {station_id!r}: {e}", returncode=2)
 
 
-@dataclass
-class FirmwareRun:
-    """What the run built and flashed, or found on the board."""
-    spec: FirmwareSpec
-    hex: HexInfo | None = None
-    defines: tuple[str, ...] = ()
-    primary: Path | None = None
-    flashed: bool = False
-    cached: bool = False
-
-
-def _primary_checkout(station) -> Path | None:
-    where = station.rig.firmware_checkout or os.environ.get("TREADMILL_FW_REPO")
-    return Path(where) if where else None
-
-
-def _current_banner(station):
-    """A quick look at the board before any flash: its kind and build."""
-    found = find_port(station.tr.uid, station.tr.port_hint)
-    with Link(open_serial(found.port)) as link:
-        image = link.fw_check()
-        return (link.banner() if image else None), found.port
-
-
 @pytest.fixture(scope="session")
 def firmware(request: pytest.FixtureRequest, station, run_dir: RunDir) -> FirmwareRun:
     """Build, tag, flash and verify the firmware under test before the board
-    is opened; with --fw none, only record what the board already carries."""
+    is opened; with --fw none, only record what the board already carries.
+    The rig lock is taken here and held through the run, so the flasher and
+    the board share one hold."""
     opt = request.config.getoption
     try:
         spec = parse_spec(opt("--fw"), target=opt("--fw-target"), defines=tuple(opt("--define")),
@@ -194,84 +232,46 @@ def firmware(request: pytest.FixtureRequest, station, run_dir: RunDir) -> Firmwa
     except SpecError as e:
         pytest.exit(str(e), returncode=2)
     declared = tuple(d for d in opt("--fw-defines").split(",") if d)
-    run = FirmwareRun(spec, defines=declared, primary=_primary_checkout(station))
-    run_dir.meta["firmware"] = {"spec": spec.describe(), "variant": spec.is_variant}
-    if spec.source_kind == "none" or os.environ.get(FAKE_ENV):
-        return run
-    if run.primary is None:
-        pytest.exit("no firmware checkout: set the rig's firmware_checkout or TREADMILL_FW_REPO", returncode=2)
     try:
-        current, port = _current_banner(station)
-        target = spec.target
-        if target == "auto":
-            if current is None or current.kind is None:
-                pytest.exit("--fw-target auto needs a board that answers; name tr or tr-plus", returncode=4)
-            target = current.kind
-        if spec.source_kind == "hex":
-            run.hex = inspect_hex(spec.source)
+        lock = RigLock(station.rig.id, wait=5.0).acquire()
+    except RigBusy as e:
+        pytest.exit(f"station {station.id}: {e}", returncode=e.code)
+    try:
+        if fake_requested():
+            run = FirmwareRun(spec, defines=declared, primary=primary_checkout(station))
+            run.record = {"spec": spec.describe(), "variant": spec.is_variant, "defines": declared}
         else:
-            built = build(spec, run.primary, target, log=lambda m: print(f"[firmware] {m}"))
-            run.hex, run.cached = built.hex, built.cached
-            run.defines = spec.defines
-            run_dir.meta["firmware"].update({
-                "commit": built.checkout.commit, "describe": built.checkout.describe,
-                "dirty": built.checkout.dirty, "diff_hash": built.checkout.diff_hash,
-                "cache_key": built.key, "cached": built.cached, "memory": built.memory_lines,
-            })
-        run_dir.meta["firmware"].update({
-            "hex": str(run.hex.path), "version": run.hex.version, "stamp": run.hex.stamp,
-            "tag": run.hex.tag, "hex_dirty": run.hex.dirty, "defines": run.defines, "target": target,
-        })
-        if run.hex.kind and run.hex.kind != target:
-            pytest.exit(f"{run.hex.path.name} is a {run.hex.kind} image; the target is {target}", returncode=2)
-        if not opt("--no-flash"):
-            flashed = flash(run.hex, station.tr.uid, run.primary, port_hint=port, current=current,
-                            log=lambda m: print(f"[firmware] {m}"))
-            run.flashed = not flashed.skipped
-            run_dir.meta["firmware"]["flashed"] = run.flashed
-    except (BuildError, CheckoutError, FlashError, SpecError, NotFound, TransportError, LinkError) as e:
-        pytest.exit(f"firmware: {e}", returncode=1)
-    return run
+            try:
+                run = prepare_firmware(spec, station, declared_defines=declared, flash_board=not opt("--no-flash"),
+                                       log=lambda m: print(f"[firmware] {m}"))
+            except FirmwareError as e:
+                pytest.exit(str(e), returncode=e.code)
+        run_dir.meta["firmware"] = run.record
+        yield run
+    finally:
+        lock.release()
 
 
 @pytest.fixture(scope="session")
 def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: FirmwareRun) -> Board:
-    """The station's board: rig locked, port open, probed, capabilities final."""
+    """The station's board: rig locked, port open, probed, capabilities final,
+    the recovery ladder's rungs attached."""
     factory = None
-    if os.environ.get(FAKE_ENV):
+    if fake_requested():
         from selftest.fake_board import start_fake_board
         fake, stream = start_fake_board(debug_defines=set(firmware.defines))   # the build the run claims
         factory = lambda: Link(stream)  # noqa: E731
-        request.config._treadmill_fake = fake  # type: ignore[attr-defined]
+        setattr(request.config, FAKE_ATTR, fake)
     mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
     try:
         b = Board.open(station, attended=request.config.getoption("--attended"), link_factory=factory,
-                       fw_defines=firmware.defines, caps_mask=mask)
+                       fw_defines=firmware.defines, caps_mask=mask, firmware=firmware)
     except Exception as e:
         pytest.exit(f"station {station.id}: {e}", returncode=4)
-    if factory is None:
-        uid, hint = station.tr.uid, station.tr.port_hint
-
-        def reconnect() -> Link:
-            found = find_port(uid, hint, timeout=REAPPEAR_S)
-            return Link(open_serial(found.port))
-        b.reconnect_hook = reconnect
-        if firmware.hex is not None and firmware.primary is not None:
-            b.reboot_hook = lambda: relaunch(firmware.hex, uid, firmware.primary, hint)
-    run_dir.meta["station"] = {
-        "id": b.station.id, "rig": b.station.rig.id, "machine": b.station.machine.id,
-        "model": b.station.machine.model, "region": b.station.machine.region,
-        "caps": sorted(b.station.caps), "tr_uid": b.station.tr.uid, "tr_kind": b.station.tr.kind,
-    }
-    run_dir.meta["board"] = {
-        "image": b.image,
-        "version": b.banner.version if b.banner else None,
-        "built": b.banner.built if b.banner else None,
-        "tag": b.banner.tag if b.banner else None,
-        "dirty": b.banner.dirty if b.banner else None,
-        "machine_line": f"{b.banner.machine} {b.banner.video} {b.banner.hz}" if b.banner else None,
-    }
+    run_dir.meta["station"] = describe_station(b)
+    run_dir.meta["board"] = describe_board(b)
     yield b
+    run_dir.meta["recoveries"] = list(b.recoveries)
     b.close()
 
 
@@ -286,17 +286,9 @@ def at_menu(request: pytest.FixtureRequest, board: Board, run_dir: RunDir):
     except Wedged as e:
         pytest.skip(f"station wedged: {e}")
     t0 = time.monotonic()
-    tap_start = len(board.link.stream.tap.chunks)
+    mark = len(board.link.stream.tap.chunks)
     yield board
-    # What the board said during the test, including lines nothing has read yet.
-    stale = board.link.stream.drain(0.3)
-    if stale:
-        board.events.feed(stale)
-    events = board.events.since(t0)
-    folder = run_dir.for_test(request.node.nodeid)
-    raw = b"".join(c for _, c in board.link.stream.tap.chunks[tap_start:])
-    (folder / "serial.log").write_bytes(raw)
-    run_dir.write_json("events.json", [e for e in events], folder)
+    events = write_board_artifacts(run_dir.for_test(request.node.nodeid), board, t0, mark)
     kinds = {e.kind for e in events}
     broken = [k for k in ("crash_report", "boot_banner", "unknown_command") if k in kinds]
     try:
@@ -328,9 +320,9 @@ def video(request: pytest.FixtureRequest, board: Board, run_dir: RunDir) -> Fram
         _drop_video(board, run_dir, "--no-video")
         yield None
         return
-    if os.environ.get(FAKE_ENV):
+    if fake_requested():
         from selftest.synth import fake_frame_source
-        src = fake_frame_source(request.config._treadmill_fake)  # type: ignore[attr-defined]
+        src = fake_frame_source(getattr(request.config, FAKE_ATTR))
         run_dir.meta["video"] = {"available": True, **src.describe()}
         yield src
         src.close()
@@ -351,7 +343,7 @@ def glyph_bank(request: pytest.FixtureRequest, board: Board, video: FrameSource 
                run_dir: RunDir) -> GlyphBank | None:
     if video is None:
         return None
-    if os.environ.get(FAKE_ENV):
+    if fake_requested():
         from selftest.synth import calibrated, harvested_bank
         return harvested_bank(calibrated())
     bank = load_bank(board.station, request.config.getoption("--chargen"), log=_log)
@@ -368,7 +360,7 @@ def calibration(board: Board, video: FrameSource | None, glyph_bank: GlyphBank |
                 run_dir: RunDir) -> Calibration | None:
     if video is None or glyph_bank is None:
         return None
-    if os.environ.get(FAKE_ENV):
+    if fake_requested():
         from selftest.synth import calibrated
         return calibrated()
     try:
@@ -420,23 +412,22 @@ def artifacts(request: pytest.FixtureRequest, run_dir: RunDir) -> Path:
 def keys(at_menu: Board) -> Keys:
     """A way to press keys on the station: the KERNAL buffer by DMA on a TR+
     (the keyboard board of a rig that has one comes with Phase 2)."""
-    if not at_menu.station.has("keys_kernal"):
+    press = keys_for(at_menu)
+    if press is None:
         pytest.skip(f"station {at_menu.station.id} lacks keys_kernal")
-    return KernalKeys(at_menu)
+    return press
 
 
 @pytest.fixture
 def menu(at_menu: Board, screen: ScreenChannel) -> MenuDriver:
     """The main menu through the screen channel, able to move when the station presses keys."""
-    press = KernalKeys(at_menu) if at_menu.station.has("keys_kernal") else None
-    return MenuDriver(screen, press, board=at_menu)
+    return menu_for(at_menu, screen)
 
 
 @pytest.fixture
 def dbg(at_menu: Board) -> DebugCommands:
     """The single-letter debug commands, gated on the flashed build's defines."""
-    defines = {c[len("fw:"):] for c in at_menu.station.caps if c.startswith("fw:")}
-    return DebugCommands(at_menu.link, defines, allow_eeprom_reset=at_menu.station.allow_eeprom_reset)
+    return dbg_for(at_menu)
 
 
 @pytest.fixture(scope="session")

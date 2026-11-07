@@ -5,7 +5,9 @@
 the capture when the rig has one, loads or makes the calibration, loads the
 glyph bank, and hands back a ``Session`` whose ``screen`` reads through the
 policy of section 2.2. The pytest fixtures build the same objects through
-the same helpers, so a test and a script see one behavior.
+the same helpers, so a test and a script see one behavior. With
+``TREADMILL_FAKE_BOARD`` set, the station is the self-tests' fake board and
+its rendered screen, so every way in works with no hardware.
 """
 
 from __future__ import annotations
@@ -13,8 +15,12 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from treadmill.board import Board
+from treadmill.c64.keys import KernalKeys, Keys
+from treadmill.c64.menu import MenuDriver
+from treadmill.link import DebugCommands
 from treadmill.observe.calibrate import (
     LAYOUT_MENU, Calibration, CalibrationError, calibration_path, find_text_area, refine, with_bleed,
 )
@@ -24,7 +30,15 @@ from treadmill.observe.glyphs import GlyphBank, GlyphError, bootstrap_bank, load
 from treadmill.station import Station, load_station
 from treadmill.station.config import data_dir
 
+if TYPE_CHECKING:
+    from treadmill.firmware.prepare import FirmwareRun
+
 CHARGEN_ENV = "TREADMILL_CHARGEN"
+FAKE_ENV = "TREADMILL_FAKE_BOARD"     # the self-tests: a fake board instead of a port
+
+
+def fake_requested() -> bool:
+    return bool(os.environ.get(FAKE_ENV))
 
 
 def bank_path(station: Station, root: Path | None = None) -> Path:
@@ -99,6 +113,25 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
     return cal
 
 
+# -- the station's hands and tools, for fixtures and scripts alike ---------------
+
+def keys_for(board: Board) -> Keys | None:
+    """A way to press keys on the station, or None when it has none: the
+    KERNAL buffer by DMA on a TR+ (a rig's keyboard board comes with Phase 2)."""
+    return KernalKeys(board) if board.station.has("keys_kernal") else None
+
+
+def menu_for(board: Board, screen: ScreenChannel) -> MenuDriver:
+    """The main menu through the screen channel, able to move when the station presses keys."""
+    return MenuDriver(screen, keys_for(board), board=board)
+
+
+def dbg_for(board: Board) -> DebugCommands:
+    """The single-letter debug commands, gated on the flashed build's defines."""
+    defines = {c[len("fw:"):] for c in board.station.caps if c.startswith("fw:")}
+    return DebugCommands(board.link, defines, allow_eeprom_reset=board.station.allow_eeprom_reset)
+
+
 @dataclass
 class Session:
     """An open station: board, optional video, and the screen channel."""
@@ -124,6 +157,15 @@ class Session:
         return ScreenChannel(self.board.link, self.video if self.has_video else None, self.calibration,
                              self.bank, dma_allowed=self.board.dma_allowed, on_xcheck=self.xchecks.append)
 
+    def keys(self) -> Keys | None:
+        return keys_for(self.board)
+
+    def menu(self, screen: ScreenChannel | None = None) -> MenuDriver:
+        return menu_for(self.board, screen or self.screen_channel())
+
+    def dbg(self) -> DebugCommands:
+        return dbg_for(self.board)
+
     def close(self) -> None:
         try:
             if self.video is not None:
@@ -138,12 +180,36 @@ class Session:
         self.close()
 
 
+def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...], caps_mask, video: bool) -> Session:
+    """The self-tests' fake board as a station: its rendered screen is the
+    capture, with the synthetic calibration and bank that read it."""
+    from selftest.fake_board import start_fake_board
+    from selftest.synth import calibrated, fake_frame_source, harvested_bank
+    from treadmill.link import Link
+
+    fake, stream = start_fake_board(debug_defines=set(fw_defines))
+    board = Board.open(station, attended=attended, link_factory=lambda: Link(stream),
+                       fw_defines=fw_defines, caps_mask=caps_mask)
+    if not video:
+        board.mask({"video"})
+        return Session(board, None, None, None)
+    cal = calibrated()
+    return Session(board, fake_frame_source(fake), cal, harvested_bank(cal))
+
+
 def open_station(station_id: str, *, attended: bool = False, video: bool = True, chargen: str | None = None,
-                 calibrate: bool = True, log=print) -> Session:
+                 calibrate: bool = True, firmware: "FirmwareRun | None" = None,
+                 caps_mask: set[str] | frozenset[str] = frozenset(), log=print) -> Session:
     """Lock, open and probe the station; open its capture and the video
-    channel's calibration and bank where they exist."""
+    channel's calibration and bank where they exist. ``firmware`` is what
+    ``prepare_firmware()`` put on the board, or found there: its defines
+    become ``fw:`` capabilities and its hex gives the recovery ladder its
+    reboot rung."""
     station = load_station(station_id)
-    board = Board.open(station, attended=attended)
+    fw_defines = tuple(firmware.defines) if firmware is not None else ()
+    if fake_requested():
+        return _open_fake(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, video=video)
+    board = Board.open(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, firmware=firmware)
     src = bank = cal = None
     try:
         src = open_video(board.station, log) if video else None

@@ -1,21 +1,22 @@
 """``Board``: a station's TeensyROM, open for a whole run.
 
 It owns the rig lock, the serial link, the event log and the recovery
-ladder, and it is what the pytest fixtures hand to tests. The ladder, run
-before every test, climbs only as far as it must: a reset; then the 134-baud
-USB reboot with a loader relaunch of the firmware already on the board, when
-a flasher is attached (step 4 of the plan); then a mains cycle when the rig
-has power control; else the station is marked wedged and the rest of the run
-skips with that reason.
+ladder, and it is what the pytest fixtures and the driver's ``exec`` and
+``shell`` hand out. The ladder, run before every test, climbs only as far as
+it must: a reset; then the 134-baud USB reboot with a loader relaunch of the
+firmware already on the board, when the run knows which hex that is; then a
+mains cycle when the rig has power control; else the station is marked wedged
+and the rest of the run skips with that reason.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from treadmill.errors import TreadmillError
+from treadmill.firmware.flash import REAPPEAR_S, relaunch
 from treadmill.link import Link, LinkError, Refused, TransportError, find_port, open_serial
 from treadmill.link.banner import Banner
 from treadmill.link.state import MENU_READY, State, derive_state
@@ -23,6 +24,9 @@ from treadmill.link.unsolicited import EventLog
 from treadmill.station.lock import RigLock
 from treadmill.station.model import Station
 from treadmill.station.power import Power, PowerUnavailable, make_power
+
+if TYPE_CHECKING:
+    from treadmill.firmware.prepare import FirmwareRun
 
 BOOT_POLL_S = 0.5
 C128_RESET_HOLD_S = 0.25        # no DMA within ~80 ms of a C128 reset release (Constraints.md); margin on top
@@ -43,7 +47,7 @@ class Board:
     banner: Banner | None = None
     image: str | None = None
     wedged_reason: str | None = None
-    # Step 4 attaches these: reboot the Teensy without reflashing, then reconnect.
+    # The ladder's upper rungs: reboot the Teensy without reflashing, then find the board again.
     reboot_hook: Callable[[], None] | None = None
     reconnect_hook: Callable[[], Link] | None = None
     recoveries: list[str] = field(default_factory=list)
@@ -60,11 +64,16 @@ class Board:
     @classmethod
     def open(cls, station: Station, *, lock_wait: float = 5.0, attended: bool = False,
              link_factory: Callable[[], Link] | None = None, fw_defines: tuple[str, ...] = (),
-             caps_mask: set[str] | frozenset[str] = frozenset()) -> "Board":
-        """Lock the rig, find the board by chip id, open it and probe it.
+             caps_mask: set[str] | frozenset[str] = frozenset(),
+             firmware: "FirmwareRun | None" = None) -> "Board":
+        """Lock the rig, find the board by chip id, open it and probe it, with
+        the recovery ladder's upper rungs attached: a reconnect by chip id,
+        and, when ``firmware`` knows the hex on the board and the checkout
+        whose flasher put it there, the USB reboot that relaunches it.
         ``link_factory`` replaces discovery and the serial port (the self-tests
-        hand in a link to a fake board). Nothing stays held when this fails:
-        the lock and the port are released before the error leaves."""
+        hand in a link to a fake board) and gets no rung past a reset. Nothing
+        stays held when this fails: the lock and the port are released before
+        the error leaves."""
         lock = RigLock(station.rig.id, wait=lock_wait).acquire()
         events = EventLog()
         try:
@@ -80,12 +89,26 @@ class Board:
         board = cls(station=station, link=link, events=events, lock=lock,
                     power=make_power(station.rig.power, attended),
                     fw_defines=tuple(fw_defines), caps_mask=frozenset(caps_mask))
+        if link_factory is None:
+            board.attach_recovery(firmware)
         try:
             board.probe()
         except BaseException:
             board.close()
             raise
         return board
+
+    def attach_recovery(self, firmware: "FirmwareRun | None") -> None:
+        """The ladder's rungs above a reset, for a board on a real port."""
+        uid, hint = self.station.tr.uid, self.station.tr.port_hint
+
+        def reconnect() -> Link:
+            found = find_port(uid, hint, timeout=REAPPEAR_S)
+            return Link(open_serial(found.port))
+        self.reconnect_hook = reconnect
+        if firmware is not None and firmware.hex is not None and firmware.primary is not None:
+            hex_info, primary = firmware.hex, firmware.primary
+            self.reboot_hook = lambda: relaunch(hex_info, uid, primary, hint)
 
     def probe(self) -> None:
         """Which image and board answer, and the station's capabilities from

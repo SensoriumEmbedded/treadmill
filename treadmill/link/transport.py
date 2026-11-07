@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
-from treadmill.errors import TreadmillError
+from treadmill.errors import EXIT_NO_STATION, TreadmillError
 
 TCP_PORT = 2112
 CONNECT_TIMEOUT_S = 5.0
@@ -30,6 +30,8 @@ PJRC_VID = 0x16C0
 
 class TransportError(TreadmillError):
     """The port or connection could not be opened, or closed underneath us."""
+
+    code = EXIT_NO_STATION
 
 
 @dataclass

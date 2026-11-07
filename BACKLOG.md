@@ -26,13 +26,13 @@ cost or a wart with a known, small fix.
    `TransportError`, `PowerUnavailable` and `Refused` only, so a test
    errors with a traceback instead of the station marking itself wedged.
    One tuple entry.
-3. **medium, with the driver CLI** The recovery hooks belong in `Board.open`.
-   The pytest plugin's `board` fixture attaches `reconnect_hook` and
-   `reboot_hook`; `open_station()` in `treadmill/session.py` attaches
-   neither, so `shell`, `exec` and `screen` have no rung past a reset and
-   wedge where a pytest run recovers. Move the hooks into `Board.open`
-   (the reboot hook needs the hex and the primary checkout, so the session
-   takes a firmware spec too).
+3. **closed 2026-11-07, with the driver CLI.** The recovery hooks belong in
+   `Board.open`. The pytest plugin's `board` fixture attached `reconnect_hook`
+   and `reboot_hook`; `open_station()` in `treadmill/session.py` attached
+   neither, so `shell`, `exec` and `screen` had no rung past a reset and
+   wedged where a pytest run recovers. `Board.open` now attaches both
+   (`attach_recovery`), the reboot rung when the `FirmwareRun` it is given
+   knows the hex and the checkout, and `open_station()` takes that run.
 4. **medium, before soak runs** Every command drains for `DRAIN_S` (300 ms)
    before sending and most waits `TEXT_REPLY`'s 300 ms idle after, in
    `treadmill/link/trlink.py`; a ping costs about 600 ms on a quiet link

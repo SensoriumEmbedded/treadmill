@@ -61,12 +61,52 @@ def test_fixtures_against_the_fake_board(pytester: pytest.Pytester, lab: Path):
     meta = json.loads((runs[0] / "run.json").read_text(encoding="utf-8"))
     assert meta["station"]["tr_kind"] == "tr-plus" and "dma" in meta["station"]["caps"]
     assert meta["board"]["image"] == "main" and meta["board"]["version"] == "TeensyROM+ v0.9"
+    assert meta["summary"] == {"passed": 3, "skipped": 2} and meta["exit_status"] == 0 and len(meta["tests"]) == 5
+    by_name = {t["nodeid"].rsplit("::", 1)[1]: t for t in meta["tests"]}
+    assert by_name["test_needs_power"]["outcome"] == "skipped" and "lacks power" in by_name["test_needs_power"]["message"]
+    assert by_name["test_ping_at_menu"]["folder"] and by_name["test_needs_power"]["folder"] is None
+    report = (runs[0] / "report.html").read_text(encoding="utf-8")
+    assert "3 passed, 2 skipped" in report and "lacks power" in report
     folders = sorted(p.name for p in runs[0].iterdir() if p.is_dir())
     assert any("test_ping_at_menu" in f for f in folders)
     launched = next(p for p in runs[0].iterdir() if "launch_then_recovered" in p.name)
     events = json.loads((launched / "events.json").read_text(encoding="utf-8"))
     assert any(e["kind"] == "handler" for e in events)
     assert (launched / "serial.log").read_bytes()
+
+
+def test_a_failure_in_the_call_survives_a_teardown_error(pytester: pytest.Pytester, lab: Path):
+    pytester.makeconftest('pytest_plugins = ["treadmill.pytest_plugin"]')
+    pytester.makepyfile(test_hw=textwrap.dedent("""
+        import pytest
+
+        @pytest.fixture
+        def breaks_on_teardown():
+            yield
+            raise RuntimeError("the teardown broke too")
+
+        def test_twice(at_menu, breaks_on_teardown):
+            assert False, "the call failed first"
+    """))
+    result = pytester.runpytest("--station", "s1", "--reports", str(lab / "reports"), "-p", "no:anyio",
+                                "-p", "no:cacheprovider")
+    result.assert_outcomes(failed=1, errors=1)
+    meta = json.loads((next((lab / "reports").iterdir()) / "run.json").read_text(encoding="utf-8"))
+    rec = meta["tests"][0]
+    assert rec["outcome"] == "failed" and rec["failed_in"] == "call"
+    assert "the call failed first" in rec["message"] and "the teardown broke too" in rec["message"]
+
+
+def test_a_run_that_ends_before_any_test_records_why(pytester: pytest.Pytester, lab: Path):
+    pytester.makeconftest('pytest_plugins = ["treadmill.pytest_plugin"]')
+    pytester.makepyfile(test_hw=TESTS)
+    result = pytester.runpytest("--station", "nowhere", "--reports", str(lab / "reports"), "-p", "no:anyio",
+                                "-p", "no:cacheprovider")
+    assert result.ret == 2
+    runs = list((lab / "reports").iterdir())
+    meta = json.loads((runs[0] / "run.json").read_text(encoding="utf-8"))
+    assert meta["exit_status"] == 2 and "nowhere" in meta["aborted"] and meta["tests"] == []
+    assert "nowhere" in (runs[0] / "report.html").read_text(encoding="utf-8")
 
 
 def test_caps_mask_removes_dma(pytester: pytest.Pytester, lab: Path):

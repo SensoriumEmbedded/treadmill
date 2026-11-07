@@ -14,7 +14,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
-from treadmill.errors import TreadmillError
+from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.station.model import (
     CaptureSpec,
     KeysSpec,
@@ -30,6 +30,8 @@ from treadmill.station.registry import read_registry
 
 class ConfigError(TreadmillError):
     """A rig or station file is missing, malformed or names something unknown."""
+
+    code = EXIT_USAGE
 
 
 def repo_root() -> Path:

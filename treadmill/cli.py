@@ -1,11 +1,15 @@
-"""The ``treadmill`` command. Every subcommand takes ``--json`` and exits
-non-zero on failure, so an agent can drive it from structured output.
+"""The ``treadmill`` command. Every subcommand takes ``--json`` (the shell
+excepted) and exits non-zero on failure, so an agent can drive it from
+structured output: 0 is good, 1 a failure of what ran, 2 the request, 4 a
+station that could not be had.
 
-``stations`` lists what is configured; ``calibrate``, ``harvest``, ``screen``,
-``frame`` and ``viewer`` are the video channel's tools on a live station
-(``calibrate`` also works on a saved frame, and ``score`` compares a saved
-frame with the DMA read taken with it); ``run``, ``matrix``, ``sweep``,
-``shell``, ``exec``, ``bisect`` and ``export`` arrive with their modules.
+``run`` puts the firmware under test on a station's board and runs the
+hardware tests against it; ``exec`` runs a script and ``shell`` opens a REPL
+on a station opened the same way. ``stations`` lists what is configured;
+``calibrate``, ``harvest``, ``screen``, ``frame`` and ``viewer`` are the video
+channel's tools on a live station (``calibrate`` also works on a saved frame,
+and ``score`` compares a saved frame with the DMA read taken with it).
+``matrix``, ``sweep``, ``bisect`` and ``export`` arrive with their modules.
 """
 
 from __future__ import annotations
@@ -18,19 +22,15 @@ import time
 from pathlib import Path
 
 from treadmill import __version__
-from treadmill.errors import TreadmillError
-from treadmill.link.discover import NotFound
-from treadmill.link.transport import TransportError
+from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE, TreadmillError  # noqa: F401
 from treadmill.station import ConfigError, list_stations, load_station
-from treadmill.station.lock import RigBusy
 from treadmill.station.model import tier
 
-EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_NO_STATION = 0, 1, 2, 4
-# The station could not be had: no board by that chip id, a port that will not open, a rig someone else holds.
-NO_STATION_ERRORS = (NotFound, RigBusy, TransportError)
+# The driver and the video tools are imported inside their commands: they bring OpenCV and the
+# capture stack with them, which `stations`, `score` and a usage error should not pay for.
 
 
-class CommandError(Exception):
+class CommandError(TreadmillError):
     def __init__(self, message: str, code: int = EXIT_FAILED):
         super().__init__(message)
         self.code = code
@@ -75,6 +75,76 @@ def cmd_stations(args: argparse.Namespace) -> int:
                          f"tier {r['tier']}, caps {', '.join(r['caps'])}")
     _emit({"stations": rows}, args.json, "\n".join(lines) if lines else "no stations in data/stations")
     return EXIT_FAILED if any(r.get("error") for r in rows) else EXIT_OK
+
+
+# -- run, exec, shell -------------------------------------------------------------
+
+def _firmware_options(args: argparse.Namespace):
+    from treadmill.driver import FirmwareOptions
+
+    return FirmwareOptions(fw=args.fw, target=args.fw_target, defines=tuple(dict.fromkeys(args.define)),
+                           tag=args.tag, allow_dirty=args.allow_dirty, no_flash=args.no_flash,
+                           fw_defines=tuple(d for d in args.fw_defines.split(",") if d))
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Build, flash and verify the firmware under test, run the hardware
+    tests, leave the run's folder with run.json and report.html."""
+    from treadmill.driver import RunOptions, run_tests
+
+    opts = RunOptions(
+        station=args.station, tests=tuple(args.tests or ()), reports=args.reports, caps_mask=args.caps_mask,
+        soak=args.soak, estimate=args.estimate, include_tolerant=args.include_tolerant, attended=args.attended,
+        no_video=args.no_video, no_xcheck=args.no_xcheck, golden_dir=args.golden_dir,
+        firmware=_firmware_options(args), pytest_args=tuple(args.pytest_args),
+    )
+    # pytest's own output is the diagnostics stream: stderr under --json, so stdout stays the record.
+    result = run_tests(opts, sink=sys.stderr if args.json else sys.stdout, log=_log_for(args))
+    meta = result.meta or {}
+    payload = {
+        "run_dir": str(result.run_dir), "report": str(result.report) if result.report else None,
+        "exit_code": result.code, "pytest_status": result.pytest_status, "summary": result.summary,
+        "aborted": meta.get("aborted"), "station": meta.get("station"), "board": meta.get("board"),
+        "firmware": meta.get("firmware"),
+        "tests": [{k: t.get(k) for k in ("nodeid", "outcome", "duration", "message", "folder")}
+                  for t in meta.get("tests") or []],
+    }
+    _emit(payload, args.json, result.describe())
+    return result.code
+
+
+def _harness_options(args: argparse.Namespace):
+    from treadmill.driver import HarnessOptions
+
+    return HarnessOptions(station=args.station, reports=args.reports, attended=args.attended,
+                          no_video=args.no_video, caps_mask=args.caps_mask, to_menu=not args.as_is,
+                          firmware=_firmware_options(args))
+
+
+def cmd_exec(args: argparse.Namespace) -> int:
+    """Run a script on an open station, with the artifacts a test gets."""
+    from treadmill.driver import Harness, exec_script
+
+    script = Path(args.script)
+    if not script.is_file():
+        raise CommandError(f"no script {script}", EXIT_USAGE)
+    log = _log_for(args)
+    with Harness(_harness_options(args), f"exec-{script.stem}", log) as h:
+        outcome = exec_script(h, script, tuple(args.script_args), quiet_stdout=args.json)
+        payload = {"script": str(script), "run_dir": str(h.run_dir.path), "folder": str(h.folder),
+                   "exit_code": outcome.code, "result": outcome.result, "error": outcome.error,
+                   "station": h.run_dir.meta.get("station"), "board": h.run_dir.meta.get("board")}
+    text = f"{script.name}: {'ok' if outcome.code == EXIT_OK else outcome.error}; artifacts {h.folder}"
+    _emit(payload, args.json, text)
+    return outcome.code
+
+
+def cmd_shell(args: argparse.Namespace) -> int:
+    """A REPL on an open station: link, screen, menu, keys, dbg, video."""
+    from treadmill.driver import Harness, shell
+
+    with Harness(_harness_options(args), "shell", _log_for(args)) as h:
+        return shell(h)
 
 
 # -- video tools ------------------------------------------------------------------
@@ -351,16 +421,83 @@ def cmd_viewer(args: argparse.Namespace) -> int:
 
 # -- parser -----------------------------------------------------------------------
 
-def _station_args(s: argparse.ArgumentParser, required: bool = True) -> None:
+def _station_args(s: argparse.ArgumentParser, required: bool = True, json_flag: bool = True) -> None:
     s.add_argument("--station", required=required, help="the station id (data/stations/<id>.toml)")
     s.add_argument("--attended", action="store_true", help="a person is at the bench: manual power may prompt")
-    s.add_argument("--json", action="store_true")
+    if json_flag:
+        s.add_argument("--json", action="store_true")
+
+
+def _firmware_args(s: argparse.ArgumentParser) -> None:
+    g = s.add_argument_group("firmware under test")
+    g.add_argument("--fw", default="none",
+                   help="ref=<git ref> | path=<checkout> | hex=<file> | none (default: what the board carries)")
+    g.add_argument("--fw-target", default="auto", choices=["auto", "tr", "tr-plus"],
+                   help="the cartridge to build for; auto is the station's board kind")
+    g.add_argument("--define", action="append", default=[], metavar="NAME",
+                   help="a debug define to compile in (repeatable); the build is tagged with its mark")
+    g.add_argument("--tag", help="the build tag; default: the marks of the defines, none for a clean build")
+    g.add_argument("--allow-dirty", action="store_true",
+                   help="build from a checkout with uncommitted changes (recorded as a variant)")
+    g.add_argument("--no-flash", action="store_true", help="build but do not flash; use what the board carries")
+    g.add_argument("--fw-defines", default="", metavar="A,B",
+                   help="with none or hex=: the defines the flashed build carries")
+
+
+def _harness_args(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--reports", default="reports", help="where run folders go (default: reports/)")
+    s.add_argument("--caps-mask", default="", metavar="A,B",
+                   help="capabilities to take away, to prove a lower tier on a richer rig")
+    s.add_argument("--no-video", action="store_true", help="leave the capture device closed")
+    s.add_argument("--as-is", action="store_true",
+                   help="do not bring the board to the menu first; take it as it is")
+    _firmware_args(s)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="treadmill", description="TeensyROM hardware-in-the-loop validation")
     p.add_argument("--version", action="version", version=f"treadmill {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
+
+    s = sub.add_parser("run", help="put the firmware under test on the board and run the hardware tests",
+                       description="Build, flash and verify the firmware named by --fw (nothing with none), "
+                                   "then run the hardware tests under tests/ against the station. Everything "
+                                   "after -- goes to pytest as it is (-k EXPR, -x, -v ...). The run's folder "
+                                   "holds run.json, report.html and one folder per test.")
+    _station_args(s)
+    s.add_argument("--tests", action="append", metavar="PATH[::NODE]",
+                   help="a test file, folder or node id (repeatable); default: the whole tests/ tree")
+    s.add_argument("--reports", default="reports", help="where run folders go (default: reports/)")
+    s.add_argument("--caps-mask", default="", metavar="A,B",
+                   help="capabilities to take away, to prove a lower tier on a richer rig")
+    s.add_argument("--soak", type=int, default=0, metavar="N", help="run soak tests with N iterations")
+    s.add_argument("--estimate", action="store_true", help="print the expected duration and run nothing")
+    s.add_argument("--include-tolerant", action="store_true",
+                   help="run timing_sensitive tests on timing-tolerant machines too")
+    s.add_argument("--no-video", action="store_true", help="leave the capture device closed")
+    s.add_argument("--no-xcheck", action="store_true", help="record video-vs-DMA disagreement, never fail on it")
+    s.add_argument("--golden-dir", help="where the screen goldens live (default: tests/golden)")
+    _firmware_args(s)
+    s.add_argument("pytest_args", nargs="*", help="after --: arguments for pytest")
+    s.set_defaults(func=cmd_run)
+
+    s = sub.add_parser("exec", help="run a script on an open station, with a test's logging and artifacts",
+                       description="The script runs as __main__ with the station's objects as globals: "
+                                   "session, station, board, link, screen, menu, keys, dbg, video, firmware, "
+                                   "artifacts, run_dir, log. A `result` it leaves is reported (--json). "
+                                   "Everything after -- is the script's own argv.")
+    _station_args(s)
+    _harness_args(s)
+    s.add_argument("script", help="the Python file to run")
+    s.add_argument("script_args", nargs="*", help="after --: arguments for the script")
+    s.set_defaults(func=cmd_exec)
+
+    s = sub.add_parser("shell", help="a Python REPL on an open station",
+                       description="The same names a script gets, at a prompt: link.ping(), screen.read(), "
+                                   "menu.open('/Games'), keys.press(F1), dbg.letter('t').")
+    _station_args(s, json_flag=False)
+    _harness_args(s)
+    s.set_defaults(func=cmd_shell, json=False)
 
     s = sub.add_parser("stations", help="list the configured stations and their capabilities")
     s.add_argument("--station", help="only this station")
@@ -430,14 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     as_json = getattr(args, "json", False)
     try:
         return args.func(args)
-    except ConfigError as e:
-        return _fail(e, as_json, EXIT_USAGE)
-    except CommandError as e:
-        return _fail(e, as_json, e.code)
-    except NO_STATION_ERRORS as e:
-        return _fail(e, as_json, EXIT_NO_STATION)
     except TreadmillError as e:
-        return _fail(e, as_json, EXIT_FAILED)
+        return _fail(e, as_json, e.code)      # each error says what it stands for: the request, the station, a failure
     except KeyboardInterrupt:
         return 130
 

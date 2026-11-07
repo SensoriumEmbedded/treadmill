@@ -33,6 +33,20 @@ the registry plus a TeensyROM board. See `data/rigs/example.toml` and
 `data/stations/example.toml`; copy them without the `example` and fill in your
 own. Files that name your own boards and machines stay out of git.
 
+## The hardware tests
+
+`tests/` holds one concern per file: identity and reset (`smoke/`), files to
+the card and back (`transfer/`), a launched program (`launch/`), the menu's
+item-type marks and navigation (`menu/`), a debug build's timing knobs
+(`debug/`). A test names what it needs (`@pytest.mark.needs("keys_kernal")`,
+`needs_fw("Dbg_SerTimChg")`) and skips with the reason when the station or the
+build lacks it; `--caps-mask dma,keys_kernal` takes capabilities away to prove
+the plain-TR tier on a richer station, and `--fw-defines` names the defines a
+build flashed by other means carries. Screen goldens live in `tests/golden/`
+(`--golden-dir` for another set); the SD fixtures a test needs are put under
+`/treadmill` on the card by the run itself. Every run leaves what each test saw
+under `reports/<timestamp>/<test>/`.
+
 ## Conventions
 
 - Every command takes `--json` and exits non-zero on failure.

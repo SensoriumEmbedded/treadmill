@@ -1,0 +1,27 @@
+% TeensyROM menu, Teensy Mem /Games: firmware 0.9, MainMenuItems.h
+% Row 0 is the version banner, the clock on row 1 is a wildcard, so is the path row.
+|*                                       |
+|Src: Teensy Mem              ?????????? |
+|*                                       |
+| /.. <Up Dir>                       Dir |
+| Retromate Internet Chess v1.04    +Prg |
+| Beach Head II         256k MC      Crt |
+| Dig Dug                            16k |
+| Donkey Kong                        16k |
+| Gorf!                              Crt |
+| Joust!                             Prg |
+| Jupiter Lander                     8Hi |
+| Jupiter Lander (Cracked)           Prg |
+| Mario Brothers                     Prg |
+| Minesweeper                        Prg |
+| Ms. Pac-Man                        Crt |
+| Robocop 2             224k EZF     Crt |
+| Super Mario Brothers   48k PRG     Prg |
+| Tetris                             Prg |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|F1 Teensy Mem  F5 USB Drive  Pg 1/1     |
+|F3 SD Card     F7 Help                  |

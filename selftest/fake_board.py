@@ -11,10 +11,13 @@ import json
 import threading
 from dataclasses import dataclass, field
 
+from selftest.fake_menu import TREE, UP_DIR, FakeMenu
+from treadmill.c64.screen import KEYBUF, KEYCOUNT, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
+from treadmill.link.banner import parse_banner
 from treadmill.link.protocol import (
-    ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, FAIL, FW_CHECK, FW_FULL,
-    FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE, READ_C64_MEM,
-    RESET_C64, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
+    ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, FAIL, FW_CHECK,
+    FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
+    READ_C64_MEM, RESET_C64, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
 )
 from treadmill.link.transport import PipeEnd, open_pipe
 
@@ -45,11 +48,31 @@ class FakeBoard:
     chatter_on_launch: str = "Loading IO handler: TeensyROM\n"
     boot_polls: int = 0                  # how many version polls say "in progress" after a reset
     booting_for: int = 0
+    heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
+    menu: object = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        # A C64 at the TeensyROM menu: screen at $0400, lower/upper charset, VIC bank 0.
+        # A C64 at the TeensyROM menu: screen at $0400, lower/upper charset, VIC bank 0, no key waiting.
         self.memory[0xD018] = 0x17
         self.memory[0xDD00] = 0x97
+        self.memory[KEYCOUNT] = 0
+        self.menu = FakeMenu(self)       # draws the Teensy Mem root into screen RAM
+
+    def version_string(self) -> str:
+        return parse_banner(self.banner).version or "TeensyROM"
+
+    def run(self, path: str) -> None:
+        """What a launched program does to the screen: hello.a paints its text
+        and starts its heartbeat; anything else leaves the screen as the menu
+        left it. Either way the board is busy until a reset."""
+        self.busy = True
+        if path.lower().endswith("hello.prg"):
+            self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = b"\x20" * SCREEN_BYTES
+            self.memory[0xD018] = 0x17
+            text = codes_for_text("treadmill hello")
+            at = SCREEN_RAM_DEFAULT + 12 * 40 + 12
+            self.memory[at:at + len(text)] = text
+            self.heartbeat = True
 
     debug_defines: set = field(default_factory=set)   # the Dbg_* defines this build carries
     letters: list[str] = field(default_factory=list) # every letter command received
@@ -108,17 +131,30 @@ class FakeBoard:
                 digits = end.read(TIMING_KNOBS[sub], WAIT_S).decode("latin-1")
                 self.knobs[sub] = int(digits)
                 self.letters.append(f"t{sub}{digits}")
-                end.write(f"{sub} set to {int(digits)}\n".encode("latin-1"))
+                head = f"{sub} set to {int(digits)}\n"
             elif sub == "d":
                 self.knobs = {"m": 996, "r": 225, "p": 150, "s": 90, "h": 410}
                 self.letters.append("td")
-                end.write(b"Timing defaults restored\n")
+                head = "Timing defaults restored\nDefaults set (NTSC C64)\n"
             else:
                 self.letters.append(f"t{sub}")
-                end.write(b"?\n")
+                head = "No changes\n"
+            end.write(("-----\n" + head + self._knob_listing()).encode("latin-1"))
             return
         self.letters.append(letter)
         end.write(f"ok {letter}\n".encode("latin-1"))
+
+    def _knob_listing(self) -> str:
+        """The block the firmware prints after every 't' command."""
+        k = self.knobs
+        return ("Current:    Variable  Val (Command)\n"
+                f"\t nS_MaxAdj   {k['m']:04d} (tm####)\n"
+                f"\t nS_RWnReady  {k['r']:03d} (tr###)\n"
+                f"\t nS_PLAprop   {k['p']:03d} (tp###)\n"
+                f"\t nS_DataSetup {k['s']:03d} (ts###)\n"
+                f"\t nS_DataHold  {k['h']:03d} (th###)\n"
+                "\tSet Defaults      (td)\n"
+                "\tList current vals (t)\n-----\n")
 
     # -- helpers -----------------------------------------------------------
 
@@ -165,7 +201,10 @@ class FakeBoard:
     def _reset(self, end: PipeEnd) -> None:
         self.booting_for = self.boot_polls
         self.busy = False
-        end.write(b"Reset cmd received\n")
+        self.heartbeat = False
+        self.memory[0xD018] = 0x17
+        self.menu.reset()
+        end.write(b"Reset cmd received\nLoading IO handler: TeensyROM\n")
 
     def _read_memory(self, end: PipeEnd) -> None:
         if not self.dma:
@@ -187,6 +226,12 @@ class FakeBoard:
         data = end.read(length, WAIT_S)
         self.memory[address:address + len(data)] = data
         self._reply(end, ACK)
+        if address <= KEYCOUNT < address + len(data) and self.memory[KEYCOUNT] and not self.busy:
+            # The menu's GETIN loop takes the keys as soon as they are in the buffer.
+            count = self.memory[KEYCOUNT]
+            for code in bytes(self.memory[KEYBUF:KEYBUF + count]):
+                self.menu.key(code)
+            self.memory[KEYCOUNT] = 0
 
     def _launch(self, end: PipeEnd) -> None:
         self._reply(end, ACK)
@@ -194,9 +239,11 @@ class FakeBoard:
         path = self._path(end)
         self.launched.append((drive, path))
         self._reply(end, ACK)
+        folder, _, name = path.rpartition("/")
+        end.write(f"Remote Launch:\nP: {folder or '/'}\nF: {name}\n".encode("latin-1"))
         if self.chatter_on_launch:
             end.write(self.chatter_on_launch.encode("latin-1"))
-        self.busy = True
+        self.run(path)
 
     def _delete(self, end: PipeEnd) -> None:
         self._reply(end, ACK)
@@ -216,13 +263,37 @@ class FakeBoard:
         if path in self.files:
             self._refuse(end, "File exists")
             return
+        self._ensure_directories(path)
         self._reply(end, ACK)
-        data = end.read(length, WAIT_S)
+        data = self._receive(end, length)
+        if len(data) < length:
+            self._refuse(end, "Timeout waiting for file data")   # nothing kept: the firmware removes its partial file
+            return
         if checksum(data) != total:
             self._refuse(end, "Checksum mismatch")
             return
         self.files[path] = bytes(data)
         self._reply(end, ACK)
+
+    @staticmethod
+    def _receive(end: PipeEnd, length: int) -> bytes:
+        """ReceiveFileData: bytes until the count is reached, given up when
+        none arrive for half a second (SerialAvailabeTimeout), however slowly
+        they come."""
+        data = bytearray()
+        while len(data) < length:
+            part = end.read(min(length - len(data), 4096), 0.5)
+            if not part:
+                break
+            data += part
+        return bytes(data)
+
+    def _ensure_directories(self, path: str) -> None:
+        """EnsureDirectory: every folder on the way to a posted file exists afterwards."""
+        folder = path.rpartition("/")[0]
+        while folder and folder not in self.directories:
+            self.directories.append(folder)
+            folder = folder.rpartition("/")[0]
 
     def _get(self, end: PipeEnd) -> None:
         self._reply(end, ACK)
@@ -238,18 +309,44 @@ class FakeBoard:
 
     def _list(self, end: PipeEnd) -> None:
         self._reply(end, ACK)
-        end.read(1, WAIT_S)
+        drive = end.read(1, WAIT_S)[0]
         skip = self._number(end, 2)
         take = self._number(end, 2)
         path = self._path(end)
+        if drive == DRIVE_TEENSY:
+            # SendTRDirectory: the whole tree, whatever the path, skip and take say.
+            self._reply(end, ACK)
+            self._reply(end, DIR_START)
+            end.write("".join(json.dumps(e) + "\r\n" for e in self._teensy_listing()).encode("latin-1"))
+            self._reply(end, DIR_END)
+            return
         if path not in self.directories:
             self._refuse(end, "Directory not found. (Error 5)")
             return
         self._reply(end, ACK)
         self._reply(end, DIR_START)
-        lines = "".join(json.dumps(e) + "\r\n" for e in self.listing[skip:skip + take])
+        entries = self.listing or self._card_listing(path)
+        lines = "".join(json.dumps(e) + "\r\n" for e in entries[skip:skip + take])
         end.write(lines.encode("latin-1"))
         self._reply(end, DIR_END)
+
+    def _card_listing(self, path: str) -> list[dict]:
+        def parent(p: str) -> str:
+            return p.rpartition("/")[0] or "/"
+        out = [{"type": "dir", "name": d.rpartition("/")[2]}
+               for d in self.directories if d != "/" and parent(d) == path]
+        out += [{"type": "file", "name": p.rpartition("/")[2], "size": len(data)}
+                for p, data in self.files.items() if parent(p) == path]
+        return out
+
+    @staticmethod
+    def _teensy_listing() -> list[dict]:
+        out = []
+        for folder in TREE["/"]:
+            out.append({"type": "dir", "name": folder.name})
+            out += [{"type": "file", "name": e.name, "size": 0}
+                    for e in TREE.get(folder.name, []) if e.name != UP_DIR]
+        return out
 
 
 def start_fake_board(**overrides):

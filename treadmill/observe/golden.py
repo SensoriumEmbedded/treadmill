@@ -94,5 +94,5 @@ def save_golden(rows: list[str], path: Path | str, header: tuple[str, ...] = ())
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     body = [f"{ROW_PREFIX}{r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS]}{ROW_PREFIX}" for r in rows[:SCREEN_ROWS]]
-    path.write_text("\n".join([*header, *body]) + "\n", encoding="utf-8")
+    path.write_text("\n".join([*header, *body]) + "\n", encoding="utf-8", newline="\n")
     return path

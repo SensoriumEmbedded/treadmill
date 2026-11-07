@@ -56,3 +56,16 @@ cost or a wart with a known, small fix.
    newlines and writes with `newline=""`, so a CRLF header comes out LF on
    every line and the diff hash covers the whole file. Harmless in a
    worktree that is cleaned on reuse; read and write bytes to fix.
+
+## Tests and fixtures
+
+7. **low** The path row of a directory listing is open in the goldens.
+   `tests/golden/menu/games.screen.txt` and `pictures.screen.txt` wildcard
+   row 2 because no bench read of a Teensy Mem subdirectory exists yet to
+   show what the menu prints there (`rsstShortDirPath`). Pin it after the
+   first run of `tests/menu/test_item_types.py` on a board.
+8. **medium, with test 8** Only generated SD fixtures exist. `type_set()` in
+   `treadmill/fixtures/sdcard.py` makes every byte itself; the private form
+   the plan names (`data/sdcard/<class>/manifest.json` with a sha256 and a
+   local path per file, `needs_asset`) is not built, so the cartridge images
+   of test 8 have nowhere to be declared.

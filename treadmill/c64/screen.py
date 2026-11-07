@@ -87,6 +87,27 @@ def code_as_text(screen_code: int, charset: str = CHARSET_LOWER_UPPER) -> str:
     return NO_LETTER
 
 
+def codes_for_text(text: str, charset: str = CHARSET_LOWER_UPPER) -> bytes:
+    """Screen codes for a line of text: the inverse of ``code_as_text`` for
+    what it can show; anything else becomes a space."""
+    lower_upper = charset == CHARSET_LOWER_UPPER
+    out = bytearray()
+    for ch in text:
+        if ch == "@":
+            out.append(_CODE_AT)
+        elif "a" <= ch <= "z" and lower_upper:
+            out.append(ord(ch) - 0x61 + _CODE_A)
+        elif "A" <= ch <= "Z":
+            out.append(ord(ch) - 0x41 + (_CODE_SHIFT_A if lower_upper else _CODE_A))
+        elif ch in _SYMBOLS_AFTER_Z:
+            out.append(_CODE_Z + 1 + _SYMBOLS_AFTER_Z.index(ch))
+        elif _PUNCTUATION_FIRST <= ord(ch) <= _PUNCTUATION_LAST:
+            out.append(ord(ch))
+        else:
+            out.append(_PUNCTUATION_FIRST)
+    return bytes(out)
+
+
 def screen_rows(screen: bytes, charset: str = CHARSET_LOWER_UPPER) -> list[str]:
     """The 25 rows of a 1000-byte screen as text."""
     return ["".join(code_as_text(c, charset)

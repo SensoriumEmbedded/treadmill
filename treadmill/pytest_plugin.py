@@ -18,16 +18,21 @@ import pytest
 
 from treadmill import __version__
 from treadmill.board import Board, Wedged
+from treadmill.c64.keys import KernalKeys, Keys
+from treadmill.c64.menu import MenuDriver
 from treadmill.firmware.build import BuildError, build
 from treadmill.firmware.checkout import CheckoutError
 from treadmill.firmware.flash import REAPPEAR_S, FlashError, flash, relaunch
 from treadmill.firmware.hexinfo import HexInfo, inspect_hex
 from treadmill.firmware.spec import FirmwareSpec, SpecError, parse_spec
-from treadmill.link import Link, LinkError, NotFound, TransportError, find_port, open_serial
+from treadmill.fixtures.sdcard import FIXTURE_ROOT, FixtureError, provision, type_set
+from treadmill.link import DebugCommands, Link, LinkError, NotFound, TransportError, find_port, open_serial
 from treadmill.observe.calibrate import Calibration, CalibrationError
 from treadmill.observe.capture import CaptureError, FrameSource, SyntheticSource, save_strip
-from treadmill.observe.channels import XCHECK_LIMIT, ScreenChannel, XCheck
+from treadmill.observe.channels import XCHECK_LIMIT, ScreenChannel, ScreenRead, XCheck
 from treadmill.observe.glyphs import GlyphBank
+from treadmill.observe.golden import Golden, compare, diff_text, save_golden
+from treadmill.programs.build import AssembleError, assemble
 from treadmill.report import RunDir
 from treadmill.session import load_bank, load_or_calibrate, open_video
 from treadmill.station import ConfigError, load_station
@@ -76,6 +81,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="a C64 character ROM to bootstrap a glyph bank from when none is harvested")
     g.addoption("--no-xcheck", action="store_true", default=False,
                 help="record video-vs-DMA disagreement but never fail a test on it")
+    g.addoption("--golden-dir", action="store", default=None,
+                help="where the screen goldens live (default: <rootdir>/tests/golden)")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -233,7 +240,7 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
     factory = None
     if os.environ.get(FAKE_ENV):
         from selftest.fake_board import start_fake_board
-        fake, stream = start_fake_board()
+        fake, stream = start_fake_board(debug_defines=set(firmware.defines))   # the build the run claims
         factory = lambda: Link(stream)  # noqa: E731
         request.config._treadmill_fake = fake  # type: ignore[attr-defined]
     mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
@@ -317,16 +324,16 @@ def _drop_video(board: Board, run_dir: RunDir, why: str) -> None:
 def video(request: pytest.FixtureRequest, board: Board, run_dir: RunDir) -> FrameSource | None:
     """The rig's capture (the fake board's rendered screen under the fake),
     or None when the rig has none, --no-video was given, or it will not open."""
+    if request.config.getoption("--no-video"):
+        _drop_video(board, run_dir, "--no-video")
+        yield None
+        return
     if os.environ.get(FAKE_ENV):
         from selftest.synth import fake_frame_source
         src = fake_frame_source(request.config._treadmill_fake)  # type: ignore[attr-defined]
         run_dir.meta["video"] = {"available": True, **src.describe()}
         yield src
         src.close()
-        return
-    if request.config.getoption("--no-video"):
-        _drop_video(board, run_dir, "--no-video")
-        yield None
         return
     src = open_video(board.station, log=_log)
     if src is None:
@@ -399,6 +406,107 @@ def screen(request: pytest.FixtureRequest, at_menu: Board, video: FrameSource | 
     if worst.disagreement > XCHECK_LIMIT and not request.config.getoption("--no-xcheck"):
         raise AssertionError(f"video disagrees with DMA on {worst.disagreement:.1%} of cells "
                              f"(limit {XCHECK_LIMIT:.0%}); see xcheck.json")
+
+
+# -- the menu, keys, debug letters, programs, the card, goldens -----------------
+
+@pytest.fixture
+def artifacts(request: pytest.FixtureRequest, run_dir: RunDir) -> Path:
+    """This test's folder under the run: where it writes what it saw."""
+    return run_dir.for_test(request.node.nodeid)
+
+
+@pytest.fixture
+def keys(at_menu: Board) -> Keys:
+    """A way to press keys on the station: the KERNAL buffer by DMA on a TR+
+    (the keyboard board of a rig that has one comes with Phase 2)."""
+    if not at_menu.station.has("keys_kernal"):
+        pytest.skip(f"station {at_menu.station.id} lacks keys_kernal")
+    return KernalKeys(at_menu)
+
+
+@pytest.fixture
+def menu(at_menu: Board, screen: ScreenChannel) -> MenuDriver:
+    """The main menu through the screen channel, able to move when the station presses keys."""
+    press = KernalKeys(at_menu) if at_menu.station.has("keys_kernal") else None
+    return MenuDriver(screen, press, board=at_menu)
+
+
+@pytest.fixture
+def dbg(at_menu: Board) -> DebugCommands:
+    """The single-letter debug commands, gated on the flashed build's defines."""
+    defines = {c[len("fw:"):] for c in at_menu.station.caps if c.startswith("fw:")}
+    return DebugCommands(at_menu.link, defines, allow_eeprom_reset=at_menu.station.allow_eeprom_reset)
+
+
+@pytest.fixture(scope="session")
+def programs(firmware: FirmwareRun):
+    """``programs("hello")``: one of the suite's C64 programs, assembled; a
+    skip when no assembler is reachable."""
+    def assemble_or_skip(name: str, **defines: int) -> Path:
+        try:
+            return assemble(name, primary=firmware.primary, extra=defines or None)
+        except AssembleError as e:
+            pytest.skip(f"cannot assemble {name}: {e}")
+    return assemble_or_skip
+
+
+@pytest.fixture(scope="session")
+def sd_card(board: Board) -> str:
+    """The card answers a listing of its root, or every test on it skips.
+    Returns the root the fixtures live under."""
+    try:
+        board.ensure_menu()
+        board.link.list_directory("/", "sd")
+    except (Wedged, LinkError, TransportError) as e:
+        pytest.skip(f"no SD card on {board.station.id}: {e}")
+    return FIXTURE_ROOT
+
+
+@pytest.fixture(scope="session")
+def sd_fixtures(board: Board, sd_card: str) -> list[dict]:
+    """The type set on the card, provisioned once per run."""
+    try:
+        board.ensure_menu()
+        return provision(board.link, type_set(), log=_log)
+    except (Wedged, FixtureError, LinkError, TransportError) as e:
+        pytest.skip(f"the SD fixtures could not be put on the card: {e}")
+
+
+class Goldens:
+    """Screen goldens by name (``menu/root`` is ``<golden dir>/menu/root.screen.txt``);
+    every check leaves the screen it saw, and the diff when it differed, in
+    the test's artifact folder."""
+
+    def __init__(self, root: Path, folder: Path):
+        self.root = root
+        self.folder = folder
+
+    def load(self, name: str) -> Golden:
+        path = self.root / f"{name}.screen.txt"
+        if not path.is_file():
+            pytest.fail(f"no golden {path}", pytrace=False)
+        return Golden.load(path)
+
+    def check(self, read: ScreenRead, name: str) -> None:
+        self.check_rows(read.rows(), self.load(name), name)
+
+    def check_rows(self, rows: list[str], golden: Golden | list[str], name: str) -> None:
+        if not isinstance(golden, Golden):
+            golden = Golden.parse("\n".join(f"|{r}|" for r in golden), name)
+        stem = name.replace("/", "-")
+        save_golden(rows, self.folder / f"{stem}.screen.txt")
+        mismatches = compare(rows, golden)
+        if mismatches:
+            diff = diff_text(rows, golden)
+            (self.folder / f"{stem}.diff.txt").write_text(diff + "\n", encoding="utf-8")
+            pytest.fail(f"{len(mismatches)} cell(s) differ from golden {name}:\n{diff}", pytrace=False)
+
+
+@pytest.fixture
+def goldens(request: pytest.FixtureRequest, run_dir: RunDir) -> Goldens:
+    root = request.config.getoption("--golden-dir") or (Path(request.config.rootpath) / "tests" / "golden")
+    return Goldens(Path(root), run_dir.for_test(request.node.nodeid))
 
 
 @pytest.hookimpl(hookwrapper=True)

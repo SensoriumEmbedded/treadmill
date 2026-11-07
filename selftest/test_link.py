@@ -51,10 +51,10 @@ def test_keys_go_into_the_kernal_buffer(board_and_link):
     board, link, _ = board_and_link
     link.probe()
     link.key(0x85)
-    assert board.memory[KEYBUF] == 0x85 and board.memory[KEYCOUNT] == 1
-    board.memory[KEYCOUNT] = 0
+    # The fake's menu takes the keys as the real menu's GETIN loop does: the buffer is empty again.
+    assert board.memory[KEYBUF] == 0x85 and board.memory[KEYCOUNT] == 0
     link.keys(b"run\r")
-    assert bytes(board.memory[KEYBUF:KEYBUF + 4]) == b"run\r" and board.memory[KEYCOUNT] == 4
+    assert bytes(board.memory[KEYBUF:KEYBUF + 4]) == b"run\r" and board.memory[KEYCOUNT] == 0
 
 
 def test_ping_ready_then_busy_after_a_launch(board_and_link):

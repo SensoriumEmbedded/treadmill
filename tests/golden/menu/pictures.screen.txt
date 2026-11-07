@@ -1,0 +1,27 @@
+% TeensyROM menu, Teensy Mem /Pictures: firmware 0.9, MainMenuItems.h
+% Row 0 is the version banner, the clock on row 1 is a wildcard, so is the path row.
+|*                                       |
+|Src: Teensy Mem              ?????????? |
+|*                                       |
+| /.. <Up Dir>                       Dir |
+| TS: TeensyROM                      Kla |
+| TS: BlackHole                      Kla |
+| TS: Ember Head                     Kla |
+| TS: Sensorium Heatmap              Kla |
+| HA: Bluejay                        Kla |
+| HA: Hummingbird                    Kla |
+| HA: Sugar Skull                    Kla |
+| LP: Boston                         Kla |
+| LP: ELP Tarkus                     Kla |
+| LP: Zappa Sleep Dirt               Kla |
+| LP: Zappa Apostrophe (')           Kla |
+| Pie2 Hi-Res                        Art |
+| KP: Bird                           Kla |
+| KP: Burger                         Kla |
+| KP: Koala                          Kla |
+| KP: Tiger                          Kla |
+|                                        |
+|                                        |
+|                                        |
+|F1 Teensy Mem  F5 USB Drive  Pg 1/1     |
+|F3 SD Card     F7 Help                  |

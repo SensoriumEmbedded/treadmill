@@ -1,0 +1,27 @@
+% TeensyROM menu, Teensy Mem /: firmware 0.9, MainMenuItems.h
+% Row 0 is the version banner, the clock on row 1 is a wildcard.
+|*                                       |
+|Src: Teensy Mem              ?????????? |
+|/                                       |
+| /Games                             Dir |
+| /MIDI + ASID                       Dir |
+| /Featured SIDs                     Dir |
+| /SID Cover Tunes                   Dir |
+| /Pictures                          Dir |
+| /Multimedia                        Dir |
+| /Test+Diags                        Dir |
+| /Utilities                         Dir |
+| /Text + PETSCII + Docs             Dir |
+| /TeensyROM Specific                Dir |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|                                        |
+|F1 Teensy Mem  F5 USB Drive  Pg 1/1     |
+|F3 SD Card     F7 Help                  |

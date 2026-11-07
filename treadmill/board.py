@@ -116,9 +116,10 @@ class Board:
 
     def dma_allowed(self) -> bool:
         """DMA memory access is allowed: the link probed a TR+ main image,
-        the C128's post-reset hold-off has passed, and no test declared the
-        REU live."""
-        return (self.link.dma_allowed and not self.reu_live
+        the station still has the capability (a --caps-mask takes it away to
+        prove the plain-TR tier), the C128's post-reset hold-off has passed,
+        and no test declared the REU live."""
+        return (self.link.dma_allowed and self.station.has("dma") and not self.reu_live
                 and time.monotonic() >= self.dma_hold_until)
 
     def reset(self) -> None:

@@ -75,6 +75,8 @@ def fake_frame_source(fake):
     seeds = itertools.count(1000)
 
     def render() -> np.ndarray:
+        if fake.heartbeat:                       # hello.a ticks its bottom-right cell once a frame
+            fake.memory[0x07E7] = (fake.memory[0x07E7] + 1) & 0xFF
         memptr, cia2 = fake.memory[VIC_MEMPTR], fake.memory[CIA2_PORT_A]
         address = screen_address(memptr, cia2)
         codes = np.frombuffer(bytes(fake.memory[address:address + SCREEN_BYTES]), np.uint8)

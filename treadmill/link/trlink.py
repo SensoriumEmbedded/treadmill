@@ -241,9 +241,13 @@ class Link:
         self._ack(f"delete {path}")
         self._trailer()
 
-    def post_file(self, data: bytes, path: str, drive: str | int = "sd") -> None:
+    def post_file(self, data: bytes, path: str, drive: str | int = "sd", *,
+                  pace: tuple[int, float] | None = None, truncate: int | None = None) -> None:
         """Copy ``data`` to the board. The firmware refuses to overwrite, so a
-        caller that wants replacement deletes first."""
+        caller that wants replacement deletes first. ``pace`` sends the data
+        as a slow host would, ``(bytes per write, seconds between writes)``;
+        ``truncate`` sends only that many bytes and then waits for the board
+        to give the transfer up, which it reports as a refusal."""
         data = bytes(data)
         header = (to_board(len(data), 4) + to_board(checksum(data))
                   + bytes([drive_number(drive)]) + path_field(path))
@@ -251,7 +255,14 @@ class Link:
         self._ack("post")
         self._s.write(header)
         self._ack(f"post {path}")
-        self._s.write(data)
+        body = data if truncate is None else data[:truncate]
+        if pace is None:
+            self._s.write(body)
+        else:
+            chunk, pause = pace
+            for i in range(0, len(body), chunk):
+                self._s.write(body[i:i + chunk])
+                time.sleep(pause)
         self._ack(f"post {path} data", POST_DATA_S)
         self._trailer()
 

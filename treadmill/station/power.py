@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import time
 
+from treadmill.errors import TreadmillError
 from treadmill.station.model import PowerSpec
 
 
-class PowerUnavailable(Exception):
+class PowerUnavailable(TreadmillError):
     pass
 
 

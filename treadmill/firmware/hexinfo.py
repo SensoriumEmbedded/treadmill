@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from treadmill.errors import TreadmillError
+
 # The FLASH regions the two images are linked against (tools/BootLinkerFiles).
 MINIMAL_BASE = 0x60000000
 MAIN_BASE, MAIN_BYTES = 0x60060000, 7552 * 1024
@@ -32,7 +34,7 @@ _TIME = re.compile(rb"(?<![!-~])([0-2][0-9]:[0-5][0-9]:[0-5][0-9])\x00")
 _VERSION = re.compile(rb"(TeensyROM\+? v[A-Za-z0-9.\-]+\*?)\x00")
 
 
-class HexError(ValueError):
+class HexError(TreadmillError, ValueError):
     pass
 
 

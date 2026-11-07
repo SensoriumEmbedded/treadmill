@@ -22,6 +22,7 @@ from treadmill.c64.screen import (
     CIA2_PORT_A, KEYBUF, KEYBUF_128, KEYBUF_SIZE, KEYCOUNT, KEYCOUNT_128, SCREEN_BYTES,
     VIC_MEMPTR, charset_in, screen_address, screen_rows,
 )
+from treadmill.errors import TreadmillError
 from treadmill.link.banner import TR_PLUS, Banner, parse_banner
 from treadmill.link.protocol import (
     ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVES, FAIL, FW_CHECK,
@@ -44,7 +45,7 @@ FAIL_TEXT = (1.0, 0.1, 2.0)
 KEYBUF_DRAIN_S = 5.0
 
 
-class LinkError(Exception):
+class LinkError(TreadmillError):
     """The board did not do what was asked."""
 
 

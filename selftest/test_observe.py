@@ -13,7 +13,8 @@ from selftest.synth import (
 from treadmill.c64.screen import CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS
 from treadmill.link.unsolicited import EventLog
 from treadmill.observe import (
-    LAYOUT_BASIC, LAYOUT_MENU, Calibration, CalibrationError, CaptureTimeout, Frame, Golden, GlyphBank,
+    LAYOUT_BASIC, LAYOUT_MENU, Calibration, CalibrationError, CaptureTimeout, Frame, FrameSource, Golden,
+    GlyphBank,
     Liveness, ReplaySource, ScreenChannel, ScreenError, SyntheticSource, bootstrap_bank, classify, compare,
     diff_text, find_text_area, from_dump, read_video, refine, save_golden, synthetic_font, track, xcheck,
 )
@@ -188,6 +189,21 @@ def test_capture_sources_wait_and_time_out():
         syn.wait_change(syn.next_frame(), timeout=0.3)
     with pytest.raises(Exception):
         ReplaySource([])
+
+
+def test_a_feed_that_stopped_does_not_hand_out_its_last_frame():
+    class Stopped(FrameSource):                 # frames arrive only when pushed from outside
+        def _produce(self):
+            pass
+
+    src = Stopped()
+    pushed = src._push(np.zeros((8, 8, 3), np.uint8))
+    assert src.next_frame().seq == pushed.seq   # just grabbed: the picture now
+    time.sleep(0.05)
+    with pytest.raises(CaptureTimeout):
+        src.next_frame(timeout=0.1, max_age=0.02)
+    again = src._push(np.zeros((8, 8, 3), np.uint8))
+    assert src.next_frame(max_age=0.02).seq == again.seq
 
 
 def test_liveness_classes(calib, bank):

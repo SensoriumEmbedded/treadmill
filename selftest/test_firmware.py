@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from treadmill.firmware.checkout import CheckoutError, describe
+from treadmill.firmware.checkout import CheckoutError, describe, worktree_for
 from treadmill.firmware.hexinfo import MAIN_BASE, HexError, encode_hex, inspect_hex
 from treadmill.firmware.spec import SpecError, cache_key, parse_spec
 from treadmill.link.banner import parse_banner
@@ -90,3 +90,21 @@ def test_describe_records_dirty_state(tmp_path: Path):
     assert dirty.dirty and dirty.diff_hash and dirty.describe.endswith("-dirty")
     with pytest.raises(CheckoutError):
         describe(tmp_path / "nowhere")
+
+
+def test_worktree_for_puts_a_reused_worktree_back(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: subprocess.run(["git", *a], cwd=repo, check=True, capture_output=True,  # noqa: E731
+                                    stdin=subprocess.DEVNULL)
+    run("init", "-q", "-b", "main")
+    (repo / "TeensyROM.h").write_text("// #define Dbg_SerDMA\n")
+    run("add", "TeensyROM.h")
+    run("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "h")
+    wt = worktree_for(repo, "main", tmp_path / "work")
+    assert wt == tmp_path / "work" / "wt" / describe(repo).short and not describe(wt).dirty
+    (wt / "TeensyROM.h").write_text("#define Dbg_SerDMA\n")        # what a define build leaves behind
+    (wt / "stray.txt").write_text("and what a build that died might")
+    assert describe(wt).dirty
+    assert worktree_for(repo, "main", tmp_path / "work") == wt
+    assert not describe(wt).dirty and not (wt / "stray.txt").exists()

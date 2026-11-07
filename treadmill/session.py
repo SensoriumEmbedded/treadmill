@@ -142,17 +142,25 @@ def open_station(station_id: str, *, attended: bool = False, video: bool = True,
     channel's calibration and bank where they exist."""
     station = load_station(station_id)
     board = Board.open(station, attended=attended)
-    src = open_video(board.station, log) if video else None
-    if src is None and video and "video" in board.station.caps:
-        board.station = board.station.masked({"video"})
-    bank = cal = None
-    if src is not None:
-        try:
-            bank = load_bank(board.station, chargen, log=log)
-            if calibrate:
-                cal = load_or_calibrate(board, src, bank, log=log)
-        except (CalibrationError, CaptureError, GlyphError) as e:
-            log(f"[video] {e}")
-        if bank is None or cal is None:
-            board.station = board.station.masked({"video"})
+    src = bank = cal = None
+    try:
+        src = open_video(board.station, log) if video else None
+        if src is None and video:
+            board.mask({"video"})
+        if src is not None:
+            try:
+                bank = load_bank(board.station, chargen, log=log)
+                if calibrate:
+                    cal = load_or_calibrate(board, src, bank, log=log)
+            except (CalibrationError, CaptureError, GlyphError) as e:
+                log(f"[video] {e}")
+            if bank is None or cal is None:
+                board.mask({"video"})
+    except BaseException:
+        # Calibrating goes through the board (ensure_menu, a DMA read): what it raises must not leave
+        # the rig locked and the port and capture open in this process.
+        if src is not None:
+            src.close()
+        board.close()
+        raise
     return Session(board, src, cal, bank)

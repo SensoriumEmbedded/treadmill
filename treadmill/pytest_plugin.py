@@ -236,15 +236,12 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
         fake, stream = start_fake_board()
         factory = lambda: Link(stream)  # noqa: E731
         request.config._treadmill_fake = fake  # type: ignore[attr-defined]
+    mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
     try:
-        b = Board.open(station, attended=request.config.getoption("--attended"), link_factory=factory)
+        b = Board.open(station, attended=request.config.getoption("--attended"), link_factory=factory,
+                       fw_defines=firmware.defines, caps_mask=mask)
     except Exception as e:
         pytest.exit(f"station {station.id}: {e}", returncode=4)
-    mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
-    if b.banner and b.banner.kind:
-        b.station = b.station.with_probe(b.banner.kind, fw_defines=firmware.defines)
-    if mask:
-        b.station = b.station.masked(mask)
     if factory is None:
         uid, hint = station.tr.uid, station.tr.port_hint
 
@@ -312,8 +309,7 @@ def link(at_menu: Board) -> Link:
 
 def _drop_video(board: Board, run_dir: RunDir, why: str) -> None:
     _log(f"[video] {why}; tests that need video skip")
-    if "video" in board.station.caps:
-        board.station = board.station.masked({"video"})
+    board.mask({"video"})
     run_dir.meta["video"] = {"available": False, "reason": why}
 
 

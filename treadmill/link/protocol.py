@@ -9,8 +9,10 @@ rather than a board.
 
 from __future__ import annotations
 
+from treadmill.errors import TreadmillError
 
-class ProtocolError(ValueError):
+
+class ProtocolError(TreadmillError, ValueError):
     """A value that cannot go on the wire as asked."""
 
 

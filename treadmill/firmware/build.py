@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from treadmill.errors import TreadmillError
 from treadmill.firmware.checkout import (
     DEFAULT_WORK_ROOT, Checkout, CheckoutError, describe, toolchain_env, worktree_for,
 )
@@ -26,7 +27,7 @@ from treadmill.firmware.spec import FirmwareSpec, SpecError, cache_key
 BUILD_TIMEOUT_S = 900
 
 
-class BuildError(Exception):
+class BuildError(TreadmillError):
     pass
 
 

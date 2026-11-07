@@ -17,10 +17,16 @@ import time
 from pathlib import Path
 
 from treadmill import __version__
+from treadmill.errors import TreadmillError
+from treadmill.link.discover import NotFound
+from treadmill.link.transport import TransportError
 from treadmill.station import ConfigError, list_stations, load_station
+from treadmill.station.lock import RigBusy
 from treadmill.station.model import tier
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_NO_STATION = 0, 1, 2, 4
+# The station could not be had: no board by that chip id, a port that will not open, a rig someone else holds.
+NO_STATION_ERRORS = (NotFound, RigBusy, TransportError)
 
 
 class CommandError(Exception):
@@ -350,6 +356,11 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _fail(e: BaseException, as_json: bool, code: int) -> int:
+    print(json.dumps({"error": str(e)}) if as_json else f"error: {e}", file=sys.stderr)
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -357,11 +368,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ConfigError as e:
-        print(json.dumps({"error": str(e)}) if as_json else f"error: {e}", file=sys.stderr)
-        return EXIT_USAGE
+        return _fail(e, as_json, EXIT_USAGE)
     except CommandError as e:
-        print(json.dumps({"error": str(e)}) if as_json else f"error: {e}", file=sys.stderr)
-        return e.code
+        return _fail(e, as_json, e.code)
+    except NO_STATION_ERRORS as e:
+        return _fail(e, as_json, EXIT_NO_STATION)
+    except TreadmillError as e:
+        return _fail(e, as_json, EXIT_FAILED)
     except KeyboardInterrupt:
         return 130
 

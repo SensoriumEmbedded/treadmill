@@ -14,6 +14,7 @@ from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
 
+from treadmill.errors import TreadmillError
 from treadmill.station.model import (
     CaptureSpec,
     KeysSpec,
@@ -27,7 +28,7 @@ from treadmill.station.model import (
 from treadmill.station.registry import read_registry
 
 
-class ConfigError(Exception):
+class ConfigError(TreadmillError):
     """A rig or station file is missing, malformed or names something unknown."""
 
 

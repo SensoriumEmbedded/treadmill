@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from treadmill.errors import TreadmillError
 from treadmill.firmware.checkout import DEFAULT_WORK_ROOT
 
 SOURCES = Path(__file__).parent
@@ -43,7 +44,7 @@ ACME_ENV = "TREADMILL_ACME"
 PRG_LOAD = 0x0801
 
 
-class AssembleError(Exception):
+class AssembleError(TreadmillError):
     pass
 
 

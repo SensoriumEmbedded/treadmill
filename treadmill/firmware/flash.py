@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from treadmill.errors import TreadmillError
 from treadmill.firmware.hexinfo import HexInfo
 from treadmill.link import Link, LinkError, TransportError, find_port, open_serial
 from treadmill.link.banner import Banner
@@ -25,7 +26,7 @@ BOOTLOADER_BAUD = 134      # the Teensy core's documented soft-reboot request
 REAPPEAR_S = 90.0
 
 
-class FlashError(Exception):
+class FlashError(TreadmillError):
     pass
 
 

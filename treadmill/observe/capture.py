@@ -26,6 +26,7 @@ from typing import Callable, Iterable
 import cv2
 import numpy as np
 
+from treadmill.errors import TreadmillError
 from treadmill.station.config import data_dir
 from treadmill.station.model import CaptureSpec
 
@@ -35,9 +36,10 @@ SETTLE_S = 1.5                # after opening, the MS2109 shows its color bars f
 NO_SIGNAL_MATCH = 6.0         # mean absolute difference from the rig's no-signal pattern below which a frame is that pattern
 STABLE_TOLERANCE = 2.0        # mean absolute pixel difference between "the same" frames
 DEFAULT_TIMEOUT = 10.0
+FRESH_S = 1.0                 # a live feed delivers 25-60 frames a second; one older than this is not the picture now
 
 
-class CaptureError(Exception):
+class CaptureError(TreadmillError):
     pass
 
 
@@ -93,10 +95,21 @@ class FrameSource(ABC):
         with self._lock:
             return self._ring[-1] if self._ring else None
 
-    def next_frame(self, after: Frame | None = None, timeout: float = DEFAULT_TIMEOUT) -> Frame:
-        """A frame newer than ``after`` (the newest, when ``after`` is None)."""
+    def next_frame(self, after: Frame | None = None, timeout: float = DEFAULT_TIMEOUT,
+                   max_age: float = FRESH_S) -> Frame:
+        """A frame newer than ``after``; with no ``after``, the newest frame
+        when it is at most ``max_age`` old, else the next one to arrive. A
+        feed that stopped (the device unplugged, every frame since being the
+        no-signal pattern) times out rather than handing out the last
+        picture it saw as the picture now."""
         deadline = time.monotonic() + timeout
-        floor = after.seq if after else 0
+        if after is None:
+            newest = self.latest()
+            if newest is not None and time.monotonic() - newest.at <= max_age:
+                return newest
+            floor = newest.seq if newest else 0
+        else:
+            floor = after.seq
         while True:
             frame = self.latest()
             if frame is not None and frame.seq > floor:

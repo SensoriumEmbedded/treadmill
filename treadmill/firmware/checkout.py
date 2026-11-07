@@ -17,10 +17,12 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from treadmill.errors import TreadmillError
+
 DEFAULT_WORK_ROOT = Path("C:/tr-build/hil") if os.name == "nt" else Path.home() / "tr-build" / "hil"
 
 
-class CheckoutError(Exception):
+class CheckoutError(TreadmillError):
     pass
 
 
@@ -72,13 +74,18 @@ def _is_worktree(path: Path) -> bool:
 
 def worktree_for(primary: Path, ref: str, work_root: Path = DEFAULT_WORK_ROOT) -> Path:
     """A detached worktree of ``ref`` under the work root, reused when it
-    already exists at that commit."""
+    already exists at that commit. A reused worktree is put back to its
+    commit first: a define build edits ``TeensyROM.h`` in it, and a build
+    that died may have left anything, so what the last build left behind is
+    never the next build's "uncommitted changes"."""
     primary = Path(primary).resolve()
     commit = _git(primary, "rev-parse", "--verify", f"{ref}^{{commit}}")
     target = work_root / "wt" / commit[:12]
     if target.exists():
         at = _git(target, "rev-parse", "HEAD")
         if at == commit:
+            _git(target, "checkout", "--", ".")
+            _git(target, "clean", "-fd")
             return target
         _git(primary, "worktree", "remove", "--force", str(target))
     target.parent.mkdir(parents=True, exist_ok=True)

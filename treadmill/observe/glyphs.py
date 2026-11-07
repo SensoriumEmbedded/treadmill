@@ -34,6 +34,7 @@ import numpy as np
 from treadmill.c64.screen import (
     CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_ROWS,
 )
+from treadmill.errors import TreadmillError
 
 CELL = 16                                     # normalized cell size in pixels
 PAD = 4                                       # margin around a cell that spill reaches
@@ -54,7 +55,7 @@ _INVERT_AT = 128
 CORE = (slice(PAD, PAD + CELL), slice(PAD, PAD + CELL))
 
 
-class GlyphError(Exception):
+class GlyphError(TreadmillError):
     pass
 
 

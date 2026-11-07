@@ -11,11 +11,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from treadmill.errors import TreadmillError
 from treadmill.link.transport import TransportError, list_teensyrom_ports, open_serial
 from treadmill.link.trlink import Link, LinkError
 
 
-class NotFound(Exception):
+class NotFound(TreadmillError):
     pass
 
 

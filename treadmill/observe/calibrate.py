@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 
 from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_ROWS
+from treadmill.errors import TreadmillError
 from treadmill.observe.glyphs import BLANK_CODE, CELL, GlyphBank
 from treadmill.observe.normalize import (
     NORM_H, NORM_W, core, distance_map, dominant_color, median_color, noise_floor_of, normalize,
@@ -38,7 +39,7 @@ MIN_REFINE_CELLS = 20         # fewer known glyphs than this cannot pin an origi
 REFINE_MIN_CORRELATION = 0.2  # below this the picture is not the screen the codes describe
 
 
-class CalibrationError(Exception):
+class CalibrationError(TreadmillError):
     pass
 
 

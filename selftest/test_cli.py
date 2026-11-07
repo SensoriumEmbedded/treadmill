@@ -7,7 +7,7 @@ import cv2
 import pytest
 
 from selftest.synth import GEOMETRY, frame_of, menu_like_screen
-from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+from treadmill.cli import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE, main
 
 
 def test_stations_with_an_empty_lab(tmp_path: Path, monkeypatch, capsys):
@@ -45,3 +45,21 @@ def test_usage_errors_exit_two():
     assert e.value.code == 2
     with pytest.raises(SystemExit):
         main(["nope"])
+
+
+def test_hardware_errors_keep_the_json_contract(monkeypatch, capsys):
+    import treadmill.session
+    from treadmill.link.discover import NotFound
+    from treadmill.observe.capture import CaptureTimeout
+
+    def no_board(*args, **kwargs):
+        raise NotFound("no TeensyROM with chip id 1 on USB")
+    monkeypatch.setattr(treadmill.session, "open_station", no_board)
+    assert main(["screen", "--station", "s1", "--json"]) == EXIT_NO_STATION
+    assert "chip id 1" in json.loads(capsys.readouterr().err)["error"]
+
+    def feed_stopped(*args, **kwargs):
+        raise CaptureTimeout("no new frame within 10.0 s from CvCapture")
+    monkeypatch.setattr(treadmill.session, "open_station", feed_stopped)
+    assert main(["frame", "--station", "s1", "--out", "x.png", "--json"]) == EXIT_FAILED
+    assert "no new frame" in json.loads(capsys.readouterr().err)["error"]

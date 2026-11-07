@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
+from treadmill.errors import TreadmillError
 from treadmill.link import Link, LinkError, Refused, TransportError, find_port, open_serial
 from treadmill.link.banner import Banner
 from treadmill.link.state import MENU_READY, State, derive_state
@@ -28,7 +29,7 @@ C128_RESET_HOLD_S = 0.25        # no DMA within ~80 ms of a C128 reset release (
 
 
 
-class Wedged(Exception):
+class Wedged(TreadmillError):
     """The board stopped answering and nothing the station has could bring it back."""
 
 
@@ -49,15 +50,21 @@ class Board:
     # The DMA policy (plan 2.2): no DMA for a moment after a C128 reset, none while a test says the REU is live.
     dma_hold_until: float = 0.0
     reu_live: bool = False
+    # What every probe folds into the station's capabilities: the firmware's defines and the run's --caps-mask.
+    fw_defines: tuple[str, ...] = ()
+    caps_mask: frozenset[str] = frozenset()
+    probe_pending: bool = False          # a reconnect happened; whatever answers next is probed when the menu is up
 
     # -- opening ----------------------------------------------------------
 
     @classmethod
     def open(cls, station: Station, *, lock_wait: float = 5.0, attended: bool = False,
-             link_factory: Callable[[], Link] | None = None) -> "Board":
+             link_factory: Callable[[], Link] | None = None, fw_defines: tuple[str, ...] = (),
+             caps_mask: set[str] | frozenset[str] = frozenset()) -> "Board":
         """Lock the rig, find the board by chip id, open it and probe it.
         ``link_factory`` replaces discovery and the serial port (the self-tests
-        hand in a link to a fake board)."""
+        hand in a link to a fake board). Nothing stays held when this fails:
+        the lock and the port are released before the error leaves."""
         lock = RigLock(station.rig.id, wait=lock_wait).acquire()
         events = EventLog()
         try:
@@ -71,17 +78,32 @@ class Board:
             lock.release()
             raise
         board = cls(station=station, link=link, events=events, lock=lock,
-                    power=make_power(station.rig.power, attended))
-        board.probe()
+                    power=make_power(station.rig.power, attended),
+                    fw_defines=tuple(fw_defines), caps_mask=frozenset(caps_mask))
+        try:
+            board.probe()
+        except BaseException:
+            board.close()
+            raise
         return board
 
     def probe(self) -> None:
+        """Which image and board answer, and the station's capabilities from
+        that, with the firmware's defines and the run's mask folded in: a
+        re-probe after a reconnect lands where the first probe did."""
         probe = self.link.probe()
         self.image = probe.image
         self.banner = probe.banner
+        self.probe_pending = False
         kind = probe.banner.kind if probe.banner else None
         if kind:
-            self.station = self.station.with_probe(kind)
+            self.station = self.station.with_probe(kind, fw_defines=self.fw_defines).masked(self.caps_mask)
+
+    def mask(self, caps: set[str] | frozenset[str]) -> None:
+        """Take capabilities away for the rest of the run (--caps-mask, a
+        capture that did not open); a later probe keeps them away."""
+        self.caps_mask = self.caps_mask | frozenset(caps)
+        self.station = self.station.masked(self.caps_mask)
 
     def close(self) -> None:
         try:
@@ -130,11 +152,12 @@ class Board:
             except (LinkError, TransportError) as e:
                 last = str(e)
                 if self.link.stream.ended and self.reconnect_hook:
-                    self.link = self.reconnect_hook()
-                    self.link._on_unsolicited = self.events.feed
+                    self._reconnect()
                 time.sleep(BOOT_POLL_S)
                 continue
             if st.kind == MENU_READY:
+                if self.probe_pending:
+                    self.probe()
                 return
             last = st.kind
             time.sleep(BOOT_POLL_S)
@@ -171,13 +194,27 @@ class Board:
 
     def _rung_reboot(self) -> None:
         assert self.reboot_hook is not None
+        self.link.close()                    # the hook opens the port itself, at 134 baud
         self.reboot_hook()
         if self.reconnect_hook:
-            self.link = self.reconnect_hook()
-            self.link._on_unsolicited = self.events.feed
+            self._reconnect()
 
     def _rung_power(self) -> None:
         self.power.cycle(self.station.rig.power.off_seconds if self.station.rig.power else 5.0)
         if self.reconnect_hook:
-            self.link = self.reconnect_hook()
-            self.link._on_unsolicited = self.events.feed
+            self._reconnect()
+
+    def _reconnect(self) -> None:
+        """A new link after the board's USB went away (a reboot, a power
+        cycle, a reset out of the minimal image). The new link starts with
+        DMA refused and the board is probed again once the menu is up, since
+        what answers now may be another image or build. The old stream's
+        tap moves over, so a serial log that spans the reconnect is one
+        list and an offset taken before it stays valid."""
+        assert self.reconnect_hook is not None
+        old = self.link
+        old.close()
+        self.link = self.reconnect_hook()
+        self.link._on_unsolicited = self.events.feed
+        self.link.stream.tap.chunks[:0] = old.stream.tap.chunks
+        self.probe_pending = True

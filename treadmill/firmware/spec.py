@@ -12,6 +12,8 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
+from treadmill.errors import TreadmillError
+
 TARGETS = ("auto", "tr", "tr-plus")
 _DEFINE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _TAG = re.compile(r"^[A-Za-z0-9.\-]+$")
@@ -39,7 +41,7 @@ DEBUG_MARKS: dict[str, str] = {
 }
 
 
-class SpecError(ValueError):
+class SpecError(TreadmillError, ValueError):
     pass
 
 

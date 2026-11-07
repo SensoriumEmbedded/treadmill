@@ -19,6 +19,7 @@ import numpy as np
 from treadmill.c64.screen import (
     CHARSET_CUSTOM, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_ROWS, code_as_text,
 )
+from treadmill.errors import TreadmillError
 from treadmill.link.trlink import Link, ScreenDump
 from treadmill.observe.calibrate import Calibration, CalibrationError, refine, track
 from treadmill.observe.capture import Frame, FrameSource
@@ -40,7 +41,7 @@ RESIDUAL_ABS = 2.4               # x noise floor: what a blank cell's margin may
 RESIDUAL_REL = 0.6               # x predicted spill: a cell's own ink is never a small fraction of the prediction
 
 
-class ScreenError(Exception):
+class ScreenError(TreadmillError):
     pass
 
 

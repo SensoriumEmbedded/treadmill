@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
+from treadmill.errors import TreadmillError
+
 TCP_PORT = 2112
 CONNECT_TIMEOUT_S = 5.0
 # The board drops what arrives while its USB serial is still settling after
@@ -26,7 +28,7 @@ SERIAL_BAUD = 115200
 PJRC_VID = 0x16C0
 
 
-class TransportError(Exception):
+class TransportError(TreadmillError):
     """The port or connection could not be opened, or closed underneath us."""
 
 

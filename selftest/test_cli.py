@@ -47,7 +47,9 @@ def test_the_cli_loads_without_the_capture_stack():
 
     code = ("import sys, treadmill.cli; treadmill.cli.build_parser(); "
             "sys.exit(1 if 'cv2' in sys.modules or 'treadmill.driver' in sys.modules else 0)")
-    assert subprocess.run([sys.executable, "-c", code], capture_output=True, text=True).returncode == 0
+    # stdin detached: a test runner started in the background may hold no console handle to inherit
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    assert result.returncode == 0, result.stderr
 
 
 def test_usage_errors_exit_two():

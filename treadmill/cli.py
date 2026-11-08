@@ -239,8 +239,8 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
 
 
 def cmd_harvest(args: argparse.Namespace) -> int:
-    """Build the glyph bank for the rig's capture class: launch the allcodes
-    program for each character set, average frames of it, save the bank."""
+    """Build the station's glyph bank: launch the allcodes program for each
+    character set, average frames of it, save the bank."""
     import cv2
     import numpy as np
 
@@ -380,7 +380,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     from treadmill.observe.capture import Frame
     from treadmill.observe.channels import SOURCE_DMA, ScreenRead, read_video, xcheck
     from treadmill.observe.glyphs import GlyphBank
-    from treadmill.session import bank_path
+    from treadmill.session import find_bank
     from treadmill.station.config import data_dir
 
     image = cv2.imread(str(args.frame), cv2.IMREAD_COLOR)
@@ -392,7 +392,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     bank_file, calib_file = args.bank, args.calib
     if args.station:
         st = load_station(args.station)
-        bank_file = bank_file or bank_path(st)
+        bank_file = bank_file or find_bank(st)
         calib_file = calib_file or calibration_path(data_dir(), st.rig.capture.capture_class, st.machine.id)
     if not bank_file:
         raise CommandError("--station or --bank is needed", EXIT_USAGE)
@@ -549,6 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
     s.add_argument("--probe", choices=["idread", "menu"], default="idread")
+    s.add_argument("--golden-dir", help="menu probe: where the screen goldens live (default: tests/golden)")
     s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's current value")
     s.add_argument("--to", type=int, help="the last value to try; default: 100 past the first")
     s.add_argument("--step", type=int, default=10, help="the coarse step (default 10)")
@@ -580,7 +581,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fresh", action="store_true", help="start a new bank instead of refining the stored one")
     s.add_argument("--color", type=int, default=15, choices=range(16), metavar="0-15",
                    help="C64 color of the harvested text (15 light grey); harvest each color the tests will read")
-    s.add_argument("--out", help="write the bank here instead of data/glyphs/<capture class>.npz")
+    s.add_argument("--out", help="write the bank here instead of data/glyphs/<capture class>__<machine>.npz")
     s.set_defaults(func=cmd_harvest)
 
     s = sub.add_parser("screen", help="print the screen as text")

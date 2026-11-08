@@ -73,7 +73,7 @@ def test_type_set_covers_the_marks_in_menu_order():
     assert entries[0] == Entry(UP_DIR, MARK_DIR) and entries[1] == Entry("/sub", MARK_DIR)
     assert [e.name for e in entries[2:]] == sorted(e.name for e in entries[2:])
     rows = expected_listing(files)
-    assert rows[1].startswith("Src: SD Card") and rows[2] == "?" * 40 and len(parse_listing(rows).entries) == 13
+    assert rows[1].startswith("Src: SD Card") and rows[2].rstrip() == "//treadmill/types" and len(parse_listing(rows).entries) == 13
 
 
 @pytest.fixture
@@ -130,8 +130,8 @@ def test_driver_walks_the_fake_menu(fake):
     menu.up()
     many = menu.open("/many")
     assert many.page == (1, 2) and len(many.entries) == 19
-    page, index = menu.find("f20.prg")
-    assert page.page == (2, 2) and page.entries[index].name == "f20.prg"
+    page, index = menu.find("f20")                    # a typed file's extension is hidden by default
+    assert page.page == (2, 2) and page.entries[index].name == "f20"
     assert menu.up().page == (1, 1)
 
 

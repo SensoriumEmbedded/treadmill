@@ -63,6 +63,23 @@ def mark_for(filename: str) -> str:
     return EXTENSION_MARKS.get(name.rsplit(".", 1)[-1].lower(), MARK_UNKNOWN)
 
 
+def shown_path(path: str) -> str:
+    """The path row for a directory: the firmware appends each listed
+    directory name, its leading slash included, to a path that starts as
+    "/", so every path off the root begins with two (DriveDirLoad.ino)."""
+    return path if path == "/" else "/" + path
+
+
+def shown_name(filename: str, show_extensions: bool = False) -> str:
+    """The name a card or USB listing shows for a file: one of a type the
+    menu knows loses its extension unless Settings shows extensions, which
+    the firmware's default does not (``rsstItemName`` in IOH_TeensyROM.c);
+    a file of an unknown type keeps its whole name."""
+    if show_extensions or mark_for(filename) == MARK_UNKNOWN:
+        return filename
+    return filename.rsplit(".", 1)[0]
+
+
 @dataclass(frozen=True)
 class Entry:
     name: str

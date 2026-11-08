@@ -1,8 +1,8 @@
 % TeensyROM menu, Teensy Mem /Games: firmware 0.9, MainMenuItems.h
-% Row 0 is the version banner, the clock on row 1 is a wildcard, so is the path row.
+% Row 0 is the version banner, the clock on row 1 is a wildcard.
 |*                                       |
 |Src: Teensy Mem              ?????????? |
-|*                                       |
+|//Games                                 |
 | /.. <Up Dir>                       Dir |
 | Retromate Internet Chess v1.04    +Prg |
 | Beach Head II         256k MC      Crt |

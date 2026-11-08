@@ -48,6 +48,20 @@ cost or a wart with a known, small fix.
    each read, so `wait_text()` polls at a few reads a second. Reuse the
    last refined calibration while the frame has not moved, and refine when
    the decode confidence drops.
+9. **low** A reversed edge-line glyph reads as a solid block or a space.
+   `match()` in `treadmill/observe/glyphs.py` calls a cell solid when its
+   interior does not vary, and the interior leaves out the two-pixel margin
+   where such a glyph's one dark row lies. On the bench card a directory
+   name's first character is screen code $E4 (reversed $64), which video
+   read as $A0 on one capture and as a space on the next. No golden holds
+   one yet.
+10. **medium, with the region switch** Banks and calibrations are keyed by
+   machine, not by video standard. `bank_path()` in `treadmill/session.py`
+   and `calibration_path()` in `treadmill/observe/calibrate.py` name a file
+   per (capture class, machine), so the Kawari station switched to NTSC
+   would read with its PAL bank and grid (cells 24.8x25.2 px against
+   25.7x21.0). Key both by the board's video line as well when test 18
+   switches standards.
 
 ## Firmware builds
 
@@ -59,13 +73,24 @@ cost or a wart with a known, small fix.
 
 ## Tests and fixtures
 
-7. **low** The path row of a directory listing is open in the goldens.
-   `tests/golden/menu/games.screen.txt` and `pictures.screen.txt` wildcard
-   row 2 because no bench read of a Teensy Mem subdirectory exists yet to
-   show what the menu prints there (`rsstShortDirPath`). Pin it after the
-   first run of `tests/menu/test_item_types.py` on a board.
+7. **closed 2026-11-08, with the first bench run.** The path row of a
+   directory listing was open in the goldens. The board shows `//Games`:
+   the firmware appends each listed directory name, slash included, to a
+   path that starts as "/" (`shown_path()` in `treadmill/c64/menu.py`), and
+   the goldens and the card listing now pin it.
 8. **medium, with test 8** Only generated SD fixtures exist. `type_set()` in
    `treadmill/fixtures/sdcard.py` makes every byte itself; the private form
    the plan names (`data/sdcard/<class>/manifest.json` with a sha256 and a
    local path per file, `needs_asset`) is not built, so the cartridge images
    of test 8 have nowhere to be declared.
+11. **high, blocks test 20 on a TR+** The idread probe reads nothing on a
+   board. The firmware runs a launched PRG under the `None` IO handler
+   (`Loading IO handler: None` on the bench), so `idread.a`'s reads of
+   $DE05/$DE06 see the open bus, and `treadmill sweep p --probe idread`
+   failed every read at the default 150. `tests/sweep/test_tp_margin.py`
+   picks idread whenever the station has DMA, and the fake board serves
+   the registers to a PRG, so the offline sweep tests pass. Ways out: carry
+   the loop in a generic 8K cartridge image and count wrong reads of its
+   own ROM at $8000 (nS_PLAprop gates ROML reads as it gates IO1); or
+   require a Special IO handler that answers, as `tools/bench/regsweep.py`
+   does with the REU; or keep the menu probe only.

@@ -132,16 +132,22 @@ def _extents(is_bg: np.ndarray) -> tuple[float, float, float, float]:
     return left, right, top, bottom
 
 
+def border_of(frame: np.ndarray) -> tuple[int, int, int]:
+    """The border color: the median of a band around the frame's edges."""
+    h, w = frame.shape[:2]
+    bw, bh = max(2, int(w * EDGE_BAND)), max(2, int(h * EDGE_BAND))
+    band = np.concatenate([frame[:bh].reshape(-1, 3), frame[-bh:].reshape(-1, 3),
+                           frame[:, :bw].reshape(-1, 3), frame[:, -bw:].reshape(-1, 3)])
+    return median_color(band)
+
+
 def find_text_area(frame: np.ndarray, layout: str = LAYOUT_MENU) -> Calibration:
     """The text area's origin and cell size from one frame, by the bounding
     box of the background color against the border."""
     if layout not in _ROWS_VISIBLE:
         raise CalibrationError(f"layout is {LAYOUT_MENU!r} or {LAYOUT_BASIC!r}, not {layout!r}")
     h, w = frame.shape[:2]
-    bw, bh = max(2, int(w * EDGE_BAND)), max(2, int(h * EDGE_BAND))
-    band = np.concatenate([frame[:bh].reshape(-1, 3), frame[-bh:].reshape(-1, 3),
-                           frame[:, :bw].reshape(-1, 3), frame[:, -bw:].reshape(-1, 3)])
-    border = median_color(band)
+    border = border_of(frame)
     center = frame[h // 3:2 * h // 3, w // 3:2 * w // 3]
     background = dominant_color(center)
     contrast = float(np.linalg.norm(np.subtract(background, border, dtype=np.float32)))
@@ -216,14 +222,20 @@ def track(frame: np.ndarray, calib: Calibration) -> Calibration:
     """Follow small drift of the picture between frames: the left and bottom
     edges of the background rectangle are found again (both independent of
     the menu's top bar) and the origin moves by as much as they moved since
-    the calibration, cell sizes kept, so a refined origin is not undone. When
-    no rectangle is found, or it moved more than a cell, the calibration is
+    the calibration, cell sizes kept, so a refined origin is not undone. The
+    border is the frame's own, since a launched program sets its own color
+    (hello.a's dark grey against the menu's purple moved the grid a pixel when
+    the stored one was used). When the border is too like the background, no
+    rectangle is found, or it moved more than a cell, the calibration is
     returned unchanged."""
     if not calib.fits(frame):
         return calib
+    border = border_of(frame)
+    if float(np.linalg.norm(np.subtract(calib.background, border, dtype=np.float32))) < MIN_CONTRAST:
+        return calib
     f = frame.astype(np.float32)
     d_bg = np.linalg.norm(f - np.asarray(calib.background, np.float32), axis=-1)
-    d_bd = np.linalg.norm(f - np.asarray(calib.border, np.float32), axis=-1)
+    d_bd = np.linalg.norm(f - np.asarray(border, np.float32), axis=-1)
     try:
         left, _right, _top, bottom = _extents(d_bg < d_bd)
     except CalibrationError:

@@ -11,7 +11,7 @@ is the acceptance gate for the video channel and a running calibration.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
@@ -23,7 +23,7 @@ from treadmill.errors import TreadmillError
 from treadmill.link.trlink import Link, ScreenDump
 from treadmill.observe.calibrate import Calibration, CalibrationError, refine, track
 from treadmill.observe.capture import Frame, FrameSource
-from treadmill.observe.glyphs import CELL, GlyphBank, screen_match, spill
+from treadmill.observe.glyphs import BLANK_CODE, CELL, GlyphBank, Match, screen_match, spill
 from treadmill.observe.normalize import (
     cell_colors, color_distance, core, core_cells, distance_map, interior_blank,
 )
@@ -45,6 +45,12 @@ RESIDUAL_REL = 0.6               # x predicted spill: a cell's own ink is never 
 # than one harvested block does, a third of its level into the row below on the PAL picture and up to four
 # tenths from the border, while a cell's own stroke is at its text level, which is the neighbor's or close.
 SPILL_FRACTION = 0.5
+# A cell fitted below this many template units (the harvest color's level) and correlating worse than
+# FAINT_CORRELATION is spill the model did not predict, not ink: the darkest C64 colors on black (blue,
+# brown) fit at about 0.38, while on the PAL Kawari menu unpredicted spill along a cell's top row or left
+# column fit edge-line graphics ($63, $74) at 0.04-0.24 with correlations up to 0.78.
+FAINT_AMPLITUDE = 0.3
+FAINT_CORRELATION = 0.85
 
 
 class ScreenError(TreadmillError):
@@ -123,6 +129,17 @@ def neighbor_level(cells: np.ndarray, edge_level: float) -> np.ndarray:
     return best.reshape(SCREEN_BYTES)
 
 
+def drop_faint(m: Match) -> Match:
+    """The match with its faint cells (see FAINT_AMPLITUDE) read as spaces."""
+    faint = (m.codes != BLANK_CODE) & (m.amplitude < FAINT_AMPLITUDE) & (1.0 - m.distance < FAINT_CORRELATION)
+    if not faint.any():
+        return m
+    return replace(m, codes=np.where(faint, BLANK_CODE, m.codes).astype(np.uint8),
+                   confidence=np.where(faint, 1.0, m.confidence).astype(np.float32),
+                   distance=np.where(faint, 0.0, m.distance).astype(np.float32),
+                   amplitude=np.where(faint, 0.0, m.amplitude).astype(np.float32))
+
+
 def decode_cells(cells: np.ndarray, bank: GlyphBank, noise_floor: float, edge_level: float,
                  charset: str | None = None, passes: int = PASSES,
                  bleed: dict[str, list[float]] | None = None):
@@ -131,9 +148,9 @@ def decode_cells(cells: np.ndarray, bank: GlyphBank, noise_floor: float, edge_le
     cell is blank when its interior is at the noise floor and what is left
     in its margins is a small fraction of the spill predicted there, or of
     the brightest neighbor's level: the model is not exact, a cell's own
-    ink is never that small."""
-    m = screen_match(bank, cells, charset, noise_floor=noise_floor,
-                     blank=interior_blank(cells, noise_floor))
+    ink is never that small. A cell matched faintly and poorly is a space too."""
+    m = drop_faint(screen_match(bank, cells, charset, noise_floor=noise_floor,
+                                blank=interior_blank(cells, noise_floor)))
     corrected = cells
     from_neighbors = SPILL_FRACTION * neighbor_level(cells, edge_level)
     for _ in range(passes - 1):
@@ -144,7 +161,7 @@ def decode_cells(cells: np.ndarray, bank: GlyphBank, noise_floor: float, edge_le
                              RESIDUAL_REL * predicted.reshape(predicted.shape[0], -1).max(axis=1))
         allowed = np.maximum(allowed, from_neighbors)
         blank = interior_blank(corrected, noise_floor) & (residual < allowed)
-        m = screen_match(bank, corrected, charset, noise_floor=noise_floor, blank=blank)
+        m = drop_faint(screen_match(bank, corrected, charset, noise_floor=noise_floor, blank=blank))
     return m, corrected
 
 

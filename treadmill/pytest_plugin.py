@@ -348,7 +348,7 @@ def glyph_bank(request: pytest.FixtureRequest, board: Board, video: FrameSource 
         return harvested_bank(calibrated())
     bank = load_bank(board.station, request.config.getoption("--chargen"), log=_log)
     if bank is None:
-        _drop_video(board, run_dir, "no glyph bank for this capture class")
+        _drop_video(board, run_dir, "no glyph bank for this station or its capture class")
         return None
     run_dir.meta["glyph_bank"] = {"capture_class": bank.capture_class, "font": bank.font,
                                   "harvested": bank.harvested(), "created": bank.created}

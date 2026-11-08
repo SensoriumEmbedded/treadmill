@@ -17,12 +17,13 @@ from treadmill.c64.screen import KEYBUF, KEYCOUNT, SCREEN_BYTES, SCREEN_RAM_DEFA
 from treadmill.link.banner import parse_banner
 from treadmill.link.protocol import (
     ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, FAIL, FW_CHECK,
-    FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
+    FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, GOOD_SID, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
     READ_C64_MEM, RESET_C64, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
 )
 from treadmill.link.transport import PipeEnd, open_pipe
 
 WAIT_S = 2.0
+DISCARD_QUIET_S = 1.0           # DiscardCmdInput: twice SerialTimoutMillis of nothing arriving
 STATS_TRAILER = bytes([1, 0, 0, 0, 0x00, 0x2C, 0xA3, 0x30])
 BANNER = ("\n  FW: TeensyROM+ v0.9\r\n      Oct 30 2026, 10:00:00\r\n"
           "  Teensy: 816MHz  55.0C  UID: 19277260\r\n  C64  NTSC Vid  60 Hz\n  Boot: complete\n")
@@ -79,6 +80,7 @@ class FakeBoard:
     chatter_on_launch: str = "Loading IO handler: TeensyROM\n"
     boot_polls: int = 0                  # how many version polls say "in progress" after a reset
     booting_for: int = 0
+    startup_sid: bool = False            # the menu's startup SID, loaded partway through a boot, still to report
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
     menu: object = field(default=None, repr=False)
     # The bus timing model: a knob past its margin makes the C64's reads of TR-served bytes go
@@ -141,6 +143,11 @@ class FakeBoard:
                 self._refuse(end, "Busy!")
                 continue
             handler = self._handlers().get(value)
+            if self.startup_sid:
+                # GoodSIDToken goes out on its own when the menu loads its startup SID, so the first
+                # command after a reset can find it in front of its reply (seen on the bench).
+                self.startup_sid = False
+                end.write(board_reply(GOOD_SID))
             if handler is None:
                 end.write(f"Unk cmd: 0x{value:04x}\n".encode("latin-1"))
                 continue
@@ -252,6 +259,7 @@ class FakeBoard:
 
     def _reset(self, end: PipeEnd) -> None:
         self.booting_for = self.boot_polls
+        self.startup_sid = True
         self.busy = False
         self.heartbeat = False
         self.idread = None
@@ -322,8 +330,10 @@ class FakeBoard:
         self._ensure_directories(path)
         self._reply(end, ACK)
         data = self._receive(end, length)
-        if len(data) < length:
-            self._refuse(end, "Timeout waiting for file data")   # nothing kept: the firmware removes its partial file
+        if len(data) < length:                       # nothing kept: the firmware removes its partial file
+            self._refuse(end, "Timeout!")
+            self._refuse(end, f"Rec {len(data)} of {length} bytes")
+            self._discard(end, length - len(data))
             return
         if checksum(data) != total:
             self._refuse(end, "Checksum mismatch")
@@ -343,6 +353,17 @@ class FakeBoard:
                 break
             data += part
         return bytes(data)
+
+    @staticmethod
+    def _discard(end: PipeEnd, owed: int) -> None:
+        """DiscardCmdInput: what the sender still owed is dropped until it has
+        all come or a second passes with nothing arriving, so a command sent
+        inside that second is dropped with it."""
+        while owed > 0:
+            part = end.read(min(owed, 4096), DISCARD_QUIET_S)
+            if not part:
+                return
+            owed -= len(part)
 
     def _ensure_directories(self, path: str) -> None:
         """EnsureDirectory: every folder on the way to a posted file exists afterwards."""

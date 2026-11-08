@@ -64,6 +64,19 @@ def test_station_loads_with_registry_and_overrides(lab: Path):
     assert tier(st) == "0/1/3"
 
 
+def test_a_station_reads_with_its_own_bank_before_its_capture_class_s(lab: Path):
+    from treadmill.session import bank_path, find_bank
+
+    st = load_station("rigA-sys1-trplus", lab)
+    own, shared = lab / "glyphs" / "svideo-acme__1.npz", lab / "glyphs" / "svideo-acme.npz"
+    assert bank_path(st, lab) == own and find_bank(st, lab) == own        # nothing harvested: where one goes
+    shared.parent.mkdir()
+    shared.write_bytes(b"")
+    assert find_bank(st, lab) == shared
+    own.write_bytes(b"")
+    assert find_bank(st, lab) == own
+
+
 def test_probe_adds_dma_caps_and_mask_removes_them(lab: Path):
     st = load_station("rigA-sys1-trplus", lab).with_probe(TR_PLUS, fw_defines=("Dbg_SerDMA",))
     assert st.has("dma", "screen_dma", "reset_sense", "fw:Dbg_SerDMA")

@@ -159,3 +159,12 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
     assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
                  "--fine", "0", "--json"]) == EXIT_USAGE
     assert "fine must be at least 1" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_sweep_command_with_the_menu_probe(lab: Path, capsys):  # noqa: F811
+    code = main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
+                 "--probe", "menu", "--to", "260", "--step", "20", "--fine", "5", "--json"])
+    out, err = capsys.readouterr()
+    assert code == EXIT_OK, err
+    payload = json.loads(out)
+    assert payload["probe"] == "menu" and payload["last_clean"] <= 210 < payload["first_fail"] and payload["restored"]

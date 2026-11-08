@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 
-from treadmill.c64.menu import MARK_DIR, UP_DIR, Entry, mark_for, render_listing
+from treadmill.c64.menu import MARK_DIR, UP_DIR, Entry, mark_for, render_listing, shown_name, shown_path
 from treadmill.errors import TreadmillError
 from treadmill.link.trlink import Link, Refused
 
@@ -161,19 +161,21 @@ def _menu_order(name: str) -> bytes:
     return name.lower().encode("latin-1", "replace")
 
 
-def menu_entries(files: list[FixtureFile], at_root: bool = False) -> list[Entry]:
+def menu_entries(files: list[FixtureFile], at_root: bool = False, show_extensions: bool = False) -> list[Entry]:
     """The entries the menu lists for the set's own directory: the up-dir
-    entry, its subdirectories as ``/name`` and its files, sorted together."""
-    entries = [] if at_root else [Entry(UP_DIR, MARK_DIR)]
-    entries += [Entry("/" + d, MARK_DIR) for d in sorted({f.folder for f in files if f.folder})]
-    entries += [Entry(f.basename, f.mark) for f in files if not f.folder]
-    return sorted(entries, key=lambda e: _menu_order(e.name))
+    entry, its subdirectories as ``/name`` and its files, sorted together by
+    their whole names, each file shown as ``shown_name`` has it."""
+    named = [] if at_root else [(UP_DIR, Entry(UP_DIR, MARK_DIR))]
+    named += [("/" + d, Entry("/" + d, MARK_DIR)) for d in sorted({f.folder for f in files if f.folder})]
+    named += [(f.basename, Entry(shown_name(f.basename, show_extensions), f.mark)) for f in files if not f.folder]
+    return [entry for _, entry in sorted(named, key=lambda pair: _menu_order(pair[0]))]
 
 
-def expected_listing(files: list[FixtureFile], source: str = "sd") -> list[str]:
+def expected_listing(files: list[FixtureFile], source: str = "sd", show_extensions: bool = False,
+                     directory: str = TYPES_DIR) -> list[str]:
     """The 25 rows the menu shows for the set's directory, with the version
-    banner, the clock and the path row left open."""
-    return render_listing(source, "?" * 40, menu_entries(files))
+    banner and the clock left open."""
+    return render_listing(source, shown_path(directory), menu_entries(files, show_extensions=show_extensions))
 
 
 # -- putting a set on the card ----------------------------------------------------

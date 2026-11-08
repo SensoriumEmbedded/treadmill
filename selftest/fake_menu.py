@@ -18,7 +18,7 @@ from treadmill.c64.keys import (
 )
 from treadmill.c64.menu import (
     ANY_ROW, EMPTY, FIRST_ITEM_ROW, ITEMS_PER_PAGE, MARK_DIR, MARK_NONE, MARK_UNKNOWN, SCREEN_COLUMNS, UP_DIR,
-    Entry, mark_for, render_listing,
+    Entry, mark_for, render_listing, shown_name, shown_path,
 )
 from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
 from treadmill.observe.golden import save_golden
@@ -65,7 +65,7 @@ PICTURES = [
     Entry("KP: Tiger", "Kla"),
 ]
 TREE = {"/": ROOT, "/Games": GAMES, "/Pictures": PICTURES}
-GOLDENS = {"root": ("/", ROOT), "games": (ANY_ROW, GAMES), "pictures": (ANY_ROW, PICTURES)}
+GOLDENS = {"root": ("/", ROOT), "games": ("/Games", GAMES), "pictures": ("/Pictures", PICTURES)}
 
 _SOURCE_BY_KEY = {F1: "teensy", F3: "sd", F5: "usb"}
 CLOCK = "12:00:00am"
@@ -83,8 +83,9 @@ def card_entries(board, path: str) -> list[Entry]:
     files = [p for p in board.files if _parent(p) == path]
     entries = [] if path == "/" else [_UP]
     entries += [Entry("/" + d.rsplit("/", 1)[-1], MARK_DIR) for d in dirs]
-    entries += [Entry(p.rsplit("/", 1)[-1], mark_for(p)) for p in files]
-    entries.sort(key=lambda e: e.name.lower().encode("latin-1", "replace"))
+    named = [(e.name, e) for e in entries]
+    named += [(p.rsplit("/", 1)[-1], Entry(shown_name(p.rsplit("/", 1)[-1]), mark_for(p))) for p in files]
+    entries = [e for _, e in sorted(named, key=lambda pair: pair[0].lower().encode("latin-1", "replace"))]
     return entries or [Entry(EMPTY, MARK_NONE)]
 
 
@@ -125,7 +126,7 @@ class FakeMenu:
             # The NTSC item-type misread: past the read margin every other item's type comes back wrong.
             entries = [Entry(e.name, MARK_UNKNOWN if i % 2 == 0 and e.mark != MARK_NONE else e.mark, e.handler)
                        for i, e in enumerate(entries)]
-        return render_listing(self.source, self.path, entries, (self.page, self.pages()), clock=CLOCK, banner=banner)
+        return render_listing(self.source, shown_path(self.path), entries, (self.page, self.pages()), clock=CLOCK, banner=banner)
 
     def render(self) -> None:
         codes = bytearray()
@@ -199,15 +200,13 @@ class FakeMenu:
 
 def write_goldens(folder: Path) -> list[Path]:
     """The Teensy Mem goldens: the root, /Games and /Pictures listings, the
-    banner, the clock and (off the root) the path row left open."""
+    banner and the clock left open."""
     folder = Path(folder)
     out = []
     for name, (path, entries) in GOLDENS.items():
-        rows = ["*" if r == ANY_ROW else r for r in render_listing("teensy", path, entries)]
-        header = (f"% TeensyROM menu, Teensy Mem {path if path != ANY_ROW else '/' + name.capitalize()}: "
-                  "firmware 0.9, MainMenuItems.h",
-                  "% Row 0 is the version banner, the clock on row 1 is a wildcard" +
-                  (", so is the path row." if path == ANY_ROW else "."))
+        rows = ["*" if r == ANY_ROW else r for r in render_listing("teensy", shown_path(path), entries)]
+        header = (f"% TeensyROM menu, Teensy Mem {path}: firmware 0.9, MainMenuItems.h",
+                  "% Row 0 is the version banner, the clock on row 1 is a wildcard.")
         out.append(save_golden(rows, folder / f"{name}.screen.txt", header))
     return out
 

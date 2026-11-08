@@ -25,8 +25,8 @@ from treadmill.c64.screen import (
 from treadmill.errors import TreadmillError
 from treadmill.link.banner import TR_PLUS, Banner, parse_banner
 from treadmill.link.protocol import (
-    ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVES, FAIL, FW_CHECK,
-    GET_DIR_NDJSON, GET_FILE, IMAGES, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE, READ_C64_MEM,
+    ACK, BAD_SID, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVES, FAIL, FW_CHECK,
+    GET_DIR_NDJSON, GET_FILE, GOOD_SID, IMAGES, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE, READ_C64_MEM,
     RESET_C64, STATS_TRAILER_BYTES, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
     from_board, path_field, to_board,
 )
@@ -43,6 +43,13 @@ TRAILER_S = 0.3
 TEXT_REPLY = (5.0, 0.3, 30.0)    # first byte, idle, total
 FAIL_TEXT = (1.0, 0.1, 2.0)
 KEYBUF_DRAIN_S = 5.0
+# After a failed transfer the board discards what the sender still owed until a second passes with
+# nothing arriving (ControlComms.md, under Write C64 Memory Spans; PostFile does the same), and a
+# command sent inside that second is discarded with it.
+DISCARD_QUIET_S = 1.2
+# Sent on their own whenever a SID's header is parsed, the menu's startup SID partway through a boot
+# included (ControlComms.md): never the reply a command is waiting for.
+ASYNC_TOKENS = (GOOD_SID, BAD_SID)
 
 
 class LinkError(TreadmillError):
@@ -247,7 +254,8 @@ class Link:
         caller that wants replacement deletes first. ``pace`` sends the data
         as a slow host would, ``(bytes per write, seconds between writes)``;
         ``truncate`` sends only that many bytes and then waits for the board
-        to give the transfer up, which it reports as a refusal."""
+        to give the transfer up, which it reports as a refusal, and for it
+        to stop discarding the bytes it was still owed."""
         data = bytes(data)
         header = (to_board(len(data), 4) + to_board(checksum(data))
                   + bytes([drive_number(drive)]) + path_field(path))
@@ -263,7 +271,12 @@ class Link:
             for i in range(0, len(body), chunk):
                 self._s.write(body[i:i + chunk])
                 time.sleep(pause)
-        self._ack(f"post {path} data", POST_DATA_S)
+        try:
+            self._ack(f"post {path} data", POST_DATA_S)
+        except Refused:
+            if len(body) < len(data):
+                time.sleep(DISCARD_QUIET_S)
+            raise
         self._trailer()
 
     def push_file(self, data: bytes, path: str, drive: str | int = "sd") -> None:
@@ -323,10 +336,15 @@ class Link:
         self._expect(ACK, what, timeout)
 
     def _expect(self, token: int, what: str, timeout: float = REPLY_S) -> None:
-        reply = self._s.read(REPLY_BYTES, timeout)
-        if len(reply) < REPLY_BYTES:
-            raise NoReply(f"{what}: no reply from the board")
-        value = from_board(reply)
+        deadline = time.monotonic() + timeout
+        while True:
+            reply = self._s.read(REPLY_BYTES, max(deadline - time.monotonic(), 0.0))
+            if len(reply) < REPLY_BYTES:
+                raise NoReply(f"{what}: no reply from the board")
+            value = from_board(reply)
+            if value not in ASYNC_TOKENS:
+                break
+            self._on_unsolicited(reply)
         if value == token:
             return
         if value == FAIL:

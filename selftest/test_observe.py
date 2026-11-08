@@ -23,7 +23,7 @@ from treadmill.observe import (
 from treadmill.observe.glyphs import CELL, PAD, Font, composite, match
 from treadmill.observe.liveness import cell_change_rate
 import treadmill.observe.channels as channels
-from treadmill.observe.render import DARK_GREY, LIGHT_GREY, PALETTE_BGR, Geometry
+from treadmill.observe.render import BLACK, DARK_GREY, LIGHT_GREY, PALETTE_BGR, WHITE, Geometry
 from treadmill.link.trlink import ScreenDump
 
 
@@ -148,8 +148,30 @@ def test_spill_under_a_bar_reads_blank_while_a_bar_glyph_stays(calib, bank, monk
     read = read_video(Frame(frame, 0.0, 1), calib, bank, follow=False)
     assert int((read.codes != codes).sum()) == 0
     monkeypatch.setattr(channels, "SPILL_FRACTION", 0.0)
+    monkeypatch.setattr(channels, "FAINT_AMPLITUDE", 0.0)              # a strip this dim is a faint cell too
     without = read_video(Frame(frame, 0.0, 1), calib, bank, follow=False)
     assert int((without.codes[4 * SCREEN_COLUMNS:5 * SCREEN_COLUMNS] != 0x20).sum()) > 10
+
+
+def test_faint_stray_lines_read_blank_while_dark_text_stays(calib, bank, monkeypatch):
+    """Stray light along a blank cell's top row or left column, which the spill
+    model does not predict (the PAL Kawari menu has it), is no glyph; text in
+    the darkest colors on black still reads."""
+    codes = text_screen({1: "blue text", 2: "brown text"})
+    colors = np.full(codes.shape, LIGHT_GREY)
+    colors[SCREEN_COLUMNS:2 * SCREEN_COLUMNS] = 6
+    colors[2 * SCREEN_COLUMNS:3 * SCREEN_COLUMNS] = 9
+    frame = frame_of(codes, colors, seed=14)
+    level = (PALETTE_BGR[LIGHT_GREY] * 0.4).astype(np.uint8)
+    y = int(round(GEOMETRY.y0 + 10 * GEOMETRY.cell_h))
+    frame[y:y + 2, int(GEOMETRY.x0 + 5 * GEOMETRY.cell_w):int(GEOMETRY.x0 + 25 * GEOMETRY.cell_w)] = level
+    x = int(round(GEOMETRY.x0 + 30 * GEOMETRY.cell_w))
+    frame[int(GEOMETRY.y0 + 15 * GEOMETRY.cell_h):int(GEOMETRY.y0 + 20 * GEOMETRY.cell_h), x:x + 2] = level
+    read = read_video(Frame(frame, 0.0, 1), calib, bank, follow=False)
+    assert int((read.codes != codes).sum()) == 0
+    monkeypatch.setattr(channels, "FAINT_AMPLITUDE", 0.0)
+    without = read_video(Frame(frame, 0.0, 1), calib, bank, follow=False)
+    assert int((without.codes != codes).sum()) > 5
 
 
 def test_a_read_refines_a_grid_a_pixel_and_a_part_in_a_thousand_off(calib, bank):
@@ -173,6 +195,18 @@ def test_tracking_follows_a_shifted_picture(calib, bank):
     far = Geometry(GEOMETRY.size, GEOMETRY.x0 + 60.0, GEOMETRY.y0, GEOMETRY.width, GEOMETRY.height)
     assert track(frame_of(codes, colors, geometry=far, seed=8), calib) == calib     # too far: untouched
     assert track(np.zeros((10, 10, 3), np.uint8), calib) == calib                  # wrong size: untouched
+
+
+def test_tracking_takes_the_border_from_the_frame():
+    """A launched program sets its own border color: the tracker finds the
+    text area against the frame's border, not the one the calibration saw."""
+    codes, colors = menu_like_screen(9)
+    cal = find_text_area(frame_of(codes, colors, seed=9, border=WHITE), LAYOUT_MENU)
+    moved = Geometry(GEOMETRY.size, GEOMETRY.x0 + 2.0, GEOMETRY.y0 - 1.0, GEOMETRY.width, GEOMETRY.height)
+    tracked = track(frame_of(codes, colors, geometry=moved, seed=10, border=DARK_GREY), cal)
+    assert abs(tracked.x0 - (cal.x0 + 2.0)) < 0.1 and abs(tracked.y0 - (cal.y0 - 1.0)) < 0.1
+    like_background = frame_of(codes, colors, geometry=moved, seed=10, border=BLACK)
+    assert track(like_background, cal) == cal                                     # nothing to track against
 
 
 def test_bank_round_trip_and_bad_shapes(bank, tmp_path: Path):

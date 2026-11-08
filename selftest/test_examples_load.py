@@ -27,5 +27,6 @@ def test_example_rig_and_station_load(tmp_path: Path):
     assert st.rig.power is None and st.rig.keys is None
     assert st.machine.nickname == "bench-a" and st.machine.boot_timeout_s == 60.0
     assert st.tr.uid == "00000000"
-    assert st.settings_baseline == {"tcp_listener": False, "reset_detect": True, "autolaunch": "none"}
+    assert st.settings_baseline == {"tcp_listener": False, "reset_detect": True, "autolaunch": "none",
+                                    "show_extensions": False}
     assert st.has("video") and not st.has("power", "keys_hw", "eeprom_reset")

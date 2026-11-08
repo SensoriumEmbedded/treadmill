@@ -62,7 +62,8 @@ the registry plus a TeensyROM board. To add one:
    the capabilities each one has.
 3. `treadmill calibrate --station <id>` finds the text area in the picture
    from the menu's banner row, and `treadmill harvest --station <id>` builds
-   the glyph bank for the rig's capture class from the suite's own program.
+   the station's glyph bank from the suite's own program (a station without
+   one reads with `data/glyphs/<capture class>.npz` when that exists).
    `treadmill screen --station <id> --xcheck` then shows how far the video
    read is from the DMA read.
 

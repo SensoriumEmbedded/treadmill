@@ -26,11 +26,13 @@ def test_teensy_mem_directory(menu, screen, goldens, directory, golden):
 
 
 @pytest.mark.needs("keys_kernal")
-def test_card_type_set(menu, screen, goldens, sd_fixtures):
+def test_card_type_set(menu, screen, goldens, sd_fixtures, station):
     """One file per mark in one directory of the card: the listing shows each
     file with the mark its extension earns, in the menu's sort order."""
     menu.select_source("sd")
     menu.open(FIXTURE_ROOT)                                   # "/treadmill", as the listing names a directory
     listing = menu.open("/" + TYPES_DIR.rsplit("/", 1)[-1])   # "/types"
     assert len(listing.entries) == len(sd_fixtures) + 1, listing.names      # files, one subdirectory, no stray
-    goldens.check_rows(screen.wait_settled().rows(), expected_listing(type_set()), "menu/sd-types")
+    show_extensions = bool(station.settings_baseline.get("show_extensions", False))
+    goldens.check_rows(screen.wait_settled().rows(), expected_listing(type_set(), show_extensions=show_extensions),
+                       "menu/sd-types")

@@ -42,7 +42,18 @@ def fake_requested() -> bool:
 
 
 def bank_path(station: Station, root: Path | None = None) -> Path:
-    return Path(root or data_dir()) / "glyphs" / f"{station.rig.capture.capture_class}.npz"
+    """The station's own bank, keyed like its calibration: a bank learns one
+    picture's blur and spill, and the PAL Kawari menu reads with no unsure
+    cell on its own bank against three to five a frame on the C128's."""
+    return Path(root or data_dir()) / "glyphs" / f"{station.rig.capture.capture_class}__{station.machine.id}.npz"
+
+
+def find_bank(station: Station, root: Path | None = None) -> Path:
+    """The bank a station reads with: its own when one was harvested on its
+    picture, else the one for the rig's capture class."""
+    own = bank_path(station, root)
+    shared = own.with_name(f"{station.rig.capture.capture_class}.npz")
+    return own if own.is_file() or not shared.is_file() else shared
 
 
 def open_video(station: Station, log=print) -> FrameSource | None:
@@ -60,10 +71,10 @@ def open_video(station: Station, log=print) -> FrameSource | None:
 
 
 def load_bank(station: Station, chargen: str | None = None, root: Path | None = None, log=print) -> GlyphBank | None:
-    """The harvested bank for the rig's capture class; failing that, a
-    bootstrap from a character ROM named by ``chargen`` or TREADMILL_CHARGEN;
-    failing that, None."""
-    path = bank_path(station, root)
+    """The harvested bank (``find_bank``); failing that, a bootstrap from a
+    character ROM named by ``chargen`` or TREADMILL_CHARGEN; failing that,
+    None."""
+    path = find_bank(station, root)
     if path.is_file():
         bank = GlyphBank.load(path)
         log(f"[video] glyph bank {path.name}: {bank.harvested()} of 512 codes harvested")

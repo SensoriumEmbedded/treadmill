@@ -6,7 +6,7 @@ TeensyROM over USB serial, watching them through a video capture device
 and, on a TR+, DMA readback. Start with [README.md](README.md).
 
 - **Self-tests**, no hardware: `TREADMILL_FW_REPO=<firmware checkout>
-  python -m pytest -q -p no:anyio selftest` (about eight minutes; the two
+  python -m pytest -q -p no:anyio selftest` (about fourteen minutes; the two
   offline runs of `tests/` are most of it).
 - **Driving a station** is the [`treadmill`](.claude/skills/treadmill/SKILL.md)
   skill: which command fits which ask, the `--json` and exit-code contract,

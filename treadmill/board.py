@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Callable
 
 from treadmill.errors import TreadmillError
 from treadmill.firmware.flash import REAPPEAR_S, relaunch
-from treadmill.link import Link, LinkError, Refused, TransportError, find_port, open_serial
+from treadmill.link import Link, LinkError, NotFound, Refused, TransportError, find_port, open_serial
 from treadmill.link.banner import Banner
 from treadmill.link.state import MENU_READY, State, derive_state
 from treadmill.link.unsolicited import EventLog
@@ -208,7 +208,7 @@ class Board:
                 self.wait_for_menu()
                 self.recoveries.append(name)
                 return
-            except (LinkError, TransportError, PowerUnavailable, Refused) as e:
+            except (LinkError, TransportError, PowerUnavailable, Refused, NotFound) as e:
                 failures.append(f"{name}: {e}")
         self.wedged_reason = "; ".join(failures) or "no recovery rung available"
         raise Wedged(self.wedged_reason)

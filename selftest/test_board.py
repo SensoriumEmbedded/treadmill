@@ -7,8 +7,8 @@ import pytest
 
 from selftest.fake_board import start_fake_board
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
-from treadmill.board import Board
-from treadmill.link import Link, TransportError
+from treadmill.board import Board, Wedged
+from treadmill.link import Link, NotFound, TransportError
 from treadmill.station import load_station
 from treadmill.station.lock import HELD_ENV, RigLock
 
@@ -32,6 +32,28 @@ def test_reconnect_probes_again_and_keeps_the_caps(lab):  # noqa: F811
         assert board.link.dma_allowed and not board.probe_pending
         assert board.station.has("dma", "fw:Dbg_SerDMA") and not board.station.has("screen_dma")
         assert board.link.stream.tap.chunks[:len(before)] == before
+    finally:
+        board.close()
+
+
+def test_a_reconnect_that_finds_no_board_marks_the_station_wedged(lab):  # noqa: F811
+    """On a port, the reconnect hook looks the board up by chip id, and a
+    board that never came back is NotFound: a rung that failed, not a crash."""
+    _, stream = start_fake_board()
+    board = Board.open(load_station("s1"), link_factory=lambda: Link(stream))
+    try:
+        board.reboot_hook = lambda: None
+
+        def gone() -> Link:
+            raise NotFound("no TeensyROM with chip id 1 on USB")
+
+        board.reconnect_hook = gone
+        stream.close()
+        with pytest.raises(Wedged, match="usb-reboot: no TeensyROM"):
+            board.ensure_menu()
+        assert board.wedged_reason and board.recoveries == []
+        with pytest.raises(Wedged):
+            board.ensure_menu()                         # the rest of the run skips without retrying
     finally:
         board.close()
 

@@ -522,7 +522,8 @@ def _capability_gate(request: pytest.FixtureRequest):
         pytest.skip(f"station {st.id} lacks {', '.join(missing)}")
     fw_missing = [d for d in needs_fw if f"fw:{d}" not in st.caps]
     if fw_missing:
-        pytest.skip(f"firmware lacks {', '.join(fw_missing)}; run with --define or --auto-rebuild")
+        pytest.skip(f"firmware lacks {', '.join(fw_missing)}; run with "
+                    + " ".join(f"--define {d}" for d in fw_missing))
     if tolerant_only and st.machine.timing_tolerant \
             and not request.config.getoption("--include-tolerant"):
         pytest.skip(f"{st.machine.model} is timing-tolerant; --include-tolerant to run anyway")

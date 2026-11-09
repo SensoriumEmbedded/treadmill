@@ -71,7 +71,7 @@ pattern; keep one-off scripts under `scripts/`, dated in their docstring.
 ## Self-tests and the fake board
 
 `TREADMILL_FW_REPO=<checkout> python -m pytest -q -p no:anyio selftest` runs
-everything with no hardware (about eight minutes); `selftest/test_hw_tests_offline.py`
+everything with no hardware (about fourteen minutes); `selftest/test_hw_tests_offline.py`
 runs the real `tests/` tree against the fake board. With `TREADMILL_FAKE_BOARD=1`
 every command above runs against the fake, so a new test or script can be
 tried before it meets a board.

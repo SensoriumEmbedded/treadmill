@@ -20,12 +20,11 @@ cost or a wart with a known, small fix.
    `last_no_signal` in `treadmill/observe/capture.py`); with a lost signal
    the ring keeps the last real frames and the verdict is STATIC. Fix:
    hand the capture's drop count and time to `classify()`.
-2. **medium** A reconnect that finds no board escapes the recovery ladder.
-   `find_port()` raises `NotFound` inside `Board._reconnect()`, and
-   `ensure_menu()` in `treadmill/board.py` catches `LinkError`,
-   `TransportError`, `PowerUnavailable` and `Refused` only, so a test
-   errors with a traceback instead of the station marking itself wedged.
-   One tuple entry.
+2. **closed 2026-11-09, with the Phase 1 clean-up.** A reconnect that found
+   no board escaped the recovery ladder: `find_port()` raises `NotFound`
+   inside `Board._reconnect()`, and `ensure_menu()` in `treadmill/board.py`
+   did not catch it, so a test errored with a traceback instead of the
+   station marking itself wedged. The ladder now counts it as a failed rung.
 3. **closed 2026-11-07, with the driver CLI.** The recovery hooks belong in
    `Board.open`. The pytest plugin's `board` fixture attached `reconnect_hook`
    and `reboot_hook`; `open_station()` in `treadmill/session.py` attached
@@ -70,6 +69,11 @@ cost or a wart with a known, small fix.
    newlines and writes with `newline=""`, so a CRLF header comes out LF on
    every line and the diff hash covers the whole file. Harmless in a
    worktree that is cleaned on reuse; read and write bytes to fix.
+12. **low** `--auto-rebuild` (plan section 2.3) is not built. A selection
+   whose tests need different define sets runs once per set by hand; the
+   skip in `_capability_gate()` (`treadmill/pytest_plugin.py`) names the
+   `--define` flags the skipped test needs. Build it when a nightly run
+   mixes debug suites with the baseline.
 
 ## Tests and fixtures
 

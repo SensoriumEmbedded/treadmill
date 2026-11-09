@@ -28,7 +28,7 @@ reports/              one folder per run: run.json, report.html, one folder per 
 ```
 pip install -e .
 treadmill stations                                   # the stations data/stations/*.toml describes
-TREADMILL_FW_REPO=<TeensyROM checkout> pytest        # the self-tests, no hardware (about eight minutes)
+TREADMILL_FW_REPO=<TeensyROM checkout> pytest        # the self-tests, no hardware (about fourteen minutes)
 treadmill run --station <id>                         # the hardware tests against the firmware on the board
 treadmill run --station <id> --fw ref=main           # build main for the board, flash it, verify it, then test
 treadmill run --station <id> --caps-mask dma,reset_sense,keys_kernal   # the plain-TR tier on a TR+ station

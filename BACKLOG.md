@@ -83,14 +83,9 @@ cost or a wart with a known, small fix.
    the plan names (`data/sdcard/<class>/manifest.json` with a sha256 and a
    local path per file, `needs_asset`) is not built, so the cartridge images
    of test 8 have nowhere to be declared.
-11. **high, blocks test 20 on a TR+** The idread probe reads nothing on a
-   board. The firmware runs a launched PRG under the `None` IO handler
-   (`Loading IO handler: None` on the bench), so `idread.a`'s reads of
-   $DE05/$DE06 see the open bus, and `treadmill sweep p --probe idread`
-   failed every read at the default 150. `tests/sweep/test_tp_margin.py`
-   picks idread whenever the station has DMA, and the fake board serves
-   the registers to a PRG, so the offline sweep tests pass. Ways out: carry
-   the loop in a generic 8K cartridge image and count wrong reads of its
-   own ROM at $8000 (nS_PLAprop gates ROML reads as it gates IO1); or
-   require a Special IO handler that answers, as `tools/bench/regsweep.py`
-   does with the REU; or keep the menu probe only.
+11. **closed 2026-11-08, with the cartridge probe.** The idread probe read
+   nothing on a board: a launched PRG runs under the `None` IO handler, so
+   its reads of $DE05/$DE06 saw the open bus. `idread.a` is now a one-bank
+   EasyFlash cartridge that counts wrong reads of its own ROM and of the
+   EasyFlash IO2 page apart, since the two paths have different edges, and
+   the margin test sweeps both ways.

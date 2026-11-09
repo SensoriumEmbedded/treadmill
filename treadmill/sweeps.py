@@ -8,10 +8,17 @@ failed; a *search* walks the knob from its default outward in coarse steps,
 then bisects the first failing interval down to ``fine``. The defaults are
 restored on exit whatever happened, and the result is a margin: the last
 clean value, the first failing one, and every point probed. The TeensyROM
-cannot see its own read errors, so the probes are the C64's: a program
-counting wrong register reads (``idread``, read back by DMA on a TR+), or
-the menu itself compared with its golden after a reset (``menu``, by video
-on any TR).
+cannot see its own read errors, so the probes are the C64's: a cartridge
+counting wrong reads of its ROM and of its IO2 page apart (``idread``,
+read back by DMA on a TR+), or the menu itself compared with its golden
+after a reset (``menu``, by video on any TR).
+
+``nS_PLAprop`` has an edge each way. Raised, the data leaves too late, and
+IO reads go first: the board drives them only after both ROM tests and a
+call into the IO handler. Lowered, the select lines are sampled before the
+slowest has asserted, IO1 and IO2 coming through a decoder after the PLA.
+Below ``nS_RWnReady`` the knob does nothing, since both waits count from the
+start of the cycle and the address read comes first.
 """
 
 from __future__ import annotations
@@ -29,8 +36,9 @@ from treadmill.link.dbgcmds import TIMING_KNOBS, TIMING_NAMES
 from treadmill.observe.channels import ScreenChannel, ScreenError
 from treadmill.observe.golden import Golden, compare, save_golden
 
-IDREAD_RESULTS = 0xC000           # idread.a's counters: passes (16-bit), wrong reads (24-bit)
-IDREAD_READS_PER_PASS = 512       # two registers, 256 rounds
+IDREAD_RESULTS = 0xC000           # idread.a's counters: passes (16-bit), wrong ROM reads, wrong IO2 reads (24-bit)
+IDREAD_ROM_READS_PER_PASS = 512   # two ROM pages, 256 rounds
+IDREAD_IO_READS_PER_PASS = 256    # the IO2 page, 256 rounds
 IDREAD_START_S = 6.0
 MENU_BOOT_S = 20.0                # a knob that breaks the menu program never boots: do not wait the station's minute
 
@@ -97,13 +105,15 @@ class Probe(Protocol):
 
 
 class IdReadProbe:
-    """idread.a on the C64 reads the presence registers and counts wrong
-    answers; a sample is the counts added over ``dwell`` seconds, read by DMA."""
+    """idread.a, a one-bank EasyFlash cartridge, reads its own ROM and the
+    EasyFlash handler's IO2 page on the C64 and counts wrong answers per
+    path; a sample is the counts added over ``dwell`` seconds, read by DMA,
+    with both paths' shares in its note."""
 
     name = "idread"
 
     def __init__(self, board: Board, program: Path, *, dwell: float = 1.0, drive: str = "sd",
-                 remote: str = "/treadmill/idread.prg", log=print):
+                 remote: str = "/treadmill/idread.crt", log=print):
         self.board = board
         self.program = Path(program)
         self.dwell = dwell
@@ -118,18 +128,25 @@ class IdReadProbe:
         self.board.ensure_menu()
         self.board.link.push_file(self.program.read_bytes(), self.remote, self.drive)
         self.board.link.launch(self.remote, self.drive)
+        # The first change can be the start-up zeroing the counters over what RAM held: a
+        # cartridge that dies right after that passed this check on the bench. Two changes
+        # mean the loop runs.
         deadline = time.monotonic() + IDREAD_START_S
-        first = self.counters()[0]
+        seen, moves = self.counters()[0], 0
         while time.monotonic() < deadline:
             time.sleep(0.5)
-            if self.counters()[0] != first:
-                self._stalled = False
-                return
+            passes = self.counters()[0]
+            if passes != seen:
+                seen, moves = passes, moves + 1
+                if moves >= 2:
+                    self._stalled = False
+                    return
         raise SweepError("idread is not running on the C64: its pass counter does not move")
 
-    def counters(self) -> tuple[int, int]:
-        b = self.board.link.read_memory(IDREAD_RESULTS, 5)
-        return b[0] | b[1] << 8, b[2] | b[3] << 8 | b[4] << 16
+    def counters(self) -> tuple[int, int, int]:
+        """(passes, wrong ROM reads, wrong IO2 reads)."""
+        b = self.board.link.read_memory(IDREAD_RESULTS, 8)
+        return b[0] | b[1] << 8, b[2] | b[3] << 8 | b[4] << 16, b[5] | b[6] << 8 | b[7] << 16
 
     def sample(self, label: str) -> tuple[int, int, str | None]:
         if self._stalled:
@@ -139,11 +156,13 @@ class IdReadProbe:
         time.sleep(self.dwell)
         after = self.counters()
         passes = (after[0] - before[0]) & 0xFFFF
-        wrong = (after[1] - before[1]) & 0xFFFFFF
+        rom = (after[1] - before[1]) & 0xFFFFFF
+        io = (after[2] - before[2]) & 0xFFFFFF
         if passes == 0:
             self._stalled = True
             return 1, 1, "idread stopped: the C64 hung"
-        return wrong, passes * IDREAD_READS_PER_PASS, None
+        rom_reads, io_reads = passes * IDREAD_ROM_READS_PER_PASS, passes * IDREAD_IO_READS_PER_PASS
+        return rom + io, rom_reads + io_reads, f"rom {rom}/{rom_reads}, io2 {io}/{io_reads}"
 
     def teardown(self) -> None:
         self.board.ensure_menu()
@@ -219,14 +238,18 @@ def search(probe_at: Callable[[int], Point], start: int, spec: SearchSpec) -> tu
     last_clean: int | None = None
     first_fail: int | None = None
     value = start
-    while (value <= spec.stop) if direction > 0 else (value >= spec.stop):
+    while True:
         point = probe_at(value)
         points.append(point)
         if point.failed:
             first_fail = value
             break
         last_clean = value
+        if value == spec.stop:
+            break
         value += direction * spec.step
+        if (value - spec.stop) * direction > 0:           # the last step lands on the stop, not past it
+            value = spec.stop
     if first_fail is None or last_clean is None:
         return points, last_clean, first_fail
     while abs(first_fail - last_clean) > spec.fine:
@@ -289,7 +312,8 @@ class Margin:
         elif self.last_clean is None:
             lines.append(f"{self.knob.name}: fails at {self.first_fail}, the first value probed")
         else:
-            lines.append(f"{self.knob.name}: clean up to {self.last_clean}, fails from {self.first_fail} "
+            way = "up" if self.direction > 0 else "down"
+            lines.append(f"{self.knob.name}: clean {way} to {self.last_clean}, fails from {self.first_fail} "
                          f"(default {self.default}: {self.margin} {self.knob.unit} of margin)")
         if not self.restored:
             lines.append("DEFAULTS NOT RESTORED: the board still runs the last value")

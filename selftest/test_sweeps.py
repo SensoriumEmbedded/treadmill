@@ -48,6 +48,10 @@ def test_search_without_an_edge_and_with_a_failing_start():
     assert (clean, fail) == (250, None) and [p.value for p in points] == [150, 170, 190, 210, 230, 250]
     points, clean, fail = search(_probe_at(100), 150, SearchSpec(stop=250, step=20, fine=1))
     assert (clean, fail) == (None, 150) and len(points) == 1
+    points, clean, fail = search(_probe_at(1000), 150, SearchSpec(stop=245, step=20, fine=1))
+    assert (clean, fail) == (245, None) and [p.value for p in points][-2:] == [230, 245]   # the stop is probed
+    points, clean, fail = search(_probe_at(1000), 150, SearchSpec(stop=150, step=20, fine=1))
+    assert (clean, fail) == (150, None) and len(points) == 1
 
 
 def test_search_runs_downward_and_stops_at_fine():
@@ -84,9 +88,9 @@ def fake_station(lab):  # noqa: F811
 
 
 def _idread_program(tmp_path: Path) -> Path:
-    prg = tmp_path / "idread.prg"
-    prg.write_bytes(b"\x01\x08" + b"\x00" * 64)        # the fake runs the name, not the bytes
-    return prg
+    crt = tmp_path / "idread.crt"
+    crt.write_bytes(b"C64 CARTRIDGE   " + bytes(64))      # the fake runs the name, not the bytes
+    return crt
 
 
 def test_sweep_of_the_fake_s_pla_margin_by_idread(fake_station, tmp_path: Path):
@@ -97,16 +101,35 @@ def test_sweep_of_the_fake_s_pla_margin_by_idread(fake_station, tmp_path: Path):
     margin = sweep.run()
     assert margin.default == KNOB_DEFAULTS["p"] and margin.probe == "idread"
     assert margin.last_clean is not None and margin.first_fail is not None
-    assert margin.last_clean <= fake.margins["p"] < margin.first_fail and margin.first_fail - margin.last_clean <= 5
+    io_high = fake.windows["io"][1]
+    assert margin.last_clean <= io_high < margin.first_fail and margin.first_fail - margin.last_clean <= 5
     assert margin.restored and fake.knobs["p"] == KNOB_DEFAULTS["p"] and fake.letters[-1] == "td"
     assert margin.points[0].value == KNOB_DEFAULTS["p"] and not margin.points[0].failed
     bad = next(p for p in margin.points if p.failed)
     assert 0 < bad.rate <= 1 and bad.samples > 100
+    assert bad.notes[0].startswith("rom 0/") and ", io2 0/" not in bad.notes[0], bad.notes   # IO goes first
     assert not board.link.ping().endswith("Busy!"), "teardown left the board at the menu"
     text = margin.describe()
     assert "nS_PLAprop: clean up to" in text and "of margin" in text
     d = margin.to_dict()
     assert d["margin"] == margin.last_clean - KNOB_DEFAULTS["p"] and len(d["points"]) == len(margin.points)
+
+
+def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, tmp_path: Path):
+    """Lowered, nS_PLAprop samples the select lines before IO's have asserted;
+    below nS_RWnReady it changes nothing, since both waits count from the
+    cycle's start."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = IdReadProbe(board, _idread_program(tmp_path), dwell=0.2, log=lambda m: None)
+    io_low = fake.windows["io"][0]
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"], step=5, fine=1), log=lambda m: None).run()
+    assert margin.direction == -1 and (margin.last_clean, margin.first_fail) == (io_low, io_low - 1)
+    assert "nS_PLAprop: clean down to" in margin.describe() and margin.restored
+    fake.windows["io"] = (100, 210)                                  # selects in time at any reachable value
+    clean = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"] - 30, step=20, fine=1),
+                  log=lambda m: None).run()
+    assert clean.first_fail is None and [p.value for p in clean.points] == [150, 130, 110, 105]
 
 
 def test_menu_probe_sees_the_misread_marks(fake_station, tmp_path: Path):
@@ -115,7 +138,7 @@ def test_menu_probe_sees_the_misread_marks(fake_station, tmp_path: Path):
     probe = MenuProbe(board, screen, Golden.load(ROOT_GOLDEN), tmp_path)
     probe.setup()
     assert probe.sample("p150") == (0, 1, None)
-    fake.knobs["p"] = fake.margins["p"] + 40
+    fake.knobs["p"] = fake.windows["io"][1] + 40
     failures, samples, note = probe.sample("p250")
     assert (failures, samples) == (1, 1) and "differ from the golden" in note
     assert (tmp_path / "p250.screen.txt").is_file()
@@ -129,6 +152,41 @@ def test_menu_probe_refuses_a_station_it_cannot_read(fake_station):
     with pytest.raises(SweepError) as e:
         MenuProbe(board, blind, Golden.load(ROOT_GOLDEN)).setup()
     assert "cannot read the screen" in str(e.value)
+
+
+class _Counters:
+    """A board whose counters at $C000 read as ``reads`` in turn, the last repeating."""
+
+    def __init__(self, reads: list[bytes]):
+        self.reads = reads
+        self.link = self
+
+    def dma_allowed(self) -> bool:
+        return True
+
+    def ensure_menu(self) -> None:
+        pass
+
+    def push_file(self, *args) -> None:
+        pass
+
+    def launch(self, *args) -> None:
+        pass
+
+    def read_memory(self, address: int, length: int) -> bytes:
+        return self.reads.pop(0) if len(self.reads) > 1 else self.reads[0]
+
+
+def test_idread_setup_wants_the_loop_running_not_just_the_counters_zeroed(tmp_path: Path, monkeypatch):
+    import treadmill.sweeps as sweeps
+    monkeypatch.setattr(sweeps, "IDREAD_START_S", 2.5)
+    stale, zeroed = bytes([0x20] * 8), bytes(8)
+    dead = IdReadProbe(_Counters([stale, zeroed]), _idread_program(tmp_path), log=lambda m: None)
+    with pytest.raises(SweepError) as e:
+        dead.setup()                                       # zeroed, then nothing: the cartridge died
+    assert "not running" in str(e.value)
+    running = [stale, zeroed] + [bytes([n, 0, 0, 0, 0, 0, 0, 0]) for n in range(1, 10)]
+    IdReadProbe(_Counters(running), _idread_program(tmp_path), log=lambda m: None).setup()
 
 
 def test_a_value_the_board_does_not_take_is_an_error(fake_station, tmp_path: Path):

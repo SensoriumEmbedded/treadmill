@@ -543,8 +543,10 @@ def build_parser() -> argparse.ArgumentParser:
                        description="A build with Dbg_SerTimChg. The knob (p, tp or nS_PLAprop) walks from --from "
                                    "(default: its current value) toward --to in --step steps until a point fails, "
                                    "then the edge is bisected to --fine; the defaults are restored whatever happens. "
-                                   "The idread probe counts wrong register reads on the C64 (a TR+, by DMA); the "
-                                   "menu probe resets and compares the menu with its golden (any TR, by video).")
+                                   "A --to below the current value walks the knob down; nS_PLAprop does nothing "
+                                   "below nS_RWnReady. The idread probe, a cartridge, counts wrong reads of its ROM "
+                                   "and of its IO2 page apart on the C64 (a TR+, by DMA); the menu probe resets and "
+                                   "compares the menu with its golden (any TR, by video).")
     _station_args(s)
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")

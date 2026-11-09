@@ -35,8 +35,8 @@ ALWAYS = {FW_CHECK, VERSION_INFO, RESET_C64, LAUNCH_FILE, C64_PAUSE_ON, C64_PAUS
 # The timing knobs at the firmware's NTSC C64 defaults (Common_Defs.h Def_nS_*), by their 't' letter.
 KNOB_DEFAULTS = {"m": 993, "r": 135, "p": 150, "s": 220, "h": 390, "v": 210, "i": 365, "a": 40, "b": 200,
                  "e": 430, "w": 410, "y": 390, "k": 35}
-# idread.a as the fake runs it: passes a second, and the share of reads that go wrong per
-# nanosecond of nS_PLAprop past the margin.
+# idread.a as the fake runs it: passes a second, and the share of a path's reads that go wrong
+# per nanosecond the sample point lies outside that path's clean window.
 IDREAD_RESULTS = 0xC000
 IDREAD_PASSES_PER_S = 1500.0
 IDREAD_WRONG_PER_NS = 0.02
@@ -45,23 +45,26 @@ IDREAD_WRONG_PER_NS = 0.02
 @dataclass
 class IdRead:
     """The counters idread.a would leave at $C000, advanced by the clock each
-    time they are read: wrong reads accrue only while nS_PLAprop is past the
-    fake's margin."""
+    time they are read: a path's wrong reads accrue only while the sample
+    point is outside its clean window."""
     last: float
     passes: float = 0.0
-    wrong: float = 0.0
+    rom_wrong: float = 0.0
+    io_wrong: float = 0.0
 
-    def advance(self, now: float, over_margin_ns: int) -> None:
+    def advance(self, now: float, rom_outside_ns: int, io_outside_ns: int) -> None:
         dt = max(0.0, now - self.last)
         self.last = now
-        self.passes += dt * IDREAD_PASSES_PER_S
-        if over_margin_ns > 0:
-            reads = dt * IDREAD_PASSES_PER_S * 512
-            self.wrong += reads * min(1.0, over_margin_ns * IDREAD_WRONG_PER_NS)
+        passes = dt * IDREAD_PASSES_PER_S
+        self.passes += passes
+        self.rom_wrong += passes * 512 * min(1.0, rom_outside_ns * IDREAD_WRONG_PER_NS)
+        self.io_wrong += passes * 256 * min(1.0, io_outside_ns * IDREAD_WRONG_PER_NS)
 
     def bytes(self) -> bytes:
-        passes, wrong = int(self.passes) & 0xFFFF, int(self.wrong) & 0xFFFFFF
-        return bytes([passes & 0xFF, passes >> 8, wrong & 0xFF, (wrong >> 8) & 0xFF, wrong >> 16])
+        passes = int(self.passes) & 0xFFFF
+        rom, io = int(self.rom_wrong) & 0xFFFFFF, int(self.io_wrong) & 0xFFFFFF
+        return bytes([passes & 0xFF, passes >> 8, rom & 0xFF, (rom >> 8) & 0xFF, rom >> 16,
+                      io & 0xFF, (io >> 8) & 0xFF, io >> 16])
 
 
 @dataclass
@@ -83,9 +86,12 @@ class FakeBoard:
     startup_sid: bool = False            # the menu's startup SID, loaded partway through a boot, still to report
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
     menu: object = field(default=None, repr=False)
-    # The bus timing model: a knob past its margin makes the C64's reads of TR-served bytes go
-    # wrong, which shows as wrong item-type marks on the menu and as idread's error counter.
-    margins: dict = field(default_factory=lambda: {"p": 210})
+    # The bus timing model: the firmware samples the select lines at max(nS_PLAprop, nS_RWnReady),
+    # both counted from the cycle's start, and a path's reads come back right only while that point
+    # is inside its window. IO goes wrong first both ways: its selects settle later (a decoder after
+    # the PLA) and its data leaves later (after both ROM tests and a handler call). Outside the IO
+    # window the menu shows wrong item-type marks and idread counts wrong IO2 reads.
+    windows: dict = field(default_factory=lambda: {"io": (142, 210), "rom": (130, 230)})
     idread: IdRead | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -103,7 +109,7 @@ class FakeBoard:
         and starts its heartbeat; anything else leaves the screen as the menu
         left it. Either way the board is busy until a reset."""
         self.busy = True
-        if path.lower().endswith("idread.prg"):
+        if path.lower().endswith("idread.crt"):
             self.idread = IdRead(time.monotonic())
         if path.lower().endswith("hello.prg"):
             self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = b"\x20" * SCREEN_BYTES
@@ -117,9 +123,11 @@ class FakeBoard:
     letters: list[str] = field(default_factory=list) # every letter command received
     knobs: dict = field(default_factory=lambda: dict(KNOB_DEFAULTS))
 
-    def over_margin(self) -> int:
-        """How far nS_PLAprop is past the value reads stay clean at; 0 or less is clean."""
-        return self.knobs["p"] - self.margins["p"]
+    def outside(self, path: str) -> int:
+        """How far, in ns, the sample point lies outside ``path``'s clean window; 0 inside it."""
+        low, high = self.windows[path]
+        point = max(self.knobs["p"], self.knobs["r"])
+        return max(low - point, point - high, 0)
 
     def serve(self, end: PipeEnd) -> None:
         while True:
@@ -276,8 +284,8 @@ class FakeBoard:
         address = self._number(end, 2)
         length = self._number(end, 2)
         if self.idread is not None:
-            self.idread.advance(time.monotonic(), self.over_margin())
-            self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 5] = self.idread.bytes()
+            self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
+            self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 8] = self.idread.bytes()
         self._reply(end, ACK)
         end.write(bytes(self.memory[address:address + length]))
 

@@ -1,4 +1,5 @@
-"""Assemble the suite's own C64 programs with ACME at test time.
+"""Assemble the suite's own C64 programs with ACME at test time: PRGs, and
+cartridge images wrapped as .crt files.
 
 The sources live next to this file; the assembler is the firmware
 checkout's cached one (``tools/.cache/acme-*/**/acme``) or ``TREADMILL_ACME``.
@@ -11,6 +12,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import NamedTuple
 
 from treadmill.errors import TreadmillError
 from treadmill.firmware.checkout import DEFAULT_WORK_ROOT
@@ -22,7 +24,23 @@ PROGRAMS = {
     "allcodes_lu0": ("allcodes.a", {"CHARSET": 1, "PAGE": 0}),
     "allcodes_lu1": ("allcodes.a", {"CHARSET": 1, "PAGE": 1}),
     "hello": ("hello.a", {}),
-    "idread": ("idread.a", {}),
+}
+
+
+class Cartridge(NamedTuple):
+    """8 KB chips of bank 0 assembled back to back, wrapped as a .crt."""
+    source: str
+    defines: dict[str, int]
+    hardware: int                   # the CRT hardware type
+    name: str                       # the CRT name, 32 characters at most
+    loads: tuple[int, ...]          # each chip's load address, in the order assembled
+    lines: tuple[int, int]          # (EXROM, GAME) as the header gives them
+
+
+# An EasyFlash image's header names Ultimax mode and its ROMH chips load at $A000.
+CRT_EASYFLASH = 32
+CARTRIDGES = {
+    "idread": Cartridge("idread.a", {}, CRT_EASYFLASH, "TREADMILL IDREAD", (0x8000, 0xA000), (1, 0)),
 }
 # The sparse grid allcodes.a draws: cell i of page p shows code p * 228 + i.
 SPARSE_ROWS, SPARSE_COLS, SPARSE_CELLS = 12, 19, 228
@@ -43,6 +61,9 @@ def sparse_pages() -> list[tuple[list[int], list[int]]]:
     return pages
 ACME_ENV = "TREADMILL_ACME"
 PRG_LOAD = 0x0801
+CHIP_SIZE = 0x2000
+CRT_SIGNATURE = b"C64 CARTRIDGE   "
+CRT_HEADER = 0x40
 
 
 class AssembleError(TreadmillError):
@@ -64,13 +85,30 @@ def find_acme(primary: Path | None = None) -> Path | None:
     return None
 
 
+def crt_image(rom: bytes, name: str, hardware: int, loads: tuple[int, ...], lines: tuple[int, int]) -> bytes:
+    """A .crt file: the 64-byte header (version 1.0, ``lines`` as EXROM and
+    GAME) and one CHIP packet per 8 KB of ``rom``, all bank 0, loading at
+    ``loads`` in order. The format's multi-byte fields are big-endian."""
+    if len(rom) != CHIP_SIZE * len(loads):
+        raise AssembleError(f"{len(loads)} chip(s) are {CHIP_SIZE * len(loads)} bytes, not {len(rom)}")
+    header = (CRT_SIGNATURE + CRT_HEADER.to_bytes(4, "big") + (0x0100).to_bytes(2, "big")
+              + hardware.to_bytes(2, "big") + bytes(lines) + bytes(6)
+              + name.encode("ascii")[:32].ljust(32, bytes(1)))
+    chips = b"".join(b"CHIP" + (0x10 + CHIP_SIZE).to_bytes(4, "big") + bytes(4) + load.to_bytes(2, "big")
+                     + CHIP_SIZE.to_bytes(2, "big") + rom[i * CHIP_SIZE:(i + 1) * CHIP_SIZE]
+                     for i, load in enumerate(loads))
+    return header + chips
+
+
 def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None,
              acme: Path | None = None, extra: dict[str, int] | None = None) -> Path:
-    """``name`` from PROGRAMS, assembled to ``<out_dir>/<name>[-<extra>].prg``;
-    ``extra`` adds or overrides assembler defines (``{"COLOR": 14}``)."""
-    if name not in PROGRAMS:
-        raise AssembleError(f"no program {name!r}; one of {', '.join(PROGRAMS)}")
-    source, defines = PROGRAMS[name]
+    """``name`` from PROGRAMS, assembled to ``<out_dir>/<name>[-<extra>].prg``,
+    or from CARTRIDGES, to ``<name>.crt``; ``extra`` adds or overrides
+    assembler defines (``{"COLOR": 14}``)."""
+    cartridge = CARTRIDGES.get(name)
+    if cartridge is None and name not in PROGRAMS:
+        raise AssembleError(f"no program {name!r}; one of {', '.join([*PROGRAMS, *CARTRIDGES])}")
+    source, defines = (cartridge.source, cartridge.defines) if cartridge else PROGRAMS[name]
     if extra:
         defines = {**defines, **extra}
         name += "".join(f"-{k.lower()}{v}" for k, v in sorted(extra.items()))
@@ -80,14 +118,18 @@ def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None
                             "checkout with tools/.cache")
     out_dir = Path(out_dir or DEFAULT_WORK_ROOT / "programs")
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / f"{name}.prg"
-    cmd = [str(acme), "-f", "cbm", "-o", str(out)]
+    out = out_dir / (f"{name}.bin" if cartridge else f"{name}.prg")
+    cmd = [str(acme), "-f", "plain" if cartridge else "cbm", "-o", str(out)]
     cmd += [f"-D{k}={v}" for k, v in defines.items()]
     cmd.append(source)
     result = subprocess.run(cmd, cwd=str(SOURCES), capture_output=True, text=True, stdin=subprocess.DEVNULL)
     if result.returncode != 0 or not out.is_file():
         raise AssembleError(f"acme failed for {name}:\n{result.stdout}{result.stderr}")
     data = out.read_bytes()
+    if cartridge:
+        crt = out.with_suffix(".crt")
+        crt.write_bytes(crt_image(data, cartridge.name, cartridge.hardware, cartridge.loads, cartridge.lines))
+        return crt
     if len(data) < 3 or int.from_bytes(data[:2], "little") != PRG_LOAD:
         raise AssembleError(f"{out} does not load at ${PRG_LOAD:04X}")
     return out

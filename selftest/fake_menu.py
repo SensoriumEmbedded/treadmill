@@ -122,8 +122,8 @@ class FakeMenu:
             rows += [""] * (22 - len(rows)) + ["   Space Back to Main menu", "", ""]
             return [r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS] for r in rows[:25]]
         entries = self.page_entries()
-        if self.board.over_margin() > 0:
-            # The NTSC item-type misread: past the read margin every other item's type comes back wrong.
+        if self.board.outside("io") > 0:
+            # The NTSC item-type misread: outside the IO read window every other item's type comes back wrong.
             entries = [Entry(e.name, MARK_UNKNOWN if i % 2 == 0 and e.mark != MARK_NONE else e.mark, e.handler)
                        for i, e in enumerate(entries)]
         return render_listing(self.source, shown_path(self.path), entries, (self.page, self.pages()), clock=CLOCK, banner=banner)

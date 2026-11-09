@@ -122,13 +122,22 @@ firmware's `t` knobs) walks from its default toward `--to` in `--step` steps
 until the probe fails, the edge is bisected down to `--fine`, the defaults are
 restored whatever happened, and the result is the last clean value, the first
 failing one and every point probed, as text or `--json` and as `sweep.json` in
-the run's folder. The TeensyROM cannot see its own read errors, so the probes
-are the C64's: `idread` launches a program that reads the TeensyROM's presence
-registers in a loop and counts wrong answers, read back by DMA over `--dwell`
-seconds per sample (a TR+); `menu` resets, lets the menu boot and compares it
-with its golden (any TR, by video). `--repeat N` takes several samples a
-point, so an intermittent edge is a rate, not a coin toss.
-`tests/sweep/test_tp_margin.py` runs the same sweep as a regression guard: the
+the run's folder. A `--to` below the knob's value walks it down instead. The
+TeensyROM cannot see its own read errors, so the probes are the C64's:
+`idread` launches a one-bank EasyFlash cartridge that reads its own ROM and the
+EasyFlash IO2 page in a loop and counts wrong answers per path, read back by
+DMA over `--dwell` seconds per sample (a TR+; a launched PRG would run under
+the None IO handler, with nothing answering at IO1); `menu` resets, lets the
+menu boot and compares it with its golden (any TR, by video). `--repeat N`
+takes several samples a point, so an intermittent edge is a rate, not a coin
+toss.
+
+`nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
+reads fail before ROM reads, since the board drives them only after a call
+into the IO handler; lowered, the select lines are sampled before the slowest
+has asserted. It reaches no lower than `nS_RWnReady`: both waits count from
+the start of the cycle, so below it the knob changes nothing.
+`tests/sweep/test_tp_margin.py` runs both sweeps as a regression guard: the
 default must be clean, and a station that names a floor in its `[margins]`
 table (`nS_PLAprop = 200`) fails the test when reads go wrong below it.
 

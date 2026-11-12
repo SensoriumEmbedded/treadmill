@@ -63,6 +63,12 @@ cost or a wart with a known, small fix.
    matched a name such as an HVSC tune's. $64 now reads as '_' in either
    ROM set, and `codes_for_text()` writes '_' as $64; the MCP server's
    table (`tools/mcp/lib/screen.mjs`, PR #86) still reads it as '.'.
+16. **low, with the keyboard board** The manufacturing test's external reset
+   needs the operator. `OperatorReset` in `treadmill/mfg.py` asks for the
+   C64's reset button, because the keyboard board's planned protocol has no
+   plain reset pulse: its `V` command resets the C64 only inside a Kawari
+   standard switch. Fix: an `R <ms>` command on the same /RESET stage `V`
+   uses, and an `ExternalReset` that sends it.
 
 ## Video
 

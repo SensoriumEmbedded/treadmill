@@ -69,6 +69,7 @@ GOLDENS = {"root": ("/", ROOT), "games": ("/Games", GAMES), "pictures": ("/Pictu
 
 _SOURCE_BY_KEY = {F1: "teensy", F3: "sd", F5: "usb"}
 CLOCK = "12:00:00am"
+HOT_KEY_FIRST, HOT_KEY_LAST = 0x31, 0x35          # '1'-'5' (NumHotKeys in Menu_Regs.h)
 
 
 def _parent(path: str) -> str:
@@ -143,6 +144,9 @@ class FakeMenu:
     # -- keys ----------------------------------------------------------------------
 
     def key(self, code: int) -> None:
+        if not self.info_page and HOT_KEY_FIRST <= code <= HOT_KEY_LAST:
+            self.board.hot_key(code - HOT_KEY_FIRST + 1)      # the launched program draws its own screen
+            return
         if self.info_page:
             if code == SPACE:
                 self.info_page = False

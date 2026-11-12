@@ -21,6 +21,8 @@ data/calib/
 data/glyphs/
 data/golden/
 data/sdcard/
+data/mfg/*
+!data/mfg/*.example.toml
 data/programs/private/
 data/results.sqlite
 data/registry.toml

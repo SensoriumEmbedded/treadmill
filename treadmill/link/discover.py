@@ -31,6 +31,31 @@ def _matches(serial_string: str | None, uid: str) -> bool:
     return bool(serial_string) and serial_string.upper().endswith(uid.upper())
 
 
+def teensyrom_uid(serial_string: str | None) -> str | None:
+    """The chip id in a TeensyROM's USB serial string (``TeensyROM-Serial-12345678``,
+    which Windows reports in capitals), or None for another PJRC device such
+    as a keyboard board or a firmware too old to name itself."""
+    if not serial_string or not serial_string.upper().startswith("TEENSYROM"):
+        return None
+    uid = serial_string.rsplit("-", 1)[-1]
+    return uid if uid.isdigit() else None
+
+
+def wait_for_teensyrom(exclude: tuple[str, ...] = (), timeout: float | None = None, poll: float = 0.5) -> Found:
+    """The first TeensyROM to be on USB, whichever board it is, found by its
+    serial string without opening any port. A TR+ is powered by the machine,
+    so this is how a board that was just switched on is noticed."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        for port, serial_string in list_teensyrom_ports():
+            uid = teensyrom_uid(serial_string)
+            if uid and port not in exclude:
+                return Found(port, uid, "serial-string")
+        if deadline is not None and time.monotonic() >= deadline:
+            raise NotFound(f"no TeensyROM appeared on USB within {timeout:g} s")
+        time.sleep(poll)
+
+
 def find_port(uid: str, port_hint: str | None = None, timeout: float = 0.0) -> Found:
     """The serial port of the board whose chip id is ``uid``.
 

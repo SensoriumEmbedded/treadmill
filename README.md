@@ -13,9 +13,10 @@ The firmware runs for hours without going anywhere, and you measure it.
 ```
 treadmill/            the package: station model, link, observation, firmware, driver, reports
   pytest_plugin.py    options, markers, fixtures, the run record
-  cli.py              treadmill run | exec | shell | sweep | stations | calibrate | harvest | screen | frame | score | viewer
+  cli.py              treadmill run | exec | shell | sweep | mfg | stations | calibrate | harvest | screen | frame | score | viewer
   driver.py           run, exec and shell as library calls
   sweeps.py           the timing-knob sweep engine: knob x probe x search, and the margin it reports
+  mfg.py              the manufacturing test of new TR+ boards, one after another
 tests/                the hardware tests, one concern per file, selected by markers and --station
 selftest/             tests that need no hardware (fake board, rendered frames, config)
 scripts/              one-off investigation scripts for `treadmill exec`; kept, never part of the suite
@@ -140,6 +141,53 @@ the start of the cycle, so below it the knob changes nothing.
 `tests/sweep/test_tp_margin.py` runs both sweeps as a regression guard: the
 default must be clean, and a station that names a floor in its `[margins]`
 table (`nS_PLAprop = 200`) fails the test when reads go wrong below it.
+
+## Manufacturing test
+
+`treadmill mfg --station <id>` tests new TR+ boards one after another on a
+station's rig. The station gives the rig and the machine; each board is
+found by the serial string it enumerates with. A TR+ takes its power from
+the machine, so switching the machine on is what starts a board. The steps
+run in order:
+
+1. Power-up: the main image boots to the menu.
+2. Firmware: the version and build stamp equal the factory hex's, with no
+   tag and no `*`.
+3. External Ports: the built-in test passes after the operator presses MENU
+   and ALT. Its `Hello from TR at:` line agrees on serial and on screen, and
+   is within `time_tolerance_s` of the PC's UTC clock (a new board's
+   timezone setting is UTC). The operator answers for the Ethernet and TR
+   LEDs.
+4. External reset: the operator presses the C64's reset button, and the TR+
+   must log `Button detected` and bring the menu back.
+5. Expansion Port: the built-in test passes `xpt_passes` times.
+6. SD root: the card's root matches the master image's snapshot.
+7. REU: hot key 2 launches the REU checker with a 512K REU, and video reads
+   its pass screen.
+
+The first failure halts the board. Its screen turns red and inverted, the
+bottom row names the step and the reason, and the C64 is paused so nothing
+redraws it. A passing board gets a green summary instead. Each board adds:
+
+- a row to the profile's `log` (`data/mfg/boards.csv`): start time, chip id,
+  firmware, result, the failed step and reason, every step's result and the
+  LED answers;
+- a folder under `reports/<run>/boards/` with its serial log, every screen
+  read and `result.json`.
+
+The console then asks for the power-off, waits for the board to leave USB,
+and starts the next one. Ctrl+C ends the session; `--boards N` stops after N.
+
+Setting it up, once:
+
+1. Copy `data/mfg/trplus.example.toml` to `data/mfg/trplus.toml` and point
+   `factory_hex` at the factory hex.
+2. Run `treadmill mfg --snapshot-sd <master image folder>`, which writes
+   `sd_root.json` beside the profile.
+3. Run one known-good board with no REU golden in place. The REU step stops
+   with "no REU checker golden" and saves the checker's screen as
+   `reu.screen.txt` in that board's folder. Check it (a `?` cell matches
+   anything), then copy it to the profile's `reu_golden`.
 
 ## Scripting
 

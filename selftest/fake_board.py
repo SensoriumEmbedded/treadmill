@@ -13,7 +13,10 @@ import time
 from dataclasses import dataclass, field
 
 from selftest.fake_menu import TREE, UP_DIR, FakeMenu
-from treadmill.c64.screen import KEYBUF, KEYCOUNT, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
+from selftest.fake_programs import ExpPort, ExtPorts, ReuChecker
+from treadmill.c64.screen import (
+    KEYBUF, KEYCOUNT, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_RAM_DEFAULT, SCREEN_ROWS, codes_for_text,
+)
 from treadmill.link.banner import parse_banner
 from treadmill.link.protocol import (
     ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, FAIL, FW_CHECK,
@@ -40,6 +43,11 @@ KNOB_DEFAULTS = {"m": 993, "r": 135, "p": 150, "s": 220, "h": 390, "v": 210, "i"
 IDREAD_RESULTS = 0xC000
 IDREAD_PASSES_PER_S = 1500.0
 IDREAD_WRONG_PER_NS = 0.02
+# The built-in programs the manufacturing test launches, by the name ending their path.
+PROGRAMS = {"TeensyROM External Ports Test": ExtPorts, "TR+ C64 Expansion Port Test": ExpPort,
+            "REU-Checker v1.0            +REU": ReuChecker}
+# Hot keys at the EEPROM defaults on a TR+ (Teensy.ino): 2 is the REU checker.
+HOT_KEYS = {2: "/Test+Diags/REU-Checker v1.0            +REU"}
 
 
 @dataclass
@@ -93,12 +101,22 @@ class FakeBoard:
     # window the menu shows wrong item-type marks and idread counts wrong IO2 reads.
     windows: dict = field(default_factory=lambda: {"io": (142, 210), "rom": (130, 230)})
     idread: IdRead | None = field(default=None, repr=False)
+    # The manufacturing test's side: the program running and what breaks it (fake_programs.py), the
+    # board's power, and the serve loop held while a program services nothing (the External Ports wait).
+    faults: dict = field(default_factory=dict)
+    program: object = field(default=None, repr=False)
+    powered: bool = True
+    buttons_pending: bool = False
+    unblocked: threading.Event = field(default_factory=threading.Event, repr=False)
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    end: PipeEnd | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         # A C64 at the TeensyROM menu: screen at $0400, lower/upper charset, VIC bank 0, no key waiting.
         self.memory[0xD018] = 0x17
         self.memory[0xDD00] = 0x97
         self.memory[KEYCOUNT] = 0
+        self.unblocked.set()
         self.menu = FakeMenu(self)       # draws the Teensy Mem root into screen RAM
 
     def version_string(self) -> str:
@@ -109,6 +127,11 @@ class FakeBoard:
         and starts its heartbeat; anything else leaves the screen as the menu
         left it. Either way the board is busy until a reset."""
         self.busy = True
+        program = PROGRAMS.get(path.rpartition("/")[2])
+        if program is not None:
+            self.program = program(self)
+            self.program.start()
+            return
         if path.lower().endswith("idread.crt"):
             self.idread = IdRead(time.monotonic())
         if path.lower().endswith("hello.prg"):
@@ -123,6 +146,64 @@ class FakeBoard:
     letters: list[str] = field(default_factory=list) # every letter command received
     knobs: dict = field(default_factory=lambda: dict(KNOB_DEFAULTS))
 
+    # -- the manufacturing test's programs and hands --------------------------
+
+    def say(self, text: str) -> None:
+        """Unprompted serial text, from any thread."""
+        if self.end is not None:
+            self.end.write(text.encode("latin-1"))
+
+    def show(self, rows: list[str], reverse: set[int] = frozenset()) -> None:
+        """A program's screen: these rows, the rest blank, lower/upper case."""
+        self.memory[0xD018] = 0x17
+        codes = bytearray()
+        for r in range(SCREEN_ROWS):
+            row = codes_for_text((rows[r] if r < len(rows) else "").ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS])
+            codes += bytes(c | REVERSE_VIDEO for c in row) if r in reverse else row
+        self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = codes
+
+    def hot_key(self, number: int) -> None:
+        """The menu's 1-5: launch the path the settings hold for it."""
+        path = self.faults.get(f"hot_key_{number}", HOT_KEYS.get(number))
+        if path is None:
+            return
+        folder, _, name = path.rpartition("/")
+        kb = self.faults.get("reu_kb", 512)
+        handler = f"Loading IO handler: {kb}KB REU\nREU Size: {kb}K bytes\n" if name in PROGRAMS and \
+            PROGRAMS[name] is ReuChecker else "Loading IO handler: TeensyROM\n"
+        self.say(f"Remote Launch:\nP: {folder or '/'}\nF: {name}\n{handler}")
+        self.run(path)
+
+    def return_to_menu(self) -> None:
+        """What BtnPressed does in loop(): the menu's handler back, the C64 reset."""
+        self.say("Button detected\nLoading IO handler: TeensyROM\nResetting C64\n")
+        self.program = None
+        self.busy = False
+        self.heartbeat = False
+        self.idread = None
+        self.booting_for = self.boot_polls
+        self.menu.reset()
+
+    def press_buttons(self) -> None:
+        """The operator's MENU then ALT, for the External Ports test; pressed
+        before the test is up, they count once it is."""
+        with self.lock:
+            if isinstance(self.program, ExtPorts) and self.program.waiting:
+                self.program.buttons()
+            else:
+                self.buttons_pending = True
+
+    def external_reset(self) -> None:
+        """A reset the board did not make: sensed unless the fault says not."""
+        if self.faults.get("reset_sense", True):
+            self.return_to_menu()
+
+    def power_off(self) -> None:
+        self.powered = False
+        self.unblocked.set()
+        if self.end is not None:
+            self.end.close()
+
     def outside(self, path: str) -> int:
         """How far, in ns, the sample point lies outside ``path``'s clean window; 0 inside it."""
         low, high = self.windows[path]
@@ -130,7 +211,11 @@ class FakeBoard:
         return max(low - point, point - high, 0)
 
     def serve(self, end: PipeEnd) -> None:
+        self.end = end
         while True:
+            self.unblocked.wait()
+            if not self.powered:
+                break
             first = end.read(1, 60.0)
             if len(first) < 1:
                 break
@@ -271,6 +356,7 @@ class FakeBoard:
         self.busy = False
         self.heartbeat = False
         self.idread = None
+        self.program = None
         self.memory[0xD018] = 0x17
         self.menu.reset()
         end.write(b"Reset cmd received\nLoading IO handler: TeensyROM\n")
@@ -298,12 +384,13 @@ class FakeBoard:
         data = end.read(length, WAIT_S)
         self.memory[address:address + len(data)] = data
         self._reply(end, ACK)
-        if address <= KEYCOUNT < address + len(data) and self.memory[KEYCOUNT] and not self.busy:
-            # The menu's GETIN loop takes the keys as soon as they are in the buffer.
+        if address <= KEYCOUNT < address + len(data) and self.memory[KEYCOUNT] and (
+                self.program is not None or not self.busy):
+            # The menu's GETIN loop, or a launched program's, takes the keys as soon as they are in the buffer.
             count = self.memory[KEYCOUNT]
-            for code in bytes(self.memory[KEYBUF:KEYBUF + count]):
-                self.menu.key(code)
             self.memory[KEYCOUNT] = 0
+            for code in bytes(self.memory[KEYBUF:KEYBUF + count]):
+                (self.program or self.menu).key(code)
 
     def _launch(self, end: PipeEnd) -> None:
         self._reply(end, ACK)

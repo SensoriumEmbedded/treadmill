@@ -9,7 +9,9 @@ on a station opened the same way. ``stations`` lists what is configured;
 ``calibrate``, ``harvest``, ``screen``, ``frame`` and ``viewer`` are the video
 channel's tools on a live station (``calibrate`` also works on a saved frame,
 and ``score`` compares a saved frame with the DMA read taken with it).
-``matrix``, ``sweep``, ``bisect`` and ``export`` arrive with their modules.
+``sweep`` finds a timing knob's margin; ``mfg`` is the manufacturing test of
+new TR+ boards, the one command that prompts an operator. ``matrix``,
+``bisect`` and ``export`` arrive with their modules.
 """
 
 from __future__ import annotations
@@ -185,6 +187,54 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         payload = {**margin.to_dict(), "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
     _emit(payload, args.json, margin.describe() + f"\nsweep.json in {h.folder}")
     return EXIT_OK
+
+
+# -- manufacturing test -------------------------------------------------------------
+
+def cmd_mfg(args: argparse.Namespace) -> int:
+    """New TR+ boards one after another: wait for one on USB, test it, log it,
+    wait for it to leave, repeat. ``--snapshot-sd`` writes the SD golden instead."""
+    from treadmill.mfg import (
+        FAIL, Console, MfgProfile, RealBench, default_profile_path, open_video_kit, run_session, sd_snapshot,
+    )
+    from treadmill.report.artifacts import RunDir
+    from treadmill.session import fake_requested
+    from treadmill.station.lock import RigLock
+
+    profile_path = Path(args.profile) if args.profile else default_profile_path()
+    if args.snapshot_sd:
+        if args.out:
+            out = Path(args.out)
+        elif profile_path.is_file():
+            out = MfgProfile.load(profile_path).sd_golden
+        else:
+            out = profile_path.with_name("sd_root.json")
+        snapshot = sd_snapshot(args.snapshot_sd)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+        print(f"{len(snapshot['entries'])} root entries of {args.snapshot_sd} written to {out}")
+        return EXIT_OK
+    if not args.station:
+        raise CommandError("mfg needs --station (or --snapshot-sd)", EXIT_USAGE)
+    profile = MfgProfile.load(profile_path)
+    template = load_station(args.station)
+    console = Console()
+    log = _log_for(args)
+    with RigLock(template.rig.id, wait=5.0):
+        if fake_requested():
+            from selftest.fake_bench import FakeBench
+            bench = FakeBench(console)
+            video = bench.video_kit()
+        else:
+            bench = RealBench(console)
+            video = open_video_kit(template, log)
+        run_dir = RunDir(Path(args.reports))
+        try:
+            summary = run_session(template, profile, bench, console, video, run_dir, boards=args.boards, log=log)
+        finally:
+            video.close()
+    console.say(f"Evidence: {run_dir.path}")
+    return EXIT_FAILED if summary["counts"][FAIL] else EXIT_OK
 
 
 # -- video tools ------------------------------------------------------------------
@@ -559,6 +609,23 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repeat", type=int, default=1, help="samples a point (default 1)")
     s.add_argument("--dwell", type=float, default=1.0, help="idread: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep)
+
+    s = sub.add_parser("mfg", help="the manufacturing test of new TR+ boards, one after another",
+                       description="Waits for a TeensyROM on USB, then checks its firmware against the factory "
+                                   "hex, runs the External Ports test (the operator presses the buttons and "
+                                   "answers for the LEDs), an external reset, the Expansion Port test, the SD "
+                                   "card's root and the REU checker, halting at the first failure with the C64's "
+                                   "screen marked. Each board gets a row in the profile's CSV log and a folder "
+                                   "under the run; then it waits for the board to leave and starts again. The "
+                                   "station's rig and machine are used, not its board's chip id.")
+    s.add_argument("--station", help="the station whose rig and machine run the test")
+    s.add_argument("--profile", help="the manufacturing profile (default: data/mfg/trplus.toml)")
+    s.add_argument("--reports", default="reports", help="where run folders go (default: reports/)")
+    s.add_argument("--boards", type=int, metavar="N", help="stop after N boards (default: until Ctrl+C)")
+    s.add_argument("--snapshot-sd", metavar="FOLDER",
+                   help="write the SD golden from the master card image's folder, then exit")
+    s.add_argument("--out", help="with --snapshot-sd: where to write it (default: the profile's sd_golden)")
+    s.set_defaults(func=cmd_mfg, json=False)
 
     s = sub.add_parser("stations", help="list the configured stations and their capabilities")
     s.add_argument("--station", help="only this station")

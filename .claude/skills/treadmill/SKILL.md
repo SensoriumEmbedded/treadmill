@@ -32,6 +32,7 @@ Never write a port name, host, IP address or chip id into a committed file.
 | Some tests only | `--tests tests/smoke` (repeatable) or, after `--`, pytest's own `-k EXPR`, `-x`, `-v` |
 | How long a selection takes | `--estimate` (runs nothing) |
 | A timing knob's margin (how far `nS_PLAprop` can rise, or fall, before reads fail) | `treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --json` (`--probe idread` on a TR+, counting ROM and IO2 reads apart; `--probe menu` on any TR; `--to` below the value walks down, no lower than `nS_RWnReady` for `p`; `--step`, `--fine`, `--repeat`, `--dwell`); the defaults are restored on exit; `sweep.json` in the run folder |
+| The manufacturing test of new TR+ boards | `treadmill mfg --station <id>` at the operator's terminal: it prompts for the cables, the buttons, the LEDs, the reset and the power-off, and loops board after board (`--boards N` to stop); `--snapshot-sd <folder>` writes the SD golden; the log is `data/mfg/boards.csv`, the evidence `reports/<run>/boards/` (README, "Manufacturing test") |
 | An investigation script under the harness | `treadmill exec --station <id> script.py [-- args] --json`; a `result` the script sets comes back |
 | Poke the board interactively | `treadmill shell --station <id>` (`link.ping()`, `screen.read().rows()`, `menu.open("/Games")`, `keys.press(F1)`, `dbg.letter("t")`) |
 | What is on the screen now | `treadmill screen --station <id> --json` (`--exact` prefers DMA, `--xcheck` compares both) |

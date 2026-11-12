@@ -1,0 +1,27 @@
+# The manufacturing test's profile for new TR+ boards. Copy to trplus.toml (git-ignored,
+# like everything else in this folder but the examples). Paths are absolute, or relative
+# to this file's folder.
+
+# The standard: every board must run exactly this hex's version and build stamp.
+factory_hex = "TeensyROM+_factory.hex"
+
+# The SD card's root as the master image has it:
+#   treadmill mfg --snapshot-sd <master image folder>
+sd_golden = "sd_root.json"
+sd_ignore = ["System Volume Information"]     # names a card may carry that the image does not
+
+# The REU checker's pass screen as video reads it, '?' for cells that change (README).
+reu_golden = "reu_checker.pass.screen.txt"
+reu_kb = 512
+
+# One row per board: chip id, start time, every step's result.
+log = "boards.csv"
+
+xpt_passes = 3                 # Expansion Port test passes
+time_tolerance_s = 120         # the board's UTC clock against this PC's, after the time fetch
+epc_timeout_s = 180            # External Ports: launch to the line sent after both buttons
+boot_timeout_s = 60
+reset_timeout_s = 60           # the prompt to press reset, to the TR+ reporting it
+xpt_pass_timeout_s = 90
+reu_timeout_s = 120
+require_release = true         # false lets a tagged or dirty build through, to try the test on a dev board

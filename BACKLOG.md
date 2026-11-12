@@ -47,26 +47,22 @@ cost or a wart with a known, small fix.
    Pressing X to leave the host, or reading the screen by video, needs a
    link-less open (video and keys only) and the C64-USBKeyboard backend
    (`keys_hw`).
-14. **medium** Keys go to the wrong buffer on a C128 at the TR menu.
-   `TRLink` sets `self.c128` from the banner's machine (`trlink.py:154`),
-   and `key()`/`keys()` then write the C128-mode buffer and count
-   (`KEYBUF_128`/`KEYCOUNT_128`, $034A/$D0). The TR menu is a C64
-   cartridge, so on a C128 it runs in C64 mode and GETIN reads $0277/$C6:
-   the keys are dropped, and `MenuDriver.select_source()` times out with the
-   screen unchanged (NTSC C128, 2026-11-10; the same key through $0277 works).
-   Only a menu built for C128 mode reads $034A. Fix: pick the buffer from
-   the mode the C128 is running, not the machine, e.g. the reset vector at
-   $FFFC read by DMA ($FCE2 in C64 mode).
-15. **low** A file name's underscore reads as '.'. The firmware turns '_'
-   into PETSCII 164 (`ASCIItoPETSCII` in `IOH_TeensyROM.c`), which the menu
-   shows as screen code $64, the bottom-line graphic, and `code_as_text()`
-   in `treadmill/c64/screen.py` reads every graphic as `NO_LETTER` ('.').
-   `MenuDriver.find("One_Man_and_his_Droid.sid")` (`treadmill/c64/menu.py:214`,
-   an exact match against `listing.names`) never finds that HVSC file, and
-   a golden cannot hold the name; the SID host bench scripts (2026-11-10)
-   match a lowercase prefix instead. Fix: read $64 as '_', and write '_' as
-   $64 in `codes_for_text()`; the MCP server's table
-   (`tools/mcp/lib/screen.mjs`, PR #86) needs the same change to stay shared.
+14. **closed 2026-11-11, with the key-buffer and underscore fixes.** Keys
+   went to the wrong buffer on a C128 at the TR menu. `Link` picked the
+   C128-mode buffer and count ($034A/$D0) from the banner's machine, but
+   the TR menu is a C64 cartridge, so a C128 runs it in 64 mode, where
+   GETIN reads $0277/$C6, and the keys were dropped (NTSC C128,
+   2026-11-10). On a C128 the link now reads the reset vector at $FFFC by
+   DMA and uses the C128-mode pair only when it holds the C128 KERNAL's
+   $FF3D; anything else gets the C64 pair, as the firmware's bench
+   `type.py` does.
+15. **closed 2026-11-11, with the key-buffer and underscore fixes.** A file
+   name's underscore read as '.'. The firmware shows '_' as PETSCII 164
+   (`ASCIItoPETSCII` in `IOH_TeensyROM.c`), screen code $64, which
+   `code_as_text()` read as `NO_LETTER`, so `MenuDriver.find()` never
+   matched a name such as an HVSC tune's. $64 now reads as '_' in either
+   ROM set, and `codes_for_text()` writes '_' as $64; the MCP server's
+   table (`tools/mcp/lib/screen.mjs`, PR #86) still reads it as '.'.
 
 ## Video
 

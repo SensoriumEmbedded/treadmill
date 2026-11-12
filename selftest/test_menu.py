@@ -135,6 +135,18 @@ def test_driver_walks_the_fake_menu(fake):
     assert menu.up().page == (1, 1)
 
 
+def test_find_matches_a_name_with_an_underscore(fake):
+    board, link = fake
+    board.directories += ["/treadmill", "/treadmill/hvsc"]
+    board.files["/treadmill/hvsc/One_Man_and_his_Droid.sid"] = b"PSID"
+    menu = MenuDriver(ScreenChannel(link, None, None, None, dma_allowed=lambda: True), _Press(link))
+    menu.select_source("sd")
+    menu.open("/treadmill")
+    menu.open("/hvsc")
+    listing, index = menu.find("One_Man_and_his_Droid")
+    assert listing.entries[index].name == "One_Man_and_his_Droid"
+
+
 def test_post_file_paced_and_truncated(fake):
     board, link = fake
     data = bytes(range(256)) * 8

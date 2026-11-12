@@ -3,10 +3,14 @@ unprompted text between commands."""
 
 import pytest
 
-from treadmill.c64.screen import KEYBUF, KEYCOUNT, SCREEN_BYTES
+from treadmill.c64.screen import (
+    C128_RESET, KEYBUF, KEYBUF_128, KEYCOUNT, KEYCOUNT_128, RESET_VECTOR, SCREEN_BYTES,
+)
 from treadmill.link import Link, NotAllowed, Refused
 from treadmill.link.protocol import DRIVE_SD
-from selftest.fake_board import BANNER_TR, start_fake_board
+from selftest.fake_board import BANNER, BANNER_TR, start_fake_board
+
+C64_RESET = 0xFCE2
 
 
 @pytest.fixture
@@ -55,6 +59,30 @@ def test_keys_go_into_the_kernal_buffer(board_and_link):
     assert board.memory[KEYBUF] == 0x85 and board.memory[KEYCOUNT] == 0
     link.keys(b"run\r")
     assert bytes(board.memory[KEYBUF:KEYBUF + 4]) == b"run\r" and board.memory[KEYCOUNT] == 0
+
+
+def _c128_with_reset_vector(board, link, vector: int) -> None:
+    board.banner = BANNER.replace("C64 ", "C128")
+    board.memory[RESET_VECTOR:RESET_VECTOR + 2] = vector.to_bytes(2, "little")
+    link.probe()
+    assert link.c128
+
+
+def test_a_c128_at_the_tr_menu_gets_keys_in_the_c64_buffer(board_and_link):
+    board, link, _ = board_and_link
+    _c128_with_reset_vector(board, link, C64_RESET)        # 64 mode, where the TR menu runs it
+    link.key(0x85)
+    assert board.memory[KEYBUF] == 0x85 and board.memory[KEYCOUNT] == 0
+    assert board.memory[KEYBUF_128] != 0x85
+
+
+def test_a_c128_in_128_mode_gets_keys_in_its_own_buffer(board_and_link):
+    board, link, _ = board_and_link
+    _c128_with_reset_vector(board, link, C128_RESET)
+    board.memory[KEYCOUNT_128] = 0
+    link.keys(b"run\r")
+    assert bytes(board.memory[KEYBUF_128:KEYBUF_128 + 4]) == b"run\r" and board.memory[KEYCOUNT_128] == 4
+    assert board.memory[KEYBUF] != ord("r")
 
 
 def test_ping_ready_then_busy_after_a_launch(board_and_link):

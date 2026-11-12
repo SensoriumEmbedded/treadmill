@@ -4,6 +4,8 @@ The code-to-text table is the one the TeensyROM MCP server uses
 (``tools/mcp/lib/screen.mjs``), reverse video and symbols included, so a
 screen read by DMA, by video or by that server is the same text, and a
 ``read_screen`` result from a live board can be saved as a golden unchanged.
+One addition the server's table does not have yet: screen code $64, the
+bottom-line graphic the menu shows for a file name's underscore, reads as '_'.
 """
 
 from __future__ import annotations
@@ -22,6 +24,8 @@ VIC_DEN = 0x10
 KEYBUF, KEYCOUNT = 0x0277, 0x00C6          # KERNAL keyboard buffer, and the count GETIN reads
 KEYBUF_128, KEYCOUNT_128 = 0x034A, 0x00D0  # the same pair in C128 mode
 KEYBUF_SIZE = 10
+RESET_VECTOR = 0xFFFC
+C128_RESET = 0xFF3D                        # the C128 KERNAL's reset entry: $FFFC reads it only in 128 mode
 F1, F3, F5, F7, F8 = 0x85, 0x86, 0x87, 0x88, 0x8C
 
 SCREEN_COLUMNS = 40
@@ -46,6 +50,9 @@ _CODE_A, _CODE_Z = 1, 26
 _CODE_SHIFT_A, _CODE_SHIFT_Z = 65, 90
 _SYMBOLS_AFTER_Z = "[£]↑←"
 _PUNCTUATION_FIRST, _PUNCTUATION_LAST = 0x20, 0x3F
+# The firmware shows a file name's '_' as PETSCII 164, this graphic (ASCIItoPETSCII in IOH_TeensyROM.c).
+_CODE_BOTTOM_LINE = 0x64
+UNDERSCORE = "_"
 NO_LETTER = "."
 
 
@@ -71,7 +78,8 @@ def charset_in(memptr: int, cia2_port_a: int) -> str:
 def code_as_text(screen_code: int, charset: str = CHARSET_LOWER_UPPER) -> str:
     """One screen code as a character. Codes 1-26 and 65-90 are different
     letters in the two ROM sets; anything with no letter in the set (graphics,
-    line drawing) reads as '.'."""
+    line drawing) reads as '.', except the bottom-line graphic, which is how
+    the menu shows an underscore."""
     code = screen_code & ~REVERSE_VIDEO
     lower_upper = charset == CHARSET_LOWER_UPPER
     if code == _CODE_AT:
@@ -84,6 +92,8 @@ def code_as_text(screen_code: int, charset: str = CHARSET_LOWER_UPPER) -> str:
         return chr(code - _CODE_SHIFT_A + 0x41)
     if _PUNCTUATION_FIRST <= code <= _PUNCTUATION_LAST:
         return chr(code)
+    if code == _CODE_BOTTOM_LINE:
+        return UNDERSCORE
     return NO_LETTER
 
 
@@ -103,6 +113,8 @@ def codes_for_text(text: str, charset: str = CHARSET_LOWER_UPPER) -> bytes:
             out.append(_CODE_Z + 1 + _SYMBOLS_AFTER_Z.index(ch))
         elif _PUNCTUATION_FIRST <= ord(ch) <= _PUNCTUATION_LAST:
             out.append(ord(ch))
+        elif ch == UNDERSCORE:
+            out.append(_CODE_BOTTOM_LINE)
         else:
             out.append(_PUNCTUATION_FIRST)
     return bytes(out)

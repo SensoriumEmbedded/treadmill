@@ -1,6 +1,6 @@
 from treadmill.c64.screen import (
     CHARSET_CUSTOM, CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, charset_in, code_as_text,
-    screen_address, screen_rows,
+    codes_for_text, screen_address, screen_rows,
 )
 from treadmill.link.banner import parse_banner
 
@@ -33,6 +33,9 @@ def test_screen_code_table():
     assert code_as_text(27) == "[" and code_as_text(28) == "£" and code_as_text(31) == "←"
     assert code_as_text(0x30) == "0" and code_as_text(0x3f) == "?"
     assert code_as_text(0x60) == "."                                      # graphics
+    # The menu shows a file name's underscore as the bottom-line graphic, in either set.
+    assert code_as_text(0x64) == "_" and code_as_text(0xE4) == "_" and code_as_text(0x64, CHARSET_UPPER_GRAPHICS) == "_"
+    assert codes_for_text("a_b") == bytes([1, 0x64, 2])
     rows = screen_rows(bytes([0x14, 0x05, 0x18, 0x14] + [0x20] * 996))
     assert rows[0].startswith("text ") and len(rows) == 25 and len(rows[0]) == 40
 

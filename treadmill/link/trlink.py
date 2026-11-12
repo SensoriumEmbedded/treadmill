@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from treadmill.c64.screen import (
-    CIA2_PORT_A, KEYBUF, KEYBUF_128, KEYBUF_SIZE, KEYCOUNT, KEYCOUNT_128, SCREEN_BYTES,
-    VIC_MEMPTR, charset_in, screen_address, screen_rows,
+    C128_RESET, CIA2_PORT_A, KEYBUF, KEYBUF_128, KEYBUF_SIZE, KEYCOUNT, KEYCOUNT_128, RESET_VECTOR,
+    SCREEN_BYTES, VIC_MEMPTR, charset_in, screen_address, screen_rows,
 )
 from treadmill.errors import TreadmillError
 from treadmill.link.banner import TR_PLUS, Banner, parse_banner
@@ -217,17 +217,26 @@ class Link:
         codes = self.read_memory(address, SCREEN_BYTES)
         return ScreenDump(address, charset, codes, screen_rows(codes, charset))
 
+    def _key_buffer(self) -> tuple[int, int]:
+        """The keyboard buffer and count the running KERNAL's GETIN reads. A
+        C128 runs the TR menu and every C64 program in 64 mode, with the C64
+        KERNAL's pair; it uses its own pair only in 128 mode, which its reset
+        vector shows."""
+        if self.c128 and int.from_bytes(self.read_memory(RESET_VECTOR, 2), "little") == C128_RESET:
+            return KEYBUF_128, KEYCOUNT_128
+        return KEYBUF, KEYCOUNT
+
     def key(self, code: int) -> None:
         """One key into the KERNAL keyboard buffer, so the next GETIN returns it.
         Programs that scan the keyboard matrix themselves never see it."""
-        buf, count = (KEYBUF_128, KEYCOUNT_128) if self.c128 else (KEYBUF, KEYCOUNT)
+        buf, count = self._key_buffer()
         self.write_memory(buf, bytes([code]))
         self.write_memory(count, bytes([1]))
 
     def keys(self, codes: bytes | list[int]) -> None:
         """Several keys, at most the buffer's ten at a time, waiting for the
         KERNAL to drain the buffer between chunks."""
-        buf, count = (KEYBUF_128, KEYCOUNT_128) if self.c128 else (KEYBUF, KEYCOUNT)
+        buf, count = self._key_buffer()
         codes = bytes(codes)
         for i in range(0, len(codes), KEYBUF_SIZE):
             chunk = codes[i:i + KEYBUF_SIZE]

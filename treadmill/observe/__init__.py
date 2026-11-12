@@ -5,7 +5,8 @@
 each cell shows; ``channels`` is the one read (video or DMA) and the policy
 between them; ``liveness`` says whether the machine is alive; ``golden``
 compares screens with text goldens; ``render`` makes frames from screen
-codes for the self-tests and for refining a calibration.
+codes for the self-tests and for refining a calibration. ``sound`` measures
+recordings of the C64's audio: tones, and a tune against a reference.
 """
 
 from treadmill.observe.calibrate import (  # noqa: F401
@@ -24,3 +25,7 @@ from treadmill.observe.glyphs import (  # noqa: F401
 )
 from treadmill.observe.golden import Golden, Mismatch, compare, diff_text, save_golden  # noqa: F401
 from treadmill.observe.liveness import Liveness, Verdict, classify  # noqa: F401
+from treadmill.observe.sound import (  # noqa: F401
+    Comparison, Recording, SoundError, Tone, compare_audio, level, load_wav, measure_tones, pitch_ratio,
+    resample, save_wav,
+)

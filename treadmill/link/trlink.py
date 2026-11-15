@@ -192,9 +192,11 @@ class Link:
             raise NotAllowed(f"{what}: DMA commands need a TeensyROM+ running its main image; "
                              "probe() first, and never send them to a plain TR")
 
-    def read_memory(self, address: int, length: int) -> bytes:
+    def read_memory(self, address: int, length: int, *, drain: float = DRAIN_S) -> bytes:
+        """``drain``: how long to wait for stray bytes before the command. A
+        caller that knows nothing is in flight can read many times faster."""
         self._require_dma(f"read of ${address:04X}")
-        self._send(to_board(READ_C64_MEM) + to_board(address) + to_board(length))
+        self._send(to_board(READ_C64_MEM) + to_board(address) + to_board(length), drain)
         self._ack(f"read of ${address:04X}")
         data = self._s.read(length, REPLY_S)
         if len(data) != length:
@@ -335,8 +337,8 @@ class Link:
 
     # -- framing -----------------------------------------------------------
 
-    def _send(self, data: bytes) -> None:
-        stale = self._s.drain(DRAIN_S)
+    def _send(self, data: bytes, drain: float = DRAIN_S) -> None:
+        stale = self._s.drain(drain)
         if stale:
             self._on_unsolicited(stale)
         self._s.write(data)

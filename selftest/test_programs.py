@@ -5,8 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from treadmill import asid
 from treadmill.programs.build import (
-    CARTRIDGES, CRT_EASYFLASH, PROGRAMS, AssembleError, assemble, crt_image, find_acme,
+    CARTRIDGES, CRT_EASYFLASH, PAYLOADS, PROGRAMS, AssembleError, assemble, crt_image, find_acme,
 )
 
 
@@ -39,6 +40,21 @@ def test_cartridges_assemble_to_crt_files(tmp_path: Path):
     assert roml[0x100:0x200] == bytes(range(256)) and roml[0x200:0x300] == bytes(i ^ 0xFF for i in range(256))
     assert romh[-4:-2] == bytes([0x00, 0xE0])                                       # Ultimax reset into ROMH
     assert roml[2:4] == bytes([0xBC, 0xFE])          # RESTORE returns through the KERNAL's NMI exit, counters kept
+
+
+@pytest.mark.skipif(_acme() is None, reason="no ACME: set TREADMILL_ACME or TREADMILL_FW_REPO")
+def test_payloads_assemble_raw_at_their_origin(tmp_path: Path):
+    assert PAYLOADS["tputecho"][2] == 0xC000 and PAYLOADS["asidlog"][2] == asid.LOGGER
+    tput = assemble("tputecho", tmp_path, acme=_acme()).read_bytes()
+    assert tput[:2] == bytes([0xA2, 0x00]) and len(tput) < 0x0400          # ldx #0, no load address
+    assert bytes([0xFE, 0xFD, 0xFC, 0xFB]) in tput
+    log = assemble("asidlog", tmp_path, acme=_acme(), extra={"RESUME": 0x1A2B}).read_bytes()
+    assert log[:3] == bytes(3)                                              # the pair count starts at 0
+    assert log[3:9] == asid.PLAYER_IRQ_HEAD                                 # the entry makes the player's reads
+    assert log[9:12] == bytes([0x8E, 0x00, asid.LOG >> 8])                  # stx LOG
+    assert log[-3:] == bytes([0x4C, 0x2B, 0x1A])                            # jmp RESUME
+    with pytest.raises(AssembleError, match="RESUME"):
+        assemble("asidlog", tmp_path, acme=_acme())
 
 
 def test_crt_image_lays_out_the_header_and_chips():

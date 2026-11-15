@@ -75,8 +75,11 @@ Files that name your own boards and machines stay out of git.
 `tests/` holds one concern per file: identity and reset (`smoke/`), files to
 the card and back (`transfer/`), a launched program (`launch/`), the menu's
 item-type marks and navigation (`menu/`), a debug build's timing knobs
-(`debug/`). A test names what it needs (`@pytest.mark.needs("keys_kernal")`,
-`needs_fw("Dbg_SerTimChg")`) and skips with the reason when the station or the
+(`debug/`), and IO handlers the host drives over USB (`handlers/`: TR BASIC's
+TPUT and TGET, which needs `--attended` until the keyboard board can type a
+SYS, and an ASID stream the C64's reads are logged against, which needs
+`pip install -e .[midi]`). A test names what it needs
+(`@pytest.mark.needs("keys_kernal")`, `needs_fw("Dbg_SerTimChg")`) and skips with the reason when the station or the
 build lacks it; `--caps-mask dma,keys_kernal` takes capabilities away to prove
 the plain-TR tier on a richer station, and `--fw-defines` names the defines a
 build flashed by other means carries. Screen goldens live in `tests/golden/`
@@ -92,8 +95,8 @@ remote protocol), `screen` (the screen through the channel policy: video
 unless `exact=True` and DMA is allowed; every read is cross-checked against
 DMA where both exist), `menu` (the main menu driver), `keys`, `dbg` (the
 debug letters, gated on the build's defines), `programs("hello")` (an
-assembled C64 program), `sd_card` and `sd_fixtures` (the generated type set,
-on the card), `goldens` (`goldens.check(read, "menu/root")`), `artifacts` (the
+assembled C64 program, or a raw payload a test writes in by DMA), `sd_card`
+and `sd_fixtures` (the generated type set, on the card), `goldens` (`goldens.check(read, "menu/root")`), `artifacts` (the
 test's folder). Mark what it needs; declare its length with
 `@pytest.mark.duration(minutes)` so `--estimate` can add it up. The fake
 board runs the whole tree offline (`selftest/test_hw_tests_offline.py`), so

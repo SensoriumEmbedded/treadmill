@@ -1,0 +1,53 @@
+; asidlog.a: a logger in front of the TeensyROM ASID Player's interrupt, for
+; the ASID stream test. The player points $0314 at a handler that starts
+;     ldx $dec2                   ; AE C2 DE  ASIDAddrReg: type and SID register
+;     ldy $dec4                   ; AC C4 DE  ASIDDataReg: the value, advances the queue
+; The test assembles this with RESUME = that handler + 6, writes it at ORIGIN
+; by DMA and points $0314 at ORIGIN + 3. Each interrupt makes the same two
+; reads, stores the pair in the ring LOG..LOG_END-1, counts it, and goes on
+; into the player after its reads, with X and Y as the player would have them.
+;
+; ORIGIN + 0: pairs logged, 24 bits, little-endian (the test reads it here)
+; ORIGIN + 3: the interrupt entry
+
+* = ORIGIN
+
+!ifndef RESUME { !error "assemble with -DRESUME=<the player's handler + 6>" }
+!ifndef LOG { LOG = $4000 }       ; page-aligned; below $A000, where a DMA read would see BASIC ROM
+!ifndef LOG_END { LOG_END = $a000 }
+
+ADDR = $dec2
+DATA = $dec4
+
+pairs:
+    !byte 0, 0, 0
+
+entry:
+    ldx ADDR
+    ldy DATA
+store_addr:
+    stx LOG
+store_data:
+    sty LOG + 1
+    clc
+    lda store_addr + 1
+    adc #2
+    sta store_addr + 1
+    ora #1
+    sta store_data + 1
+    bcc count
+    lda store_addr + 2
+    adc #0                        ; the carry is set: the next page
+    cmp #>LOG_END
+    bne +
+    lda #>LOG
++   sta store_addr + 2
+    sta store_data + 2
+count:
+    inc pairs
+    bne done
+    inc pairs + 1
+    bne done
+    inc pairs + 2
+done:
+    jmp RESUME

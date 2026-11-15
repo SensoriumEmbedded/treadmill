@@ -1,0 +1,77 @@
+; tputecho.a: TR BASIC's serial path from the C64 side, for the TPUT/TGET
+; test. The test writes this at $C000 by DMA, then launches the "BASIC TR
+; Command IO access only" item, which leaves BASIC at READY under the TR BASIC
+; handler (its stub's first line link is zero, so its SYS never runs). There
+; the board ignores host commands and the serial port carries only TPUT and
+; TGET bytes, so SYS 49152 is typed at the C64.
+;
+; 1. The preamble, then BURST_PAGES * 256 bytes of $80 | (i & $7f) through
+;    TPUT as fast as the 6510 writes them (13 cycles a byte).
+; 2. An echo loop: each byte TGET returns with bit 7 set goes back out
+;    through TPUT (TGET reads 0 while nothing is queued). A byte with bit 7
+;    clear is a command: CMD_FLOOD sends the burst pattern without end,
+;    CMD_IDLE stops answering.
+
+* = ORIGIN
+
+DATA = $deb2                      ; TR_BASDataReg: a write is TPUT, a read is TGET
+!ifndef BURST_PAGES { BURST_PAGES = 64 }
+CMD_FLOOD = $01
+CMD_IDLE  = $02
+
+ROW = 12
+COL = 12
+CELL = $0400 + ROW * 40 + COL
+
+start:
+    ldx #$00
+-   lda message,x
+    beq +
+    sta CELL,x
+    inx
+    bne -
++   ldx #$00
+-   lda preamble,x
+    sta DATA
+    inx
+    cpx #PREAMBLE_LEN
+    bne -
+    ldy #BURST_PAGES
+    ldx #$00
+burst:
+    txa
+    ora #$80
+    sta DATA
+    inx
+    bne burst
+    dey
+    bne burst
+
+echo:
+    lda DATA
+    beq echo
+    bpl command
+    sta DATA
+    jmp echo
+command:
+    cmp #CMD_FLOOD
+    beq flood
+    cmp #CMD_IDLE
+    bne echo
+idle:
+    jmp idle
+
+flood:
+    ldx #$00
+-   txa
+    ora #$80
+    sta DATA
+    inx
+    jmp -
+
+preamble:
+    !byte $fe, $fd, $fc, $fb
+PREAMBLE_LEN = * - preamble
+
+message:
+    !scr "treadmill tput", 0

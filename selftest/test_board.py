@@ -36,6 +36,40 @@ def test_reconnect_probes_again_and_keeps_the_caps(lab):  # noqa: F811
         board.close()
 
 
+def test_a_handler_that_ignores_the_port_goes_straight_to_the_reboot(lab):  # noqa: F811
+    """Under TR BASIC the firmware drops every host command, so a reset could
+    only wait out the boot timeout: the ladder starts at the USB reboot."""
+    _, first = start_fake_board()
+    _, second = start_fake_board()
+    board = Board.open(load_station("s1"), link_factory=lambda: Link(first))
+    try:
+        board.events.feed(b"Loading IO handler: TR_BASIC\r\n")
+        resets = []
+        board._rung_reset = lambda: resets.append("reset")
+        board.reboot_hook = lambda: None
+        board.reconnect_hook = lambda: Link(second)
+        first.close()
+        board.ensure_menu()
+        assert resets == [] and board.recoveries == ["usb-reboot"]
+    finally:
+        board.close()
+
+
+def test_without_a_reboot_the_ladder_still_tries_the_reset(lab):  # noqa: F811
+    _, stream = start_fake_board()
+    board = Board.open(load_station("s1"), link_factory=lambda: Link(stream))
+    try:
+        board.events.feed(b"Loading IO handler: TR_BASIC\r\n")
+        resets = []
+        board._rung_reset = lambda: resets.append("reset")
+        board.wait_for_menu = lambda timeout=None: None
+        stream.close()
+        board.ensure_menu()
+        assert resets == ["reset"] and board.recoveries == ["reset"]
+    finally:
+        board.close()
+
+
 def test_a_reconnect_that_finds_no_board_marks_the_station_wedged(lab):  # noqa: F811
     """On a port, the reconnect hook looks the board up by chip id, and a
     board that never came back is NotFound: a rung that failed, not a crash."""

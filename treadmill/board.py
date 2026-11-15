@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 
 BOOT_POLL_S = 0.5
 C128_RESET_HOLD_S = 0.25        # no DMA within ~80 ms of a C128 reset release (Constraints.md); margin on top
+# Handlers under which the firmware ignores every host command (ServiceSerial
+# returns at once for TR BASIC, whose program owns the serial port): a reset
+# sent there only waits out the boot timeout.
+SERIAL_DEAF_HANDLERS = frozenset({"TR_BASIC"})
 
 
 
@@ -196,7 +200,9 @@ class Board:
                 return
         except (LinkError, TransportError):
             pass
-        rungs: list[tuple[str, Callable[[], None]]] = [("reset", self._rung_reset)]
+        rungs: list[tuple[str, Callable[[], None]]] = []
+        if not (self.reboot_hook and self.events.current_handler() in SERIAL_DEAF_HANDLERS):
+            rungs.append(("reset", self._rung_reset))
         if self.reboot_hook:
             rungs.append(("usb-reboot", self._rung_reboot))
         if self.station.has("power"):

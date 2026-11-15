@@ -1,5 +1,6 @@
-"""Assemble the suite's own C64 programs with ACME at test time: PRGs, and
-cartridge images wrapped as .crt files.
+"""Assemble the suite's own C64 programs with ACME at test time: PRGs,
+cartridge images wrapped as .crt files, and raw payloads a test writes into
+memory by DMA.
 
 The sources live next to this file; the assembler is the firmware
 checkout's cached one (``tools/.cache/acme-*/**/acme``) or ``TREADMILL_ACME``.
@@ -24,6 +25,12 @@ PROGRAMS = {
     "allcodes_lu0": ("allcodes.a", {"CHARSET": 1, "PAGE": 0}),
     "allcodes_lu1": ("allcodes.a", {"CHARSET": 1, "PAGE": 1}),
     "hello": ("hello.a", {}),
+}
+# Code with no load address, written into a running machine by DMA: the source
+# sets its own origin, and ``origin`` is where the test writes it.
+PAYLOADS = {
+    "tputecho": ("tputecho.a", {}, 0xC000),
+    "asidlog": ("asidlog.a", {}, 0xC000),
 }
 
 
@@ -103,12 +110,19 @@ def crt_image(rom: bytes, name: str, hardware: int, loads: tuple[int, ...], line
 def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None,
              acme: Path | None = None, extra: dict[str, int] | None = None) -> Path:
     """``name`` from PROGRAMS, assembled to ``<out_dir>/<name>[-<extra>].prg``,
-    or from CARTRIDGES, to ``<name>.crt``; ``extra`` adds or overrides
-    assembler defines (``{"COLOR": 14}``)."""
+    from CARTRIDGES, to ``<name>.crt``, or from PAYLOADS, to a raw ``<name>.bin``
+    assembled at its origin (the ``ORIGIN`` define); ``extra`` adds or
+    overrides assembler defines (``{"COLOR": 14}``)."""
     cartridge = CARTRIDGES.get(name)
-    if cartridge is None and name not in PROGRAMS:
-        raise AssembleError(f"no program {name!r}; one of {', '.join([*PROGRAMS, *CARTRIDGES])}")
-    source, defines = (cartridge.source, cartridge.defines) if cartridge else PROGRAMS[name]
+    payload = PAYLOADS.get(name)
+    if cartridge is None and payload is None and name not in PROGRAMS:
+        raise AssembleError(f"no program {name!r}; one of {', '.join([*PROGRAMS, *CARTRIDGES, *PAYLOADS])}")
+    if cartridge:
+        source, defines = cartridge.source, cartridge.defines
+    elif payload:
+        source, defines = payload[0], {**payload[1], "ORIGIN": payload[2]}
+    else:
+        source, defines = PROGRAMS[name]
     if extra:
         defines = {**defines, **extra}
         name += "".join(f"-{k.lower()}{v}" for k, v in sorted(extra.items()))
@@ -118,8 +132,9 @@ def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None
                             "checkout with tools/.cache")
     out_dir = Path(out_dir or DEFAULT_WORK_ROOT / "programs")
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / (f"{name}.bin" if cartridge else f"{name}.prg")
-    cmd = [str(acme), "-f", "plain" if cartridge else "cbm", "-o", str(out)]
+    plain = cartridge is not None or payload is not None
+    out = out_dir / (f"{name}.bin" if plain else f"{name}.prg")
+    cmd = [str(acme), "-f", "plain" if plain else "cbm", "-o", str(out)]
     cmd += [f"-D{k}={v}" for k, v in defines.items()]
     cmd.append(source)
     result = subprocess.run(cmd, cwd=str(SOURCES), capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -130,6 +145,10 @@ def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None
         crt = out.with_suffix(".crt")
         crt.write_bytes(crt_image(data, cartridge.name, cartridge.hardware, cartridge.loads, cartridge.lines))
         return crt
+    if payload:
+        if not data:
+            raise AssembleError(f"{out} is empty")
+        return out
     if len(data) < 3 or int.from_bytes(data[:2], "little") != PRG_LOAD:
         raise AssembleError(f"{out} does not load at ${PRG_LOAD:04X}")
     return out

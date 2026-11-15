@@ -234,6 +234,16 @@ class Board:
         if self.reconnect_hook:
             self._reconnect()
 
+    def reopen(self, away: float) -> None:
+        """Close the port for ``away`` seconds, then open it again: the host
+        not reading. Whether the board's USB writes then stall is the host
+        driver's call; on Windows the driver keeps taking (and discarding)
+        what the board sends while the port is closed."""
+        assert self.reconnect_hook is not None
+        self.link.close()
+        time.sleep(away)
+        self._reconnect()
+
     def _reconnect(self) -> None:
         """A new link after the board's USB went away (a reboot, a power
         cycle, a reset out of the minimal image). The new link starts with

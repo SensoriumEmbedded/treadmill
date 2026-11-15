@@ -1,6 +1,7 @@
 """TR BASIC's serial path: what the C64 sends with TPUT reaches the host
-whole and in order, TGET hands the host's bytes to the C64, and the menu
-button while TPUT is flooding brings the board back without a crash.
+whole and in order, TGET hands the host's bytes to the C64, TPUT bytes keep
+coming after the host stops reading for a while and starts again, and the
+menu button while TPUT is flooding brings the board back without a crash.
 
 While TR BASIC runs, the board ignores every host command, DMA included, and
 the launch path re-initializes the KERNAL and BASIC, so no hook set before
@@ -14,8 +15,19 @@ The burst is far faster than BASIC's TPUT: 13 cycles a byte against the
 firmware's 4 KB ring and its drain in the polling handler. Firmware that
 writes each byte to USB from the bus interrupt instead misses cycles at
 this rate, so the test also tells the two apart.
+
+Closing the port for a while is meant to stop the host taking the board's
+USB transfers, so each write waits out the Teensy core's 120 ms timeout and
+later ones return at once. On the Windows bench it does not: the driver
+keeps taking the data and discards it, and the flood's count skips only
+where the port closed. ``host_away.json`` says which happened
+(``board_dropped``: a skip after that point). Firmware that writes from the
+bus interrupt would wait there, where the tick that ends the wait cannot
+run, for good; that build is not one to run this on without a way to
+power-cycle the machine.
 """
 
+import json
 import time
 
 import pytest
@@ -34,6 +46,8 @@ BURST_S = 30.0
 ECHO_S = 10.0
 FLOOD_SAMPLE = 4096
 FLOOD_POLL_S = 0.25
+HOST_AWAY_S = 10.0                      # far past the core's 120 ms write timeout
+AFTER_SAMPLE = 32 * 1024                # past what the board's USB buffers held when the port closed
 BUTTON_S = 60.0
 
 
@@ -48,6 +62,12 @@ def _first_difference(got: bytes, want: bytes) -> str:
     return f"{len(got)} of {len(want)} bytes" if len(got) != len(want) else "identical"
 
 
+def _breaks(flood: bytes) -> list[int]:
+    """Offsets where the flood's count skips: the board dropped bytes before
+    them (a drop of a multiple of 128 bytes does not show)."""
+    return [k + 1 for k, (a, b) in enumerate(zip(flood, flood[1:])) if b != 0x80 | ((a + 1) & 0x7F)]
+
+
 def _tell_operator(request: pytest.FixtureRequest, text: str) -> None:
     """A line the person at the bench sees while pytest captures output."""
     capman = request.config.pluginmanager.getplugin("capturemanager")
@@ -60,7 +80,7 @@ def _tell_operator(request: pytest.FixtureRequest, text: str) -> None:
 
 @pytest.mark.needs("dma")
 @pytest.mark.duration(3)
-def test_tput_and_tget_then_the_menu_button(request: pytest.FixtureRequest, programs):
+def test_tput_and_tget_then_the_menu_button(request: pytest.FixtureRequest, programs, artifacts):
     if fake_requested():
         pytest.skip("the fake board has no TR BASIC handler")
     if not request.config.getoption("--attended"):
@@ -90,9 +110,27 @@ def test_tput_and_tget_then_the_menu_button(request: pytest.FixtureRequest, prog
 
     # The button while the C64 keeps the TPUT ring full: the board has to
     # switch handlers before it frees the ring the bus interrupt is writing.
+    t_flood = time.monotonic()
     stream.write(bytes([CMD_FLOOD]))
     sample = stream.read(FLOOD_SAMPLE, ECHO_S)
     assert len(sample) == FLOOD_SAMPLE and all(b & 0x80 for b in sample), "the flood did not start"
+
+    link.close()
+    closed_at = len(stream.tap.since(t_flood))
+    board.reopen(HOST_AWAY_S)
+    link, stream = board.link, board.link.stream
+    t0 = time.monotonic()
+    again = stream.read(AFTER_SAMPLE, ECHO_S)
+    took = time.monotonic() - t0
+    # The tap, not the reads: opening the port discards what arrives while it
+    # settles, which is where bytes the board held while closed would come.
+    breaks = _breaks(stream.tap.since(t_flood))
+    away = {"host_away_s": HOST_AWAY_S, "closed_at": closed_at, "breaks_at": breaks[:8],
+            "board_dropped": any(k > closed_at + 1 for k in breaks),
+            "bytes_after": len(again), "seconds_after": round(took, 2)}
+    (artifacts / "host_away.json").write_text(json.dumps(away, indent=2), encoding="utf-8")
+    assert len(again) == AFTER_SAMPLE and all(b & 0x80 for b in again), \
+        f"the flood did not come back after the port was closed for {HOST_AWAY_S:.0f} s: {away}"
     _tell_operator(request, f"Press the TeensyROM menu button now (waiting {BUTTON_S:.0f} s).")
     # Drain the flood until it stops, so the link's commands afterwards do not
     # wade through it; only the board's own text (bit 7 clear) goes to the event log.

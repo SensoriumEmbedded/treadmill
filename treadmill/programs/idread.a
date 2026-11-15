@@ -17,8 +17,12 @@
 ;   $C000/1  passes, 16-bit (256 rounds each: two ROM reads, one IO2 read)
 ;   $C002-4  wrong ROM reads, 24-bit
 ;   $C005-7  wrong IO2 reads, 24-bit
+; With SHOW defined, each pass also writes the three counters in hex on the
+; top row (passes, wrong ROM, wrong IO2), for an image that refuses DMA:
+; MinimalBoot answers only reset, launch, version and the firmware check.
 
 RES  = $c000
+SCREEN = $0400
 LOOP = $c100
 IO2  = $df00
 MARK = $5a                          ; the IO2 page holds i XOR MARK, unlike either ROM page
@@ -38,6 +42,16 @@ cold:
     jsr $ff87                       ; RAMTAS
     jsr $ff8a                       ; RESTOR
     jsr $ff81                       ; CINT: a blank screen for whoever watches
+!ifdef SHOW {
+    lda #$00                        ; light grey on black, the colors the glyph banks are harvested in
+    sta $d020
+    sta $d021
+    lda #$0f
+    ldx #39
+-   sta $d800,x
+    dex
+    bpl -
+}
     sei
     lda #$00
     ldx #$07
@@ -78,10 +92,18 @@ round:
     jsr wrong_io
 +   iny
     bne round
+!ifdef SHOW {
+    inc RES
+    bne +
+    inc RES+1
++   jsr show
+    jmp pass
+} else {
     inc RES
     bne pass
     inc RES+1
     jmp pass
+}
 
 wrong_rom:
     inc RES+2
@@ -98,6 +120,49 @@ wrong_io:
     bne +
     inc RES+7
 +   rts
+
+!ifdef SHOW {
+show:                               ; Y is 0 here, and pass sets it again
+    lda RES+1
+    jsr hex
+    lda RES
+    jsr hex
+    iny
+    lda RES+4
+    jsr hex
+    lda RES+3
+    jsr hex
+    lda RES+2
+    jsr hex
+    iny
+    lda RES+7
+    jsr hex
+    lda RES+6
+    jsr hex
+    lda RES+5
+    ; falls through
+
+hex:                                ; A as two digits at SCREEN+Y; Y moves on two
+    pha
+    lsr
+    lsr
+    lsr
+    lsr
+    tax
+    lda digits,x
+    sta SCREEN,y
+    iny
+    pla
+    and #$0f
+    tax
+    lda digits,x
+    sta SCREEN,y
+    iny
+    rts
+
+digits:                             ; in the loop's RAM copy: a failed ROM read must not show as a count
+    !scr "0123456789abcdef"
+}
 }
 loop_end:
 

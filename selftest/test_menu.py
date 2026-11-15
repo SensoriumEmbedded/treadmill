@@ -8,9 +8,11 @@ from selftest.fake_board import start_fake_board
 from selftest.fake_menu import GAMES, ROOT
 from treadmill.c64.menu import (
     EMPTY, MARK_DIR, MARK_NONE, UP_DIR, Entry, MenuDriver, MenuError, mark_for, parse_listing,
-    render_listing,
+    render_listing, shown_name,
 )
-from treadmill.fixtures.sdcard import TYPES_DIR, expected_listing, menu_entries, provision, type_set
+from treadmill.fixtures.sdcard import (
+    LONG_HEX, NAMES_DIR, TYPES_DIR, expected_listing, menu_entries, name_set, provision, type_set,
+)
 from treadmill.link import Link, Refused
 from treadmill.observe.channels import ScreenChannel
 from treadmill.observe.golden import Golden, compare
@@ -75,6 +77,17 @@ def test_type_set_covers_the_marks_in_menu_order():
     rows = expected_listing(files)
     assert rows[1].startswith("Src: SD Card") and rows[2].rstrip() == "//treadmill/types" and len(parse_listing(rows).entries) == 13
 
+
+
+def test_a_long_name_loses_its_extension_before_the_cut():
+    assert shown_name(LONG_HEX) == "TeensyROM+_0.9.0.69-DMA-noisr_full"
+    assert shown_name("A.Very.Long.Program.Name.With.Many.Dots.prg") == "A.Very.Long.Program.Name.With.Many"
+    assert shown_name("Partial.Extension.Cut.At.Column.prg", show_extensions=True) == "Partial.Extension.Cut.At.Column.pr"
+    assert shown_name("v1.2.prg") == "v1.2" and shown_name("v1.2.prg", show_extensions=True) == "v1.2.prg"
+    assert shown_name("x" * 40 + ".xyz") == "x" * 34
+    for on in (False, True):
+        listing = parse_listing(expected_listing(name_set(), show_extensions=on, directory=NAMES_DIR))
+        assert len(listing.entries) == 5 and all(len(e.name) <= 34 for e in listing.entries)
 
 @pytest.fixture
 def fake():

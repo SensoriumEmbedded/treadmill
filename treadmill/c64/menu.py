@@ -44,6 +44,7 @@ ROW_BANNER, ROW_SOURCE, ROW_PATH, FIRST_ITEM_ROW = 0, 1, 2, 3
 ITEMS_PER_PAGE = 19                  # MaxItemsPerPage
 ROW_LEGEND1, ROW_LEGEND2 = 23, 24
 NAME_COLUMN, HANDLER_COLUMN, MARK_COLUMN, MARK_WIDTH = 1, 35, 36, 3
+NAME_WIDTH = HANDLER_COLUMN - NAME_COLUMN       # MaxItemDispLength less its terminator
 CLOCK_COLUMN, CLOCK_WIDTH = 29, 10
 CLOCK_ANY = "?" * CLOCK_WIDTH
 LEGEND_ROW1 = "F1 Teensy Mem  F5 USB Drive  Pg "
@@ -74,10 +75,14 @@ def shown_name(filename: str, show_extensions: bool = False) -> str:
     """The name a card or USB listing shows for a file: one of a type the
     menu knows loses its extension unless Settings shows extensions, which
     the firmware's default does not (``rsstItemName`` in IOH_TeensyROM.c);
-    a file of an unknown type keeps its whole name."""
-    if show_extensions or mark_for(filename) == MARK_UNKNOWN:
-        return filename
-    return filename.rsplit(".", 1)[0]
+    a file of an unknown type keeps its whole name. Either is then cut to
+    the columns before the handler mark. The extension goes first, so a dot
+    inside a long name's cut is not taken for it (``MenuItemDisplayName``,
+    firmware PR #102; earlier firmware cut first and dropped from the cut's
+    last dot)."""
+    if not show_extensions and mark_for(filename) != MARK_UNKNOWN:
+        filename = filename.rsplit(".", 1)[0]
+    return filename[:NAME_WIDTH]
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,8 @@ from treadmill.link.trlink import Link, Refused
 FIXTURE_ROOT = "/treadmill"
 TYPES_DIR = f"{FIXTURE_ROOT}/types"
 TRANSFER_DIR = f"{FIXTURE_ROOT}/transfer"
+NAMES_DIR = f"{FIXTURE_ROOT}/names"
+LONG_HEX = "TeensyROM+_0.9.0.69-DMA-noisr_full.hex"
 
 
 class FixtureError(TreadmillError):
@@ -151,6 +153,19 @@ def type_set() -> list[FixtureFile]:
         FixtureFile("d64.d64", _d64()),
         FixtureFile("unknown.xyz", _unknown()),
         FixtureFile("sub/inner.prg", _prg()),
+    ]
+
+
+def name_set() -> list[FixtureFile]:
+    """Names around the listing's 34 columns: an extension whose dot falls
+    just past the cut and a name still too long without its extension, both
+    with dots inside the cut; a cut through the extension, which only shows
+    with extensions on; a short dotted name."""
+    return [
+        FixtureFile(LONG_HEX, _hex()),
+        FixtureFile("A.Very.Long.Program.Name.With.Many.Dots.prg", _prg()),
+        FixtureFile("Partial.Extension.Cut.At.Column.prg", _prg()),
+        FixtureFile("v1.2.prg", _prg()),
     ]
 
 

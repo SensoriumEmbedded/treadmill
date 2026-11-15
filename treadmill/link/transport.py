@@ -26,6 +26,10 @@ SERIAL_SETTLE_S = 0.4
 SERIAL_BAUD = 115200
 # PJRC's USB vendor id; a TeensyROM's device serial string carries its chip id.
 PJRC_VID = 0x16C0
+# The quiet periods are sized for a serial line that cannot say when the board
+# is done. A fake board on an in-process pipe answers within a thread switch,
+# so its pipe waits a tenth of each: 30 ms for the link's 0.3 s drain.
+PIPE_QUIET_SCALE = 0.1
 
 
 class TransportError(TreadmillError):
@@ -53,9 +57,12 @@ class _Raw(Protocol):
 
 
 class ByteStream:
-    def __init__(self, raw: _Raw, name: str, read_chunk: int = 4096):
+    def __init__(self, raw: _Raw, name: str, read_chunk: int = 4096, quiet_scale: float = 1.0):
+        """``quiet_scale`` multiplies the quiet periods only (``drain``, and
+        ``read_idle``'s ``idle``), never a deadline for the board's answer."""
         self._raw = raw
         self.name = name
+        self.quiet_scale = quiet_scale
         self._buf = bytearray()
         self._cv = threading.Condition()
         self._ended = False
@@ -125,6 +132,7 @@ class ByteStream:
         until the stream has been quiet for ``idle``, never longer than ``total``."""
         limit = time.monotonic() + total
         deadline = time.monotonic() + first
+        idle *= self.quiet_scale
         seen = 0
         with self._cv:
             while not self._ended:
@@ -140,7 +148,7 @@ class ByteStream:
 
     def drain(self, quiet: float) -> bytes:
         """Wait ``quiet`` seconds and discard what arrived; returns it for the log."""
-        time.sleep(quiet)
+        time.sleep(quiet * self.quiet_scale)
         with self._cv:
             return self._take(len(self._buf))
 
@@ -279,7 +287,7 @@ def open_pipe(name: str = "pipe") -> tuple[ByteStream, "PipeEnd"]:
     """A ByteStream and the matching far end a fake board reads and writes."""
     to_board: queue.Queue = queue.Queue()
     to_host: queue.Queue = queue.Queue()
-    stream = ByteStream(_QueueRaw(to_host, to_board), name)
+    stream = ByteStream(_QueueRaw(to_host, to_board), name, quiet_scale=PIPE_QUIET_SCALE)
     return stream, PipeEnd(to_board, to_host)
 
 

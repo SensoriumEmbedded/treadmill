@@ -8,7 +8,8 @@ reads by color, since the real one is a packed binary.
 
 ``faults`` (per board, from the fake bench) breaks one thing at a time:
 ``epc_fail`` ("ethernet", "sd", "usb"), ``clock_offset_s``, ``xpt_fail_pass``,
-``reu_fail``, ``reu_kb``.
+``reu_fail``, ``reu_kb``; ``leds`` lists what the operator types for each LED
+question (``FakeBoard.watch_led_questions``).
 """
 
 from __future__ import annotations

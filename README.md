@@ -167,7 +167,12 @@ and with it the REU's size):
    keeps only the whole seconds of its time fetch and prints whole seconds,
    so a good board reads 0 to 2 s behind. A clock off by whole half hours
    on a board whose settings were not reset is reported as its timezone
-   setting. The operator answers for the Ethernet and TR LEDs.
+   setting. Then the C64's bottom row asks whether the Ethernet port's
+   green LED and the TR LED are on, and the operator answers Y or N on the
+   C64's keyboard (`led_timeout_s`, 120 s, for each). The test's keys come
+   through the KERNAL's GETIN vector, which mfg points at a stub that never
+   returns one: the test stays at its prompt, the answers wait in the
+   keyboard buffer, and no key can end the test before the external reset.
 4. External reset: the operator presses the C64's reset button, and the TR+
    must log `Button detected` and bring the menu back.
 5. Expansion Port: the built-in test passes `xpt_passes` times.

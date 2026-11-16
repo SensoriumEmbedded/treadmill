@@ -10,7 +10,7 @@ from selftest.fake_board import BANNER, FakeBoard, start_fake_board
 from selftest.synth import calibrated, fake_frame_source, harvested_bank
 from treadmill.board import Board
 from treadmill.link import Link
-from treadmill.mfg import BUTTONS, CONNECT, INSTRUCTIONS, POWER_OFF, RESET_BUTTON, Console, VideoKit
+from treadmill.mfg import BUTTONS, CONNECT, INSTRUCTIONS, LEDS, POWER_OFF, RESET_BUTTON, Console, VideoKit
 
 FIRST_UID = 19300000
 SD_ROOT = [{"type": "dir", "name": "APPS"}, {"type": "dir", "name": "VMS"},
@@ -54,6 +54,8 @@ class FakeBench:
             self._power_on()
         elif action == BUTTONS:
             self.fake.press_buttons()
+        elif action == LEDS:
+            self.fake.watch_led_questions()
         elif action == RESET_BUTTON:
             self.fake.external_reset()
         elif action == POWER_OFF:

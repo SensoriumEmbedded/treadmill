@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from selftest.fake_menu import TREE, UP_DIR, FakeMenu
 from selftest.fake_programs import ExpPort, ExtPorts, ReuChecker
 from treadmill.c64.screen import (
-    KEYBUF, KEYCOUNT, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_RAM_DEFAULT, SCREEN_ROWS, codes_for_text,
+    KEYBUF, KEYBUF_SIZE, KEYCOUNT, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_RAM_DEFAULT, SCREEN_ROWS,
+    codes_for_text,
 )
 from treadmill.link.banner import parse_banner
+from treadmill.mfg import IGETIN, LED_ROW
 from treadmill.link.protocol import (
     ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, FAIL, FW_CHECK,
     FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, GOOD_SID, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
@@ -48,6 +50,9 @@ PROGRAMS = {"TeensyROM External Ports Test": ExtPorts, "TR+ C64 Expansion Port T
             "REU-Checker v1.0            +REU": ReuChecker}
 # Hot keys at the EEPROM defaults on a TR+ (Teensy.ino): 2 is the REU checker.
 HOT_KEYS = {2: "/Test+Diags/REU-Checker v1.0            +REU"}
+KERNAL_GETIN = (0xF13E).to_bytes(2, "little")     # IGETIN as RESTOR sets it
+LED_QUESTION_ROW = SCREEN_RAM_DEFAULT + LED_ROW * SCREEN_COLUMNS
+LED_QUESTION_MARK = codes_for_text("Y/N")
 
 
 @dataclass
@@ -107,6 +112,7 @@ class FakeBoard:
     program: object = field(default=None, repr=False)
     powered: bool = True
     buttons_pending: bool = False
+    led_answers: list[str] | None = None  # what the operator types for each LED question still to come
     unblocked: threading.Event = field(default_factory=threading.Event, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     end: PipeEnd | None = field(default=None, repr=False)
@@ -115,7 +121,7 @@ class FakeBoard:
         # A C64 at the TeensyROM menu: screen at $0400, lower/upper charset, VIC bank 0, no key waiting.
         self.memory[0xD018] = 0x17
         self.memory[0xDD00] = 0x97
-        self.memory[KEYCOUNT] = 0
+        self.cold_start()
         self.unblocked.set()
         self.menu = FakeMenu(self)       # draws the Teensy Mem root into screen RAM
 
@@ -174,6 +180,33 @@ class FakeBoard:
         self.say(f"Remote Launch:\nP: {folder or '/'}\nF: {name}\n{handler}")
         self.run(path)
 
+    def cold_start(self) -> None:
+        """What the menu cartridge's cold start leaves that a test can see: no
+        key waiting, GETIN through the KERNAL (it clears $0002-$03FF and runs
+        RESTOR)."""
+        self.memory[KEYCOUNT] = 0
+        self.memory[IGETIN:IGETIN + 2] = KERNAL_GETIN
+
+    def getin_live(self) -> bool:
+        """A program's GETIN takes keys from the buffer: IGETIN is the KERNAL's."""
+        return bytes(self.memory[IGETIN:IGETIN + 2]) == KERNAL_GETIN
+
+    def type_keys(self, text: str) -> None:
+        """Keys pressed on the C64's keyboard: the IRQ's scan queues each one
+        (ten at most), and a GETIN loop takes it at once."""
+        with self.lock:
+            for code in text.upper().encode("latin-1"):
+                if self.getin_live() and (self.program is not None or not self.busy):
+                    (self.program or self.menu).key(code)
+                elif self.memory[KEYCOUNT] < KEYBUF_SIZE:
+                    self.memory[KEYBUF + self.memory[KEYCOUNT]] = code
+                    self.memory[KEYCOUNT] += 1
+
+    def watch_led_questions(self) -> None:
+        """The operator reads the LED questions from now on, answering each as
+        ``faults["leds"]`` says (Y to both by default); past its end, nothing."""
+        self.led_answers = list(self.faults.get("leds", ["y", "y"]))
+
     def return_to_menu(self) -> None:
         """What BtnPressed does in loop(): the menu's handler back, the C64 reset."""
         self.say("Button detected\nLoading IO handler: TeensyROM\nResetting C64\n")
@@ -183,6 +216,7 @@ class FakeBoard:
             self.heartbeat = False
             self.idread = None
             self.booting_for = self.boot_polls
+            self.cold_start()
             self.menu.reset()
 
     def press_buttons(self) -> None:
@@ -360,6 +394,7 @@ class FakeBoard:
         with self.lock:
             self.program = None
             self.memory[0xD018] = 0x17
+            self.cold_start()
             self.menu.reset()
         end.write(b"Reset cmd received\nLoading IO handler: TeensyROM\n")
 
@@ -386,13 +421,16 @@ class FakeBoard:
         data = end.read(length, WAIT_S)
         self.memory[address:address + len(data)] = data
         self._reply(end, ACK)
-        if address <= KEYCOUNT < address + len(data) and self.memory[KEYCOUNT] and (
+        if address <= KEYCOUNT < address + len(data) and self.memory[KEYCOUNT] and self.getin_live() and (
                 self.program is not None or not self.busy):
             # The menu's GETIN loop, or a launched program's, takes the keys as soon as they are in the buffer.
             count = self.memory[KEYCOUNT]
             self.memory[KEYCOUNT] = 0
             for code in bytes(self.memory[KEYBUF:KEYBUF + count]):
                 (self.program or self.menu).key(code)
+        if address == LED_QUESTION_ROW and self.led_answers and \
+                LED_QUESTION_MARK in bytes(b & ~REVERSE_VIDEO for b in data):
+            self.type_keys(self.led_answers.pop(0))
 
     def _launch(self, end: PipeEnd) -> None:
         self._reply(end, ACK)

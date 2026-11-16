@@ -8,7 +8,8 @@ and runs the checks a board gets before it ships, in order:
 2. firmware: version and build stamp equal the factory hex's, no tag, not dirty;
 3. External Ports: the built-in test passes, its clock line on serial and on
    screen agree and are within a tolerance of UTC (which proves the time
-   fetch over Ethernet and the RTC), and the operator sees both LEDs on;
+   fetch over Ethernet and the RTC), and the operator answers Y on the C64's
+   keyboard for each of its two LEDs;
 4. external reset: the TR+ senses a reset it did not make and returns to the menu;
 5. Expansion Port: the built-in test passes three times;
 6. SD root: the card's root matches a snapshot of the master image;
@@ -50,8 +51,8 @@ from treadmill.board import Board
 from treadmill.c64.keys import RETURN, KernalKeys
 from treadmill.c64.menu import MenuDriver, parse_listing
 from treadmill.c64.screen import (
-    CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, COLOR_RAM, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS,
-    SCREEN_ROWS, VIC_BORDER, codes_for_text,
+    CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, COLOR_RAM, KEYBUF, KEYCOUNT, REVERSE_VIDEO, SCREEN_BYTES,
+    SCREEN_COLUMNS, SCREEN_ROWS, VIC_BORDER, codes_for_text,
 )
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.firmware.hexinfo import HexError, HexInfo, inspect_hex
@@ -77,6 +78,20 @@ KEY_O, KEY_2 = 0x4F, 0x32                                          # PETSCII as 
 
 EPC_PASSED = "External Port Check Passed."
 EPC_FAILED = "External Port Check Failed!"
+EPC_ANY_KEY = "Press any key to return"                            # after either verdict, then a return
+# The LED questions. The test reads keys with JSR $FFE4 (c64defs.i), so through the KERNAL's IGETIN
+# vector; pointed at a stub that always says "no key", the test stays at its prompt while the IRQ's
+# scan keeps queueing keys, and the answers are read from the buffer with no race. The stub sits in
+# the cassette buffer, which the test leaves alone. Nothing points the vector back: the menu
+# cartridge's cold start clears $0002-$03FF and runs RESTOR (TeensyROMC64.asm), and until that reset
+# no key can end the test, whose exit (rCtlReturnToMainMenu) logs "Button detected" just as the
+# external reset of the next step does.
+IGETIN, NO_KEY_STUB = 0x032A, 0x033C
+NO_KEY = bytes([0xA9, 0x00, 0x18, 0x60])                           # LDA #0; CLC; RTS
+YES_KEYS, NO_KEYS = (0x59, 0xD9), (0x4E, 0xCE)                     # Y and N, either shift
+LED_ROW = SCREEN_ROWS - 1        # free: the prompt's return leaves the cursor on a blank line below it
+LED_QUESTIONS = (("led_ethernet", "Ethernet port's green LED on?", "the Ethernet green LED"),
+                 ("led_tr", "TR LED (by the MENU button) on?", "the TR LED"))
 # What TRExtPortCheck prints before its fail line, first to last: the reason a board is stopped.
 EPC_REASONS = ("Could not init Ethernet", "Could not init SD", "Couldn't open SD file", "No SD filename",
                "Could not init USB", "Couldn't open USB file", "No USB filename")
@@ -213,6 +228,7 @@ class MfgProfile:
     reset_timeout_s: float = 60.0
     xpt_pass_timeout_s: float = 90.0
     reu_timeout_s: float = 30.0
+    led_timeout_s: float = 120.0
     require_release: bool = True
 
     PATHS = ("factory_hex", "sd_golden", "log")
@@ -295,12 +311,10 @@ def _color_terminal(out) -> bool:
 
 
 class Console:
-    """What the operator reads and answers. ``ask`` is ``input`` at the bench
-    and a script in the self-tests."""
+    """What the operator reads. The operator answers on the C64's keyboard."""
 
-    def __init__(self, out=None, ask: Callable[[str], str] | None = None, color: bool | None = None):
+    def __init__(self, out=None, color: bool | None = None):
         self.out = out or sys.stdout
-        self._ask = ask or (lambda prompt: input(prompt))
         self.color = _color_terminal(self.out) if color is None else color
 
     def _paint(self, text: str, code: str) -> str:
@@ -327,14 +341,6 @@ class Console:
         tail = f"  {detail}" if detail else ""
         self.say(f"  [{number}] {TITLES[name]:<15} {self._paint(status, color)}{tail}")
 
-    def ask_yes_no(self, question: str) -> bool:
-        while True:
-            answer = self._ask(self._paint(f"??? {question} [y/n] ", "1;36")).strip().lower()
-            if answer in ("y", "yes"):
-                return True
-            if answer in ("n", "no"):
-                return False
-
     def verdict(self, record: "BoardRecord") -> None:
         color = "1;32" if record.result == PASS else "1;31"
         self.say()
@@ -358,11 +364,13 @@ class Console:
 
 # -- the bench: boards appearing, and the operator's hands ------------------------------------------
 
-CONNECT, BUTTONS, RESET_BUTTON, POWER_OFF = "connect", "buttons", "reset", "power_off"
+CONNECT, BUTTONS, LEDS, RESET_BUTTON, POWER_OFF = "connect", "buttons", "leds", "reset", "power_off"
 INSTRUCTIONS = {
     CONNECT: "Plug in the next TR+. Connect USB to this PC, Ethernet, the USB thumb drive and the "
              "SD card, then power on the C64.",
     BUTTONS: "Follow the C64's screen: press and release the TR's MENU button, then its ALT button.",
+    LEDS: "Look at the board's LEDs and answer the questions at the bottom of the C64's screen: "
+          "Y or N on its keyboard.",
     RESET_BUTTON: "Press the C64's reset button.",
     POWER_OFF: "Power off the C64 and remove the board.",
 }
@@ -928,7 +936,8 @@ def launch_from_menu(c: Ctx, path: str) -> None:
 def step_external_ports(c: Ctx) -> str:
     """The board answers nothing while it waits for the buttons, so the wait
     sends nothing: it watches serial for the line sent after the buttons,
-    and video for a fail the test printed before reaching them."""
+    and video for a fail the test printed before reaching them. The LED
+    questions go on the C64's bottom row once the test waits for its key."""
     mark = c.mark()
     launch_from_menu(c, EPC_PATH)
     c.bench.do(BUTTONS)
@@ -949,8 +958,8 @@ def step_external_ports(c: Ctx) -> str:
                              "was not detected, or the test stopped before the buttons", markable=False)
         time.sleep(SERIAL_POLL_S)
     time.sleep(EPC_SETTLE_S)
-    read = c.screen.wait(lambda s: EPC_PASSED in s.text() or EPC_FAILED in s.text(), VERDICT_S, exact=True,
-                         what="the External Ports verdict")
+    read = c.screen.wait(lambda s: (EPC_PASSED in s.text() or EPC_FAILED in s.text()) and EPC_ANY_KEY in s.text(),
+                         VERDICT_S, exact=True, what="the External Ports verdict")
     c.save_screen("external_ports", read)
     text = read.text()
     if EPC_PASSED not in text:
@@ -966,13 +975,49 @@ def step_external_ports(c: Ctx) -> str:
     problem = clock_problem(delta, c.profile.time_tolerance_s, c.record.fresh_eeprom, c.pc_offset_s is not None)
     if problem:
         raise StepFailed(problem)
-    for attr, question, what in (("led_ethernet", "Is the Ethernet port's green LED on?", "the Ethernet green LED"),
-                                 ("led_tr", "Is the TR LED (by the MENU button) on?", "the TR LED")):
-        on = c.console.ask_yes_no(question)
+    hold_epc_prompt(c)
+    dump = c.link.read_screen()
+    charset = dump.charset if dump.charset == CHARSET_LOWER_UPPER else CHARSET_UPPER_GRAPHICS
+    row = dump.address + LED_ROW * SCREEN_COLUMNS
+    c.link.write_memory(COLOR_RAM + LED_ROW * SCREEN_COLUMNS, bytes([YELLOW]) * SCREEN_COLUMNS)
+    c.bench.do(LEDS)
+    for attr, question, what in LED_QUESTIONS:
+        on = ask_on_c64(c, row, charset, question)
+        if on is None:
+            raise StepFailed(f"no Y or N for {what} on the C64's keyboard within {c.profile.led_timeout_s:g} s")
         setattr(c.record, attr, "y" if on else "n")
         if not on:
             raise StepFailed(f"{what} is off (operator)")
+    c.link.write_memory(row, screen_codes(" Both LEDs on.", charset))
     return f"clock {delta:+.0f} s from UTC, LEDs on"
+
+
+def hold_epc_prompt(c: Ctx) -> None:
+    """GETIN through the no-key stub (IGETIN above): the External Ports test
+    stays at its prompt, and keys typed from now on wait in the buffer."""
+    c.link.write_memory(NO_KEY_STUB, NO_KEY)
+    c.link.write_memory(IGETIN, NO_KEY_STUB.to_bytes(2, "little"))
+
+
+def ask_on_c64(c: Ctx, row: int, charset: str, question: str) -> bool | None:
+    """The operator's Y (True) or N (False) to ``question``, shown at screen
+    address ``row``; None when neither comes within the profile's
+    ``led_timeout_s``. Keys typed before it showed, and any key but Y and N,
+    do not count."""
+    c.link.write_memory(KEYCOUNT, b"\0")
+    c.link.write_memory(row, bytes(b | REVERSE_VIDEO for b in screen_codes(f" {question} Y/N", charset)))
+    deadline = time.monotonic() + c.profile.led_timeout_s
+    while True:
+        count = c.link.read_memory(KEYCOUNT, 1)[0]
+        if count:
+            keys = c.link.read_memory(KEYBUF, count)
+            c.link.write_memory(KEYCOUNT, b"\0")
+            answer = next((k for k in keys if k in YES_KEYS + NO_KEYS), None)
+            if answer is not None:
+                return answer in YES_KEYS
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(SERIAL_POLL_S)
 
 
 def step_external_reset(c: Ctx) -> str:

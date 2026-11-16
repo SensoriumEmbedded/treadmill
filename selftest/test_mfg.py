@@ -1,7 +1,6 @@
 """The manufacturing test without hardware: its checks one by one, the board
 log, and whole sessions against fake boards, passing and halting."""
 
-import builtins
 import csv
 import io
 import json
@@ -29,7 +28,8 @@ from treadmill import mfg
 from treadmill.link.banner import parse_banner
 from treadmill.link.discover import Found, NotFound, teensyrom_uid
 from treadmill.mfg import (
-    CIA1_ICR, FAIL, HELLO, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord, Console, MfgProfile, RealBench,
+    CIA1_ICR, FAIL, HELLO, IGETIN, NO_KEY, NO_KEY_STUB, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord, Console,
+    MfgProfile, RealBench,
     _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
     xpt_reason, xpt_serial,
@@ -57,10 +57,9 @@ def _profile(folder: Path, extra: str = "") -> Path:
     return path
 
 
-def _console(answers: list[str] | None = None) -> tuple[Console, io.StringIO]:
+def _console() -> tuple[Console, io.StringIO]:
     out = io.StringIO()
-    queue = list(answers or [])
-    return Console(out=out, ask=lambda prompt: queue.pop(0) if queue else "y", color=False), out
+    return Console(out=out, color=False), out
 
 
 def _rows(path: Path) -> list[dict]:
@@ -285,9 +284,8 @@ def test_a_board_on_usb_before_the_session_is_taken_only_once_it_comes_back(monk
 
 # -- whole sessions against fake boards ----------------------------------------------------------------
 
-def test_a_passing_board_through_the_cli(lab: Path, monkeypatch, capsys):  # noqa: F811
+def test_a_passing_board_through_the_cli(lab: Path, capsys):  # noqa: F811
     profile = _profile(lab / "mfg")
-    monkeypatch.setattr(builtins, "input", lambda prompt="": "y")
     code = main(["mfg", "--station", "s1", "--profile", str(profile), "--reports", str(lab / "reports"),
                  "--boards", "1"])
     out = capsys.readouterr().out
@@ -382,3 +380,38 @@ def test_failures_halt_and_mark_the_screen(lab: Path):  # noqa: F811
         assert fake.memory[COLOR_RAM + 24 * 40] == 7
     assert out.getvalue().count("#####") >= 4 and "Could not init SD" in out.getvalue()
     assert "Board 4 FAILED" in out.getvalue()
+
+
+def test_the_led_answers_come_from_the_c64(lab: Path):  # noqa: F811
+    """Three boards' operators answer on the C64's keyboard: a stray key then
+    N for the Ethernet LED; Y then N; Y then nothing. While the questions are
+    up GETIN goes through the no-key stub, so no key ends the test, whose exit
+    would log "Button detected" as an external reset does."""
+    profile = MfgProfile.load(_profile(lab / "mfg", "led_timeout_s = 1\n"))
+    console, out = _console()
+    bench = FakeBench(console, boards=[{"leds": ["qn"]}, {"leds": ["y", "n"]}, {"leds": ["y"]}])
+    seen = []
+    power_on = bench._power_on
+
+    def keep():
+        power_on()
+        seen.append(bench.fake)
+    bench._power_on = keep
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=3, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"] == {PASS: 0, FAIL: 3, "ABORTED": 0}
+    rows = _rows(profile.log)
+    assert [r["failed_step"] for r in rows] == ["External Ports"] * 3
+    assert [r["reason"] for r in rows] == ["the Ethernet green LED is off (operator)", "the TR LED is off (operator)",
+                                           "no Y or N for the TR LED on the C64's keyboard within 1 s"]
+    assert [(r["led_ethernet"], r["led_tr"]) for r in rows] == [("n", ""), ("y", "n"), ("y", "")]
+    for fake, row in zip(seen, rows):
+        assert row["c64_marked"] == "yes"
+        assert fake.memory[IGETIN:IGETIN + 2] == NO_KEY_STUB.to_bytes(2, "little")
+        assert fake.memory[NO_KEY_STUB:NO_KEY_STUB + len(NO_KEY)] == NO_KEY
+        assert "Button detected" not in (Path(row["evidence"]) / "serial.log").read_text(encoding="latin-1")
+    assert "answer the questions at the bottom of the C64's screen" in out.getvalue()

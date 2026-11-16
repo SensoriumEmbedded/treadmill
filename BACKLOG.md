@@ -69,6 +69,14 @@ cost or a wart with a known, small fix.
    plain reset pulse: its `V` command resets the C64 only inside a Kawari
    standard switch. Fix: an `R <ms>` command on the same /RESET stage `V`
    uses, and an `ExternalReset` that sends it.
+17. **low** A run does not record what the registry knows about its
+   machine. `Machine` (`treadmill/station/model.py`) reads the systems.csv
+   row's `notes`, but the station block of `run.json`
+   (`treadmill/report/artifacts.py`) carries model and region only, so the
+   U55 chip and a machine's diagnostic history are not beside its results.
+   In the PR #99 sweeps two NTSC C128s were mixed up (which one had the
+   confirmed 74F245) until the registry was read by hand. Fix: add the
+   registry row's notes to the station block and to `report.html`.
 
 ## Video
 
@@ -92,6 +100,20 @@ cost or a wart with a known, small fix.
    would read with its PAL bank and grid (cells 24.8x25.2 px against
    25.7x21.0). Key both by the board's video line as well when test 18
    switches standards.
+18. **medium, with item 20** The screen-noise probe has no baseline per
+   capture. The probe (pixels inside the text area that change by more
+   than 48 of 255 between frames, while a DMA probe runs) lives only in
+   `scripts/2026-11-12-dmasetup-sweep.py`; it finds a DMA drive
+   that lands in the VIC's half of the cycle, where the data compares stay
+   clean (PR #99: the Kawari's early edge sat 30-50 ns above the first
+   data error). With no DMA running, the Kawari C64 reads a median of 0
+   and C128 #29's capture about 1,500; on C64 #14 the menu reads 600-1,000
+   while the REU client's plain screen reads 0, so the baseline depends on
+   the capture and on what the screen shows, and one threshold cannot
+   serve them all.
+   Fix: measure the baseline at the defaults on each run and judge against
+   it; use the median for a continuous probe (the REU loop) and the max
+   for a burst (`z`).
 
 ## Firmware builds
 
@@ -105,6 +127,16 @@ cost or a wart with a known, small fix.
    skip in `_capability_gate()` (`treadmill/pytest_plugin.py`) names the
    `--define` flags the skipped test needs. Build it when a nightly run
    mixes debug suites with the baseline.
+19. **low** Debug defines need a `ref=` build to be usable. `build()` in
+   `treadmill/firmware/build.py` refuses `--define` with `path=`, since it
+   would patch that checkout in place, and `DebugCommands.available()`
+   (`treadmill/link/dbgcmds.py`) trusts only the defines the run compiled
+   in, so a board flashed from a hand-patched `path=` build refuses `t`
+   commands although its banner reads `v0.9-dma.tim*`. Worked around in the
+   PR #99 soak with `--fw none --fw-defines`. Fix: build a `path=` checkout
+   with defines from a disposable copy, and when nothing was built, take
+   the defines from the banner's tag marks (`DEBUG_MARKS` in
+   `treadmill/firmware/spec.py`).
 
 ## Tests and fixtures
 
@@ -124,3 +156,40 @@ cost or a wart with a known, small fix.
    EasyFlash cartridge that counts wrong reads of its own ROM and of the
    EasyFlash IO2 page apart, since the two paths have different edges, and
    the margin test sweeps both ways.
+20. **medium** The DMA write knobs have no sweep command. `treadmill sweep`
+   (`treadmill/sweeps.py`) walks one knob at a time against a read probe,
+   so the PR #99 sweeps of `nS_DMASetup` ran from
+   `scripts/2026-11-12-dmasetup-sweep.py`: `nS_DMADataHold` and
+   `nS_DMADataSetup` move with it to hold the board's own release and
+   latch sums (884/844 PAL, 854/834 NTSC on #99's values), the `z` pattern
+   test and the REU loop are the probes, and the noise probe (item 18)
+   runs beside each. Factory NTSC C128s drift by up to 100x between passes
+   at one value, so a pass up and a pass down both count. Fix: a `sweep e`
+   with held sums, the three probes, and `--passes` with alternating
+   direction.
+21. **medium, before soak runs** No DMA soak runs under the suite.
+   `tools/bench/reuspans.py` (the REU loop beside host write jobs, 600 s a
+   phase) is the quickest check of a DMA timing change, but the bench
+   library opens the port with `termios`, so it does not run on Windows,
+   and `Link` (`treadmill/link/trlink.py`) has no WriteC64Spans to run its
+   jobs. The PR #99 soak ran through a pyserial shim. The REU client's
+   16-bit counters wrapped once in each 600 s phase (about 67,000 rounds),
+   which reuspans prints modulo 65,536. Fix: a soak test that samples the
+   counters often enough to unwrap them, and WriteC64Spans in `Link`.
+22. **medium, with item 20** No view compares a knob's margins across
+   machines. Each sweep stands alone: `treadmill sweep` writes `sweep.json`
+   (`treadmill/cli.py`) and the DMA sweep script a text file, and
+   `render_report()` (`treadmill/report/html.py`) draws one run. The PR #99
+   comparisons (F245 against LS245, Kawari against a real VIC-II, all of
+   our C64 numbers coming from one TR+ board) were charted by hand.
+   Fix: a margin map built from the stored sweeps, one chart per knob, a
+   row per machine, board and probe, clean windows as bars and the default
+   (plus any value under review) as vertical lines, so a change that eats
+   one machine's margin shows before it fails. Needs item 20's sweeps in
+   the same results format as `sweep.json`.
+23. **low, with item 20** The DMA write window is swept along one line.
+   Holding the release and latch sums walks `nS_DMASetup` against
+   `nS_DMADataHold` on a single diagonal, while the safe region is two-
+   dimensional. Fix: a setup by data hold grid sweep with a heatmap in
+   `report.html`, the chart an auto-calibration would choose its point
+   from.

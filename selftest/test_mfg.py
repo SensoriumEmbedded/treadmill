@@ -5,6 +5,9 @@ import builtins
 import csv
 import io
 import json
+import socket
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,7 +30,7 @@ from treadmill.link.banner import parse_banner
 from treadmill.link.discover import Found, NotFound, teensyrom_uid
 from treadmill.mfg import (
     CIA1_ICR, FAIL, HELLO, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord, Console, MfgProfile, RealBench,
-    clock_delta,
+    _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
     xpt_reason, xpt_serial,
 )
@@ -50,7 +53,7 @@ def _profile(folder: Path, extra: str = "") -> Path:
     (folder / "sd_root.json").write_text(json.dumps({"entries": SD_ROOT}), encoding="utf-8")
     path = folder / "trplus.toml"
     path.write_text('factory_hex = "factory.hex"\nepc_timeout_s = 30\nxpt_pass_timeout_s = 30\n'
-                    'reu_timeout_s = 30\n' + extra, encoding="utf-8")
+                    'reu_timeout_s = 30\nntp_server = ""\n' + extra, encoding="utf-8")
     return path
 
 
@@ -93,6 +96,94 @@ def test_the_hello_clock_against_utc():
     assert clock_delta(HELLO.search("Hello from TR at: 11:59:59 pm"), midnight) == -2  # across the day's end
     assert clock_delta(HELLO.search("hello from tr at: 03:07:09 PM"), datetime(2026, 1, 1, 15, 8, 9,
                                                                                 tzinfo=timezone.utc)) == -60
+
+
+def test_the_hello_line_arrival():
+    chunks = [(1.0, b"menu\r\n"), (2.0, b"\r\nHello from"), (3.0, b" TR at: 10:49:13 pm\n")]
+    text = b"".join(c for _, c in chunks).decode("latin-1")
+    assert arrival(chunks, HELLO.search(text).start()) == 2.0      # split across two chunks: its first byte's
+    assert arrival(chunks, 5) == 1.0 and arrival(chunks, 6) == 2.0
+    with pytest.raises(ValueError):
+        arrival(chunks, len(text))
+    before = datetime.now(timezone.utc)
+    assert abs((utc_at(time.monotonic() - 2.0, 10.0) - before).total_seconds() - 8.0) < 0.5
+    assert abs((utc_at(time.monotonic(), None) - datetime.now(timezone.utc)).total_seconds()) < 0.5
+
+
+def test_the_clock_problem_named():
+    assert clock_problem(-1.8, 5, False, True) is None
+    assert "the time fetch" in clock_problem(-6.0, 5, False, True)
+    assert clock_problem(3601, 5, False, True) == ("the board's clock reads UTC+1:00, +1 s off: "
+                                                  "its timezone setting is not UTC")
+    assert "reads UTC+0:30, -2 s off" in clock_problem(1798, 5, None, True)
+    assert "reads UTC-5:00, -1 s off" in clock_problem(-18001, 5, False, True)
+    assert "reads UTC-11:00 or UTC+13:00," in clock_problem(-39601, 5, False, True)     # no date on the line
+    assert "reads UTC-12:00 or UTC+12:00," in clock_problem(-43200, 5, False, True)
+    assert "the time fetch" in clock_problem(3600, 5, True, True)      # settings at defaults: no timezone
+    assert "the time fetch" in clock_problem(600, 5, False, True)
+    assert clock_problem(600, 5, False, False).endswith("; this PC's clock was not checked against NTP")
+
+
+class FakeNtp:
+    """An SNTP server on localhost whose clock is ``offset_s`` ahead of this
+    PC's, or one that fails: ``silent``, ``stale`` (a reply to some other
+    request) or ``kod`` (a kiss-of-death, stratum 0)."""
+
+    def __init__(self, offset_s: float = 0.0, fault: str | None = None):
+        self.offset_s, self.fault = offset_s, fault
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(0.05)
+        self.port = self.sock.getsockname()[1]
+        self.requests = 0
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        while not self.stop.is_set():
+            try:
+                data, addr = self.sock.recvfrom(512)
+            except OSError:
+                continue
+            self.requests += 1
+            if self.fault == "silent":
+                continue
+            now = _ntp_stamp(time.time() + self.offset_s)
+            origin = bytes(8) if self.fault == "stale" else data[40:48]
+            stratum = 0 if self.fault == "kod" else 2
+            self.sock.sendto(bytes([0x24, stratum]) + bytes(22) + origin + now + now, addr)
+
+    def __enter__(self) -> "FakeNtp":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        self.thread.join()
+        self.sock.close()
+
+
+def test_this_pcs_clock_against_ntp():
+    with FakeNtp(10.0) as server:
+        assert ntp_offset("127.0.0.1", server.port) == pytest.approx(10.0, abs=0.05)
+        assert server.requests == 3
+    for fault in ("silent", "stale", "kod"):
+        with FakeNtp(10.0, fault) as server:
+            assert ntp_offset("127.0.0.1", server.port, samples=2, timeout=0.2) is None, fault
+            assert server.requests == 2
+
+
+def test_the_session_says_what_it_knows_of_this_pcs_clock(monkeypatch):
+    console, out = _console()
+    assert pc_clock_offset("", console) is None and "not checked against NTP" in out.getvalue()
+    monkeypatch.setattr(mfg, "ntp_offset", lambda server: None)
+    assert pc_clock_offset("pool.ntp.org", console) is None and "No time from pool.ntp.org" in out.getvalue()
+    monkeypatch.setattr(mfg, "ntp_offset", lambda server: 0.4)
+    assert pc_clock_offset("pool.ntp.org", console) == 0.4
+    assert "This PC's clock is 0.4 s behind pool.ntp.org." in out.getvalue()
+    monkeypatch.setattr(mfg, "ntp_offset", lambda server: -12.5)
+    assert pc_clock_offset("pool.ntp.org", console) == -12.5
+    assert "12.5 s ahead of pool.ntp.org; boards are checked against NTP's time" in out.getvalue()
 
 
 def test_sd_root_compare():
@@ -217,6 +308,7 @@ def test_a_passing_board_through_the_cli(lab: Path, monkeypatch, capsys):  # noq
     assert "TR+ manufacturing test: PASS" not in out          # that summary goes to the C64, not the console
     run = json.loads((folder.parent.parent / "run.json").read_text(encoding="utf-8"))
     assert run["mode"] == "mfg" and run["counts"]["PASS"] == 1
+    assert run["pc_clock"] == {"ntp_server": "", "offset_s": None}
 
 
 def test_the_reu_checker_read_by_its_colors():
@@ -251,7 +343,7 @@ def test_failures_halt_and_mark_the_screen(lab: Path):  # noqa: F811
     REU's on the menu, after a reset), and a row in the log."""
     profile = MfgProfile.load(_profile(lab / "mfg"))
     console, out = _console()
-    bench = FakeBench(console, boards=[{"xpt_fail_pass": 2}, {"epc_fail": "sd"}, {"clock_offset_s": 3600},
+    bench = FakeBench(console, boards=[{"xpt_fail_pass": 2}, {"epc_fail": "sd"}, {"clock_offset_s": 600},
                                        {"reu_fail": True}])
     seen = []
     power_on = bench._power_on
@@ -271,7 +363,7 @@ def test_failures_halt_and_mark_the_screen(lab: Path):  # noqa: F811
     assert [r["failed_step"] for r in rows] == ["Expansion Port", "External Ports", "External Ports", "REU"]
     assert rows[0]["reason"] == "pass 2: $ff: 3/4096 Failed"
     assert rows[1]["reason"] == "Could not init SD"
-    assert "from UTC" in rows[2]["reason"] and rows[2]["led_ethernet"] == ""
+    assert "s from UTC: the time fetch" in rows[2]["reason"] and rows[2]["led_ethernet"] == ""
     assert rows[3]["reason"] == "the REU checker shows an error in the bank at 192K" and rows[3]["sd_root"] == PASS
     for row in rows:
         assert row["result"] == FAIL and row["c64_marked"] == "yes"

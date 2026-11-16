@@ -160,9 +160,14 @@ and with it the REU's size):
    tag and no `*`.
 3. External Ports: the built-in test passes after the operator presses MENU
    and ALT. Its `Hello from TR at:` line agrees on serial and on screen, and
-   is within `time_tolerance_s` of the PC's UTC clock (a new board's
-   timezone setting is UTC). The operator answers for the Ethernet and TR
-   LEDs.
+   is within `time_tolerance_s` (5 s) of UTC when it arrived (a new board's
+   timezone setting is UTC). UTC is this PC's clock corrected by its offset
+   from `ntp_server`, measured once at the start of the session; with no
+   answer the PC's clock is used as it is, with a warning. The firmware
+   keeps only the whole seconds of its time fetch and prints whole seconds,
+   so a good board reads 0 to 2 s behind. A clock off by whole half hours
+   on a board whose settings were not reset is reported as its timezone
+   setting. The operator answers for the Ethernet and TR LEDs.
 4. External reset: the operator presses the C64's reset button, and the TR+
    must log `Button detected` and bring the menu back.
 5. Expansion Port: the built-in test passes `xpt_passes` times.

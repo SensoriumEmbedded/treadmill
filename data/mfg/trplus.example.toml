@@ -17,7 +17,8 @@ reu_kb = 512
 log = "boards.csv"
 
 xpt_passes = 3                 # Expansion Port test passes
-time_tolerance_s = 120         # the board's UTC clock against this PC's, after the time fetch
+time_tolerance_s = 5           # the board's clock against UTC, after its time fetch (README)
+ntp_server = "pool.ntp.org"    # this PC's clock is checked against it once a session; "" skips that
 epc_timeout_s = 180            # External Ports: launch to the line sent after both buttons
 boot_timeout_s = 60
 reset_timeout_s = 60           # the prompt to press reset, to the TR+ reporting it

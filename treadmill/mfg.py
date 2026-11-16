@@ -32,11 +32,14 @@ import csv
 import json
 import os
 import re
+import socket
+import statistics
+import struct
 import sys
 import time
 import tomllib
 from dataclasses import asdict, dataclass, field, fields, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, NamedTuple, Protocol, TypeVar
 
@@ -109,6 +112,17 @@ EPC_SETTLE_S = 1.0
 NO_VIDEO_SETTLE_S = 5.0   # an Expansion Port pass's C64 half, waited out blind when there is no video
 REU_SETTLE_S = 2.0        # the checker's bank map unchanged this long: it has tested every bank
 VIDEO_SAME_READS = 2
+
+# -- the clock -----------------------------------------------------------------------------
+
+# This PC's clock is checked against NTP once a session, a sample from each of a few of the pool's
+# servers, so one wrong server cannot move the median.
+NTP_SAMPLES, NTP_TIMEOUT_S = 3, 2.0
+NTP_EPOCH = 2208988800    # 1900 to 1970, in seconds
+PC_CLOCK_WARN_S = 2.0     # an offset worth telling the operator about; the check corrects for any
+# C64TODfromRTC adds the timezone setting in half hours, UTC-12:00 to UTC+14:00 (rwRegTimezone).
+TZ_STEP_S = 1800
+TZ_STEPS = range(-24, 29)
 
 # REU-Checker v1.0's screen, measured from captures (it is a packed third-party program): a bank map of
 # 8 rows x 32 cells from row 7, column 4, one cell per 64 KB, green OK, red error, checkered grey missing;
@@ -192,7 +206,8 @@ class MfgProfile:
     sd_ignore: tuple[str, ...] = ("System Volume Information",)
     reu_kb: int = 512
     xpt_passes: int = 3
-    time_tolerance_s: float = 120.0
+    time_tolerance_s: float = 5.0
+    ntp_server: str = "pool.ntp.org"
     epc_timeout_s: float = 180.0
     boot_timeout_s: float = 60.0
     reset_timeout_s: float = 60.0
@@ -588,6 +603,106 @@ def clock_delta(m: re.Match, now: datetime) -> float:
     return (shown - actual + 43200) % 86400 - 43200
 
 
+def arrival(chunks: list[tuple[float, bytes]], offset: int) -> float:
+    """When the chunk holding byte ``offset`` of ``chunks`` arrived, by
+    ``time.monotonic()``: the reader thread stamps each chunk as it reads
+    it, while the step only polls, a quarter second and a video read apart."""
+    end = 0
+    for at, data in chunks:
+        end += len(data)
+        if offset < end:
+            return at
+    raise ValueError(f"byte {offset} is past the {end} received")
+
+
+def utc_at(mono: float, pc_offset_s: float | None) -> datetime:
+    """UTC at ``time.monotonic()`` time ``mono``: this PC's clock, corrected
+    by its offset from NTP when that is known."""
+    return datetime.now(timezone.utc) + timedelta(seconds=(pc_offset_s or 0.0) - (time.monotonic() - mono))
+
+
+def utc_zone(steps: int) -> str:
+    minutes = abs(steps) * TZ_STEP_S // 60
+    return f"UTC{'-' if steps < 0 else '+'}{minutes // 60}:{minutes % 60:02d}"
+
+
+def clock_problem(delta: float, tolerance: float, fresh_eeprom: bool | None, pc_checked: bool) -> str | None:
+    """Why a board's clock fails, or None. A board whose settings were kept
+    from earlier use may carry a timezone, which moves its clock by whole
+    half hours. The wrap to half a day either way shows UTC+13:00 as
+    UTC-11:00, and the line has no date to tell them apart."""
+    if abs(delta) <= tolerance:
+        return None
+    steps = round(delta / TZ_STEP_S)
+    residual = delta - steps * TZ_STEP_S
+    if not fresh_eeprom and steps and abs(residual) <= tolerance:
+        zones = " or ".join(utc_zone(s) for s in (steps, steps + 48) if s in TZ_STEPS)
+        return f"the board's clock reads {zones}, {residual:+.0f} s off: its timezone setting is not UTC"
+    return (f"the board's clock is {delta:+.0f} s from UTC: the time fetch over Ethernet, or the RTC"
+            + ("" if pc_checked else "; this PC's clock was not checked against NTP"))
+
+
+def _ntp_stamp(t: float) -> bytes:
+    return struct.pack("!II", int(t) + NTP_EPOCH, min(int(t % 1 * 2**32), 0xFFFFFFFF))
+
+
+def _ntp_time(stamp: bytes) -> float:
+    seconds, fraction = struct.unpack("!II", stamp)
+    return seconds - NTP_EPOCH + fraction / 2**32
+
+
+def ntp_offset(server: str, port: int = 123, samples: int = NTP_SAMPLES,
+               timeout: float = NTP_TIMEOUT_S) -> float | None:
+    """Seconds to add to this PC's clock for NTP's time: the median of one
+    SNTP exchange with each of up to ``samples`` of the addresses ``server``
+    resolves to, or None when none answered. A reply counts only when it
+    echoes this request's own time, comes from a synchronized server, and
+    is not a kiss-of-death (stratum 0)."""
+    try:
+        addrs = list(dict.fromkeys(a[4] for a in socket.getaddrinfo(server, port, socket.AF_INET,
+                                                                     socket.SOCK_DGRAM)))
+    except OSError:
+        return None
+    offsets = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for i in range(samples):
+            t1 = time.time()
+            stamp = _ntp_stamp(t1)
+            deadline = time.monotonic() + timeout
+            try:
+                sock.sendto(b"\x23" + bytes(39) + stamp, addrs[i % len(addrs)])   # version 4, client
+                while (left := deadline - time.monotonic()) > 0:
+                    sock.settimeout(left)
+                    reply = sock.recv(512)
+                    t4 = time.time()
+                    if (len(reply) >= 48 and reply[24:32] == stamp and reply[0] & 7 == 4
+                            and reply[0] >> 6 != 3 and reply[1] != 0):
+                        t2, t3 = _ntp_time(reply[32:40]), _ntp_time(reply[40:48])
+                        offsets.append(((t2 - t1) + (t3 - t4)) / 2)
+                        break
+            except OSError:
+                continue
+    return statistics.median(offsets) if offsets else None
+
+
+def pc_clock_offset(server: str, console: Console) -> float | None:
+    """This PC's offset from NTP for the session, said on the console."""
+    if not server:
+        console.say("This PC's clock is not checked against NTP (the profile's ntp_server is empty).")
+        return None
+    offset = ntp_offset(server)
+    if offset is None:
+        console.warn(f"No time from {server}: boards' clocks are checked against this PC's clock as it is.")
+        return None
+    where = f"{abs(offset):.1f} s {'behind' if offset > 0 else 'ahead of'} {server}"
+    if abs(offset) > PC_CLOCK_WARN_S:
+        console.warn(f"This PC's clock is {where}; boards are checked against NTP's time. "
+                     "'w32tm /resync' from an administrator prompt sets it.")
+    else:
+        console.say(f"This PC's clock is {where}.")
+    return offset
+
+
 def epc_reason(text: str) -> str:
     for reason in EPC_REASONS:
         if reason in text:
@@ -716,6 +831,7 @@ class Ctx:
     folder: Path
     log: Callable[[str], None]
     board: Board | None = None
+    pc_offset_s: float | None = None     # this PC's clock to NTP's; None when not known
 
     @property
     def link(self):
@@ -832,7 +948,6 @@ def step_external_ports(c: Ctx) -> str:
             raise StepFailed(f"no 'Hello from TR at:' line within {c.profile.epc_timeout_s:g} s: a button "
                              "was not detected, or the test stopped before the buttons", markable=False)
         time.sleep(SERIAL_POLL_S)
-    now = datetime.now(timezone.utc)
     time.sleep(EPC_SETTLE_S)
     read = c.screen.wait(lambda s: EPC_PASSED in s.text() or EPC_FAILED in s.text(), VERDICT_S, exact=True,
                          what="the External Ports verdict")
@@ -845,10 +960,12 @@ def step_external_ports(c: Ctx) -> str:
         raise StepFailed("the screen does not show the 'Hello from TR at:' line")
     if clock_text(shown) != clock_text(hello):
         raise StepFailed(f"the screen shows {clock_text(shown)}, serial sent {clock_text(hello)}")
-    delta = clock_delta(hello, now)
+    sent = utc_at(arrival(c.link.stream.tap.chunks[mark:], hello.start()), c.pc_offset_s)
+    delta = clock_delta(hello, sent)
     c.record.epc_time_delta_s = round(delta, 1)
-    if abs(delta) > c.profile.time_tolerance_s:
-        raise StepFailed(f"the board's clock is {delta:+.0f} s from UTC: the time fetch over Ethernet, or the RTC")
+    problem = clock_problem(delta, c.profile.time_tolerance_s, c.record.fresh_eeprom, c.pc_offset_s is not None)
+    if problem:
+        raise StepFailed(problem)
     for attr, question, what in (("led_ethernet", "Is the Ethernet port's green LED on?", "the Ethernet green LED"),
                                  ("led_tr", "Is the TR LED (by the MENU button) on?", "the TR LED")):
         on = c.console.ask_yes_no(question)
@@ -1197,6 +1314,9 @@ def run_session(template: Station, profile: MfgProfile, bench: Bench, console: C
     records: list[BoardRecord] = []
     console.heading(f"TR+ manufacturing test: {expected.version}, built {expected.stamp}")
     console.say(f"Log: {board_log.path}")
+    pc_offset = pc_clock_offset(profile.ntp_server, console)
+    run_dir.meta["pc_clock"] = {"ntp_server": profile.ntp_server,
+                                "offset_s": None if pc_offset is None else round(pc_offset, 3)}
     try:
         while boards is None or len(records) < boards:
             n = len(records) + 1
@@ -1209,7 +1329,7 @@ def run_session(template: Station, profile: MfgProfile, bench: Bench, console: C
             folder.mkdir(parents=True, exist_ok=True)
             record = BoardRecord(n, port, uid, datetime.now(), evidence=str(folder))
             c = Ctx(record, board_station(template, uid, port), profile, expected, bench, reset, console, video,
-                    folder, log)
+                    folder, log, pc_offset_s=pc_offset)
             try:
                 check_board(c, board_log)
             finally:

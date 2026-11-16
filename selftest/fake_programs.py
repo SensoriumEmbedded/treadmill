@@ -3,7 +3,8 @@ them: the External Ports test (blocked until the buttons are pressed), the
 Expansion Port test (a pass per launch or ``o``) and the REU checker. Their
 screens and serial lines carry the strings ``treadmill/mfg.py`` reads, taken
 from TRExtPortCheck.asm, ExpansionPortTest.asm and StatusFunctions.c; the
-REU checker's screen is made up, since the real one is a packed binary.
+REU checker's is a sketch of the real one's layout and colors, which mfg
+reads by color, since the real one is a packed binary.
 
 ``faults`` (per board, from the fake bench) breaks one thing at a time:
 ``epc_fail`` ("ethernet", "sd", "usb"), ``clock_offset_s``, ``xpt_fail_pass``,
@@ -12,7 +13,14 @@ REU checker's screen is made up, since the real one is a packed binary.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import datetime, timedelta, timezone
+
+from treadmill.c64.screen import SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_RAM_DEFAULT, SCREEN_ROWS, codes_for_text
+
+WHITE, RED, GREEN, YELLOW, DARK_GREY, MEDIUM_GREY, LIGHT_GREEN = 1, 2, 5, 7, 11, 12, 13
+SOLID, CHECKER, CROSS = 0xA0, 0x66, 0x5B     # a reverse space, the checkerboard and a cross: the map's cells
 
 EPC_HEAD = ["TeensyROM+ v0.9 Test", "", " TeensyROM External Port Checks ", "Ethernet connected",
             "1st SD file: APPS", "1st USB file: validation"]
@@ -115,14 +123,64 @@ class ExpPort:
             self.board.return_to_menu()
 
 
+def checker_screen(kb: int, done: int, testing: int | None = None, error_bank: int | None = None,
+                   working_ink: int = LIGHT_GREEN) -> tuple[bytes, bytes]:
+    """REU-Checker v1.0's screen as codes and colors, laid out where mfg reads
+    it (``REU_*`` in treadmill/mfg.py): yellow text on dark grey, the WORKING
+    line in ``working_ink``, and the bank map, one cell per 64 KB: the first
+    ``done`` banks tested (green, red at ``error_bank``), ``testing`` under
+    test, the rest missing."""
+    from treadmill.mfg import REU_CELL_KB, REU_MAP_COL, REU_MAP_COLS, REU_MAP_ROW, REU_MAP_ROWS, REU_WORKING_ROW
+    rows = [""] * SCREEN_ROWS
+    rows[1] = "      REU-CHECKER 128KB-16MB V1.0"
+    rows[3] = f"              FOUND: {kb}KB"
+    rows[REU_WORKING_ROW] = "     OK   THE REU IS WORKING!   OK"
+    codes = bytearray(b"".join(codes_for_text(r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS]) for r in rows))
+    colors = bytearray([YELLOW]) * SCREEN_BYTES
+    line = REU_WORKING_ROW * SCREEN_COLUMNS
+    colors[line:line + SCREEN_COLUMNS] = bytes([working_ink]) * SCREEN_COLUMNS
+    for i in range(REU_MAP_ROWS * REU_MAP_COLS):
+        at = (REU_MAP_ROW + i // REU_MAP_COLS) * SCREEN_COLUMNS + REU_MAP_COL + i % REU_MAP_COLS
+        if i == testing and i < kb // REU_CELL_KB:
+            codes[at], colors[at] = CROSS, WHITE
+        elif i < min(done, kb // REU_CELL_KB):
+            codes[at], colors[at] = SOLID, RED if i == error_bank else GREEN
+        else:
+            codes[at], colors[at] = CHECKER, MEDIUM_GREY
+    return bytes(codes), bytes(colors)
+
+
 class ReuChecker:
+    """Like the real checker it tests its banks one after another, then
+    holds its screen until a reset takes the board back to the menu. It
+    draws in its own colors, which the fake's video shows (``look``)."""
+
     def __init__(self, board):
         self.board = board
+        self.kb = board.faults.get("reu_kb", 512)
+        self.error_bank = 3 if board.faults.get("reu_fail") else None
+        self.colors = bytes(SCREEN_BYTES)
 
     def start(self) -> None:
-        verdict = "FAILED" if self.board.faults.get("reu_fail") else "PASSED"
-        self.board.show(["REU Checker v1.0", "", f"REU size: {self.board.faults.get('reu_kb', 512)}K", "",
-                         f"All tests {verdict}"])
+        self.draw(0)
+        threading.Thread(target=self.run, daemon=True).start()
+
+    def draw(self, n: int) -> None:
+        codes, self.colors = checker_screen(self.kb, n, n, self.error_bank)
+        self.board.memory[0xD018] = 0x17
+        self.board.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = codes
+
+    def look(self) -> tuple[bytes, int, int]:
+        """Color RAM, background and border, for the fake's video."""
+        return self.colors, DARK_GREY, GREEN
+
+    def run(self) -> None:
+        for n in range(1, self.kb // 64 + 1):
+            time.sleep(0.15)
+            with self.board.lock:
+                if self.board.program is not self:
+                    return
+                self.draw(n)
 
     def key(self, code: int) -> None:
         pass

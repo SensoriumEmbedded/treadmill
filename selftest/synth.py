@@ -83,6 +83,11 @@ def fake_frame_source(fake):
         charset = charset_in(memptr, cia2)
         if charset == CHARSET_CUSTOM:
             charset = CHARSET_UPPER_GRAPHICS
+        look = getattr(fake.program, "look", None)          # a program drawing in its own colors
+        if look is not None:
+            colors, background, border = look()
+            return frame_of(codes, np.frombuffer(colors, np.uint8), charset, seed=next(seeds),
+                            background=background, border=border)
         return frame_of(codes, LIGHT_GREY, charset, seed=next(seeds))
     return SyntheticSource(render)
 

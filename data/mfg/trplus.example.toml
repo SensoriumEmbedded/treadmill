@@ -10,8 +10,7 @@ factory_hex = "TeensyROM+_factory.hex"
 sd_golden = "sd_root.json"
 sd_ignore = ["System Volume Information"]     # names a card may carry that the image does not
 
-# The REU checker's pass screen as video reads it, '?' for cells that change (README).
-reu_golden = "reu_checker.pass.screen.txt"
+# The REU the firmware sets up and the checker must find, every bank of it OK (README).
 reu_kb = 512
 
 # One row per board: chip id, start time, every step's result.
@@ -23,5 +22,5 @@ epc_timeout_s = 180            # External Ports: launch to the line sent after b
 boot_timeout_s = 60
 reset_timeout_s = 60           # the prompt to press reset, to the TR+ reporting it
 xpt_pass_timeout_s = 90
-reu_timeout_s = 120
+reu_timeout_s = 30             # the REU checker up and its screen still; a red bank fails at once
 require_release = true         # false lets a tagged or dirty build through, to try the test on a dev board

@@ -64,7 +64,20 @@ PICTURES = [
     Entry("KP: Koala", "Kla"),
     Entry("KP: Tiger", "Kla"),
 ]
-TREE = {"/": ROOT, "/Games": GAMES, "/Pictures": PICTURES}
+TEENSYROM_SPECIFIC = [
+    _UP,
+    Entry("TeensyROM Settings Menu", "Prg", True),
+    Entry("TeensyROM Help Pages", "Prg", True),
+    Entry("Text Viewer Usage Document", "Seq"),
+    Entry("BASIC with TeensyROM Commands", "Prg", True),
+    Entry("BASIC TR Command IO access only", "Prg", True),
+    Entry("TeensyROM External Ports Test", "Prg", True),
+    Entry("TR+ C64 Expansion Port Test", "Prg", True),
+    Entry("TeensyROM ASID Player    +TR ASID", "Prg", True),
+    Entry("MIDI2SID          +TeensyROM MIDI", "Prg", True),
+    Entry("TS: TeensyROM", "Kla"),
+]
+TREE = {"/": ROOT, "/Games": GAMES, "/Pictures": PICTURES, "/TeensyROM Specific": TEENSYROM_SPECIFIC}
 GOLDENS = {"root": ("/", ROOT), "games": ("/Games", GAMES), "pictures": ("/Pictures", PICTURES)}
 
 _SOURCE_BY_KEY = {F1: "teensy", F3: "sd", F5: "usb"}
@@ -176,6 +189,8 @@ class FakeMenu:
             self._up()
         elif code == RETURN:
             self._select()
+            if self.board.program is not None:
+                return                   # the launched program draws its own screen
         self.render()
 
     def _page_down(self) -> None:

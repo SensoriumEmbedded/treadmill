@@ -203,10 +203,12 @@ class Link:
             raise LinkError(f"read of ${address:04X}: got {len(data)} of {length} bytes")
         return data
 
-    def write_memory(self, address: int, data: bytes) -> None:
+    def write_memory(self, address: int, data: bytes, drain: float = DRAIN_S) -> None:
+        """``drain`` is the quiet waited out first; a caller timing writes
+        to each other, such as notes on the SID, passes 0."""
         self._require_dma(f"write to ${address:04X}")
         data = bytes(data)
-        self._send(to_board(WRITE_C64_MEM) + to_board(address) + to_board(len(data)) + data)
+        self._send(to_board(WRITE_C64_MEM) + to_board(address) + to_board(len(data)) + data, drain)
         self._ack(f"write to ${address:04X}")
 
     def read_screen(self) -> ScreenDump:

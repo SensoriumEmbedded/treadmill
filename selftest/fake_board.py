@@ -108,7 +108,7 @@ class FakeBoard:
     powered: bool = True
     buttons_pending: bool = False
     unblocked: threading.Event = field(default_factory=threading.Event, repr=False)
-    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     end: PipeEnd | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -177,12 +177,13 @@ class FakeBoard:
     def return_to_menu(self) -> None:
         """What BtnPressed does in loop(): the menu's handler back, the C64 reset."""
         self.say("Button detected\nLoading IO handler: TeensyROM\nResetting C64\n")
-        self.program = None
-        self.busy = False
-        self.heartbeat = False
-        self.idread = None
-        self.booting_for = self.boot_polls
-        self.menu.reset()
+        with self.lock:                  # a program drawing from its own thread stops before the menu shows
+            self.program = None
+            self.busy = False
+            self.heartbeat = False
+            self.idread = None
+            self.booting_for = self.boot_polls
+            self.menu.reset()
 
     def press_buttons(self) -> None:
         """The operator's MENU then ALT, for the External Ports test; pressed
@@ -356,9 +357,10 @@ class FakeBoard:
         self.busy = False
         self.heartbeat = False
         self.idread = None
-        self.program = None
-        self.memory[0xD018] = 0x17
-        self.menu.reset()
+        with self.lock:
+            self.program = None
+            self.memory[0xD018] = 0x17
+            self.menu.reset()
         end.write(b"Reset cmd received\nLoading IO handler: TeensyROM\n")
 
     def _read_memory(self, end: PipeEnd) -> None:

@@ -151,7 +151,9 @@ table (`nS_PLAprop = 200`) fails the test when reads go wrong below it.
 station's rig. The station gives the rig and the machine; each board is
 found by the serial string it enumerates with. A TR+ takes its power from
 the machine, so switching the machine on is what starts a board. The steps
-run in order:
+run in order, launching the two built-in tests through the menu by keys, as
+an operator does (a remote launch changes how the firmware lays out RAM2,
+and with it the REU's size):
 
 1. Power-up: the main image boots to the menu.
 2. Firmware: the version and build stamp equal the factory hex's, with no
@@ -165,12 +167,21 @@ run in order:
    must log `Button detected` and bring the menu back.
 5. Expansion Port: the built-in test passes `xpt_passes` times.
 6. SD root: the card's root matches the master image's snapshot.
-7. REU: hot key 2 launches the REU checker with a 512K REU, and video reads
-   its pass screen.
+7. REU: hot key 2 launches the REU checker with a 512K REU. Its text is
+   yellow and green on grey, which video cannot read reliably, so the
+   verdict is its colors. Once it is up (its border green) a red cell in its
+   bank map (one cell per 64 KB) fails at once; otherwise, when the map has
+   held still for 2 s, it must show exactly eight green cells from the
+   start and a green "THE REU IS WORKING!" line. The last frame and the map
+   as read are kept (`reu.png`, `reu.colors.txt`).
 
 The first failure halts the board. Its screen turns red and inverted, the
 bottom row names the step and the reason, and the C64 is paused so nothing
-redraws it. A passing board gets a green summary instead. Each board adds:
+redraws it. The firmware takes no memory commands while the REU checker's
+REU is set up, so an REU failure is marked on the menu after a reset. A passing board gets a green summary instead. Before the
+pause the SID plays four chords, rising on a pass and falling on a fail,
+then falls silent; the TR's LED flashes while the C64 is paused. Each
+board adds:
 
 - a row to the profile's `log` (`data/mfg/boards.csv`): start time, chip id,
   firmware, result, the failed step and reason, every step's result and the
@@ -187,10 +198,6 @@ Setting it up, once:
    `factory_hex` at the factory hex.
 2. Run `treadmill mfg --snapshot-sd <master image folder>`, which writes
    `sd_root.json` beside the profile.
-3. Run one known-good board with no REU golden in place. The REU step stops
-   with "no REU checker golden" and saves the checker's screen as
-   `reu.screen.txt` in that board's folder. Check it (a `?` cell matches
-   anything), then copy it to the profile's `reu_golden`.
 
 ## Scripting
 

@@ -10,21 +10,30 @@ from pathlib import Path
 
 import pytest
 
+import numpy as np
+
 from selftest.fake_bench import SD_ROOT, FakeBench
+from selftest.fake_programs import DARK_GREY, GREEN, LIGHT_GREEN, YELLOW, checker_screen
+from selftest.fake_programs import RED as REU_RED
+from selftest.synth import calibrated, frame_of
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
-from treadmill.c64.screen import COLOR_RAM, SCREEN_BYTES, SCREEN_RAM_DEFAULT, VIC_BORDER, screen_rows
+from treadmill.c64.screen import (
+    CHARSET_LOWER_UPPER, COLOR_RAM, SCREEN_BYTES, SCREEN_RAM_DEFAULT, VIC_BORDER, screen_rows,
+)
 from treadmill.cli import EXIT_FAILED, EXIT_OK, main
 from treadmill.firmware.hexinfo import MAIN_BASE, encode_hex, inspect_hex
+from treadmill import mfg
 from treadmill.link.banner import parse_banner
+from treadmill.link.discover import Found, NotFound, teensyrom_uid
 from treadmill.mfg import (
-    FAIL, HELLO, NOT_RUN, PASS, RED, BoardLog, BoardRecord, Console, MfgProfile, clock_delta, compare_sd,
-    epc_reason, firmware_problems, run_session, sd_snapshot, xpt_reason, xpt_serial,
+    CIA1_ICR, FAIL, HELLO, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord, Console, MfgProfile, RealBench,
+    clock_delta,
+    ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
+    xpt_reason, xpt_serial,
 )
-from treadmill.observe.golden import Golden, save_golden
 from treadmill.report.artifacts import RunDir
 from treadmill.station import load_station
 
-REU_ROWS = ["REU Checker v1.0", "", "REU size: 512K", "", "All tests PASSED"]
 BANNER = "  FW: {v}\r\n      {d}, {t}\r\n  Teensy: 816MHz 50.0C  UID: 1\r\n  C64  NTSC Vid  60 Hz\n  Boot: complete\n"
 
 
@@ -39,7 +48,6 @@ def _profile(folder: Path, extra: str = "") -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     _hex(folder / "factory.hex")
     (folder / "sd_root.json").write_text(json.dumps({"entries": SD_ROOT}), encoding="utf-8")
-    save_golden(REU_ROWS, folder / "reu_checker.pass.screen.txt")
     path = folder / "trplus.toml"
     path.write_text('factory_hex = "factory.hex"\nepc_timeout_s = 30\nxpt_pass_timeout_s = 30\n'
                     'reu_timeout_s = 30\n' + extra, encoding="utf-8")
@@ -154,6 +162,36 @@ def test_board_log_header_once_and_a_fallback_when_refused(tmp_path: Path):
     assert "could not be written" in out.getvalue()
 
 
+def _bench_on(monkeypatch, states: list[list[tuple[str, str]]]) -> tuple[RealBench, io.StringIO]:
+    """A RealBench whose USB shows ``states`` in turn, one per look."""
+    seq, now = iter(states), []
+
+    def ports():
+        now[:] = next(seq, now)
+        return list(now)
+
+    def wait(exclude=(), timeout=None):
+        for port, serial_string in now:
+            if port not in exclude:
+                return Found(port, teensyrom_uid(serial_string), "serial-string")
+        raise NotFound("none")
+
+    monkeypatch.setattr(mfg, "list_teensyrom_ports", ports)
+    monkeypatch.setattr(mfg, "wait_for_teensyrom", wait)
+    console, out = _console()
+    return RealBench(console), out
+
+
+def test_a_board_on_usb_before_the_session_is_taken_only_once_it_comes_back(monkeypatch):
+    other, early, new = (("COM3", "TEENSYROM-SERIAL-11111111"), ("COM4", "TEENSYROM-SERIAL-22222222"),
+                         ("COM5", "TEENSYROM-SERIAL-33333333"))
+    bench, out = _bench_on(monkeypatch, [[other], [other], [other, new]])
+    assert "COM3 (chip id 11111111)" in out.getvalue()
+    assert bench.wait_for_board() == ("COM5", "33333333")
+    bench, _ = _bench_on(monkeypatch, [[other, early], [other, early], [other], [other, early]])
+    assert bench.wait_for_board() == ("COM4", "22222222")
+
+
 # -- whole sessions against fake boards ----------------------------------------------------------------
 
 def test_a_passing_board_through_the_cli(lab: Path, monkeypatch, capsys):  # noqa: F811
@@ -175,37 +213,46 @@ def test_a_passing_board_through_the_cli(lab: Path, monkeypatch, capsys):  # noq
     assert result["fw_version"] == "TeensyROM+ v0.9" and result["fresh_eeprom"] is False
     assert (folder / "serial.log").is_file() and (folder / "expansion_port_3.screen.txt").is_file()
     assert "Hello from TR at:" in (folder / "serial.log").read_text(encoding="latin-1")
-    assert "#### " in out and "1 board(s): 1 passed, 0 failed" in out
+    assert "#### " in out and "Board 1 PASSED" in out and "1 board(s): 1 passed, 0 failed" in out
     assert "TR+ manufacturing test: PASS" not in out          # that summary goes to the C64, not the console
     run = json.loads((folder.parent.parent / "run.json").read_text(encoding="utf-8"))
     assert run["mode"] == "mfg" and run["counts"]["PASS"] == 1
 
 
-def test_with_no_reu_golden_the_checker_s_screen_is_kept_for_one(lab: Path):  # noqa: F811
-    profile = MfgProfile.load(_profile(lab / "mfg"))
-    profile.reu_golden.unlink()
-    console, _ = _console()
-    bench = FakeBench(console)
-    video = bench.video_kit()
-    try:
-        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"), boards=1,
-                    log=lambda m: None)
-    finally:
-        video.close()
-    row = _rows(profile.log)[0]
-    assert row["failed_step"] == "REU" and "no REU checker golden" in row["reason"], row
-    assert row["c64_marked"] == "yes" and row["sd_root"] == PASS
-    saved = Golden.load(Path(row["evidence"]) / "reu.screen.txt")
-    assert [r.rstrip() for r in saved.rows[:5]] == REU_ROWS
+def test_the_reu_checker_read_by_its_colors():
+    cal = calibrated()
+
+    def view(kb=512, done=8, testing=None, error_bank=None, working_ink=LIGHT_GREEN, border=GREEN):
+        codes, colors = checker_screen(kb, done, testing, error_bank, working_ink)
+        image = frame_of(np.frombuffer(codes, np.uint8), np.frombuffer(colors, np.uint8), CHARSET_LOWER_UPPER,
+                         background=DARK_GREY, border=border)
+        return reu_view(image, cal)
+
+    v = view()
+    assert v.cells.startswith("G" * 8 + ".") and v.cells.count("G") == 8 and v.working and v.border_green
+    assert reu_verdict(v, 8) is None
+    v = view(error_bank=3)
+    assert v.cells.startswith("GGGRGGGG.") and "R" not in v.cells[8:]
+    assert reu_verdict(v, 8) == "the REU checker shows an error in the bank at 192K"
+    v = view(kb=256, done=2, testing=2)
+    assert v.cells.startswith("GG..") and v.cells.count("G") == 2
+    assert reu_verdict(view(kb=256, done=4), 8) == "the REU checker found 256K, expected 512K"
+    assert not view(working_ink=YELLOW).working and not view(border=REU_RED).border_green
+    assert reu_verdict(view(working_ink=YELLOW), 8) == "the REU checker's 'THE REU IS WORKING!' line is not green"
+    rest = "." * (256 - 9)
+    assert reu_verdict(ReuView("GG.GGGGG." + rest, True, True), 8).endswith("(wrong at 128K)")
+    assert reu_verdict(ReuView("G" * 9 + rest, True, True), 8) == "the REU checker found 576K, expected 512K"
 
 
 def test_failures_halt_and_mark_the_screen(lab: Path):  # noqa: F811
-    """Three boards: one fails the Expansion Port test's second pass, one has
-    no SD card, one's clock is an hour off. Each stops at its step with the
-    later steps not run, its screen marked, and a row in the log."""
+    """Four boards: one fails the Expansion Port test's second pass, one has
+    no SD card, one's clock is an hour off, one's REU shows an error. Each
+    stops at its step with the later steps not run, its screen marked (the
+    REU's on the menu, after a reset), and a row in the log."""
     profile = MfgProfile.load(_profile(lab / "mfg"))
     console, out = _console()
-    bench = FakeBench(console, boards=[{"xpt_fail_pass": 2}, {"epc_fail": "sd"}, {"clock_offset_s": 3600}])
+    bench = FakeBench(console, boards=[{"xpt_fail_pass": 2}, {"epc_fail": "sd"}, {"clock_offset_s": 3600},
+                                       {"reu_fail": True}])
     seen = []
     power_on = bench._power_on
 
@@ -216,23 +263,30 @@ def test_failures_halt_and_mark_the_screen(lab: Path):  # noqa: F811
     video = bench.video_kit()
     try:
         summary = run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
-                              boards=3, log=lambda m: None)
+                              boards=4, log=lambda m: None)
     finally:
         video.close()
-    assert summary["counts"] == {PASS: 0, FAIL: 3, "ABORTED": 0}
+    assert summary["counts"] == {PASS: 0, FAIL: 4, "ABORTED": 0}
     rows = _rows(profile.log)
-    assert [r["failed_step"] for r in rows] == ["Expansion Port", "External Ports", "External Ports"]
+    assert [r["failed_step"] for r in rows] == ["Expansion Port", "External Ports", "External Ports", "REU"]
     assert rows[0]["reason"] == "pass 2: $ff: 3/4096 Failed"
     assert rows[1]["reason"] == "Could not init SD"
     assert "from UTC" in rows[2]["reason"] and rows[2]["led_ethernet"] == ""
+    assert rows[3]["reason"] == "the REU checker shows an error in the bank at 192K" and rows[3]["sd_root"] == PASS
     for row in rows:
         assert row["result"] == FAIL and row["c64_marked"] == "yes"
+    for row in rows[:3]:
         assert row["reu"] == NOT_RUN and row["sd_root"] == NOT_RUN
     assert rows[0]["external_ports"] == PASS and rows[1]["external_reset"] == NOT_RUN
-    for fake, step in zip(seen, ("FAIL 5 Expansion Port", "FAIL 3 External Ports", "FAIL 3 External Ports")):
+    bank_map = (Path(rows[3]["evidence"]) / "reu.colors.txt").read_text(encoding="utf-8").splitlines()[1]
+    assert bank_map[3] == "R" and "R" not in bank_map[4:]
+    for fake, step in zip(seen, ("FAIL 5 Expansion Port", "FAIL 3 External Ports", "FAIL 3 External Ports",
+                                 "FAIL 7 REU")):
         assert fake.memory[VIC_BORDER] == RED and fake.memory[VIC_BORDER + 1] == RED
+        assert fake.memory[CIA1_ICR] == 0x01 and not any(fake.memory[SID:SID + 0x19])   # chords played, silent
         screen = bytes(fake.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES])
         assert screen_rows(screen)[24].startswith(step) and screen[0] & 0x80 == 0     # the banner turned back
         assert all(c >= 0x80 for c in screen[24 * 40:])
         assert fake.memory[COLOR_RAM + 24 * 40] == 7
-    assert out.getvalue().count("#####") >= 3 and "Could not init SD" in out.getvalue()
+    assert out.getvalue().count("#####") >= 4 and "Could not init SD" in out.getvalue()
+    assert "Board 4 FAILED" in out.getvalue()

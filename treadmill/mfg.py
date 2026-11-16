@@ -38,24 +38,27 @@ import tomllib
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Protocol, TypeVar
+from typing import Callable, NamedTuple, Protocol, TypeVar
+
+import cv2
+import numpy as np
 
 from treadmill.board import Board
 from treadmill.c64.keys import RETURN, KernalKeys
-from treadmill.c64.menu import parse_listing
+from treadmill.c64.menu import MenuDriver, parse_listing
 from treadmill.c64.screen import (
     CHARSET_LOWER_UPPER, CHARSET_UPPER_GRAPHICS, COLOR_RAM, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS,
     SCREEN_ROWS, VIC_BORDER, codes_for_text,
 )
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.firmware.hexinfo import HexError, HexInfo, inspect_hex
-from treadmill.link import LinkError, NotFound, TransportError, list_teensyrom_ports, wait_for_teensyrom
+from treadmill.link import LinkError, NotFound, TransportError, list_teensyrom_ports, teensyrom_uid, wait_for_teensyrom
 from treadmill.link.banner import TR_PLUS, Banner
-from treadmill.observe.calibrate import Calibration, calibration_path
+from treadmill.observe.calibrate import Calibration, border_of, calibration_path
 from treadmill.observe.capture import FrameSource, save_strip
 from treadmill.observe.channels import ScreenChannel, ScreenRead
 from treadmill.observe.glyphs import GlyphBank
-from treadmill.observe.golden import Golden, compare, diff_text, save_golden
+from treadmill.observe.golden import save_golden
 from treadmill.report.artifacts import RunDir, write_board_artifacts
 from treadmill.station.config import ConfigError, data_dir
 from treadmill.station.model import Station
@@ -104,8 +107,24 @@ KEY_SETTLE_S = 0.5        # after the prompt shows: the program drains the key b
 # ExtPortCheck still holds loop() after its Hello line, until the C64 takes its last message (3 s at most).
 EPC_SETTLE_S = 1.0
 NO_VIDEO_SETTLE_S = 5.0   # an Expansion Port pass's C64 half, waited out blind when there is no video
-REU_QUIET_S = 5.0         # with no golden yet: the checker's screen unchanged this long counts as its last
+REU_SETTLE_S = 2.0        # the checker's bank map unchanged this long: it has tested every bank
 VIDEO_SAME_READS = 2
+
+# REU-Checker v1.0's screen, measured from captures (it is a packed third-party program): a bank map of
+# 8 rows x 32 cells from row 7, column 4, one cell per 64 KB, green OK, red error, checkered grey missing;
+# "THE REU IS WORKING!" on row 5, columns 10-28, green while it passes; a green border.
+REU_MAP_ROW, REU_MAP_COL, REU_MAP_ROWS, REU_MAP_COLS = 7, 4, 8, 32
+REU_CELL_KB = 64
+REU_WORKING_ROW, REU_WORKING_COLS = 5, range(10, 29)
+CELL_OK, CELL_ERROR, CELL_OTHER = "G", "R", "."
+# A pixel is green (or red) when that channel is this far above the other two. The screen's other colors
+# stay well under it: yellow text 15, greys 0, light blue and purple below 0 (Pepto palette).
+HUE_MARGIN = 30
+CELL_INSET = 0.2          # of a cell, left off each side: the capture blurs the neighbors' colors in
+OK_SHARE, ERROR_SHARE = 0.5, 0.3   # of a map cell's pixels: a solid block shows ~1.0, its neighbors ~0
+# Of the WORKING line's pixels: about a quarter is ink, and S-Video's narrow chroma spreads its green
+# further (0.86 on the bench); the yellow title line shows ~0.003.
+INK_SHARE = 0.1
 
 # -- the steps and the log -------------------------------------------------------------------
 
@@ -119,6 +138,30 @@ CSV_FIELDS = ("start", "duration_s", "chip_id", "fw_version", "fw_built", "resul
 
 # C64 colors for the result screens.
 BLACK, WHITE, RED, GREEN, YELLOW = 0, 1, 2, 5, 7
+
+# The verdict on the SID before the freeze. The CPU is then paused, so whatever the SID holds keeps
+# sounding: it ends silent. The menu plays its tune from CIA1's timer A interrupt (IRQwedge in
+# SIDRelated.s), which is masked first; its own SID pause command toggles, so would start a tune that
+# was off.
+SID, SID_REGS, SID_VOLUME, SID_VOICE = 0xD400, 0x19, 0xD418, 7
+CIA1_ICR, CIA1_TIMER_A_OFF = 0xDC0D, 0x01      # bit 7 clear: the 1 bits named are masked
+SID_CLOCK_HZ = {"PAL": 985248, "NTSC": 1022727}
+PULSE, NOISE, GATE = 0x40, 0x80, 0x01
+VOICE_AD, VOICE_SR, PULSE_WIDTH = 0x09, 0x00, 0x0800     # a plucked note: no attack, decay 750 mS
+
+
+class Jingle(NamedTuple):
+    chords: tuple[tuple[int, int, int], ...]     # MIDI notes, one per voice
+    times: tuple[tuple[float, float], ...]       # each chord's (held, then silent) seconds
+    waves: tuple[int, int, int]                  # each voice's waveform
+
+
+# C major rising from middle C, a long chord then three short; C minor falling two octaves lower, two
+# short chords, a pause, two more, its lowest voice noise.
+PASS_JINGLE = Jingle(((60, 64, 67), (64, 67, 72), (67, 72, 76), (72, 76, 79)),
+                     ((0.4, 0.08), (0.2, 0.04), (0.2, 0.04), (0.2, 0.04)), (PULSE, PULSE, PULSE))
+FAIL_JINGLE = Jingle(((48, 51, 55), (43, 48, 51), (39, 43, 48), (36, 39, 43)),
+                     ((0.2, 0.04), (0.2, 0.32), (0.2, 0.04), (0.2, 0.04)), (NOISE, PULSE, PULSE))
 
 
 class MfgError(TreadmillError):
@@ -145,7 +188,6 @@ class MfgProfile:
     patience each step gets. Paths are absolute or relative to the profile."""
     factory_hex: Path
     sd_golden: Path
-    reu_golden: Path
     log: Path
     sd_ignore: tuple[str, ...] = ("System Volume Information",)
     reu_kb: int = 512
@@ -155,10 +197,10 @@ class MfgProfile:
     boot_timeout_s: float = 60.0
     reset_timeout_s: float = 60.0
     xpt_pass_timeout_s: float = 90.0
-    reu_timeout_s: float = 120.0
+    reu_timeout_s: float = 30.0
     require_release: bool = True
 
-    PATHS = ("factory_hex", "sd_golden", "reu_golden", "log")
+    PATHS = ("factory_hex", "sd_golden", "log")
 
     @classmethod
     def load(cls, path: Path | str) -> "MfgProfile":
@@ -173,7 +215,7 @@ class MfgProfile:
         unknown = sorted(set(table) - names)
         if unknown:
             raise ConfigError(f"{path}: unknown key(s) {', '.join(unknown)}; known: {', '.join(sorted(names))}")
-        defaults = {"sd_golden": "sd_root.json", "reu_golden": "reu_checker.pass.screen.txt", "log": "boards.csv"}
+        defaults = {"sd_golden": "sd_root.json", "log": "boards.csv"}
         values = {**defaults, **table}
         if "factory_hex" not in values:
             raise ConfigError(f"{path}: needs factory_hex, the hex every board must run")
@@ -286,7 +328,9 @@ class Console:
                 self.say(self._paint("    " + line, color))
         else:
             self.say(self._paint(f"    {record.result}", color))
-        self.say(f"    chip id {record.chip_id}, {record.duration_s:.0f} s")
+        words = {PASS: "PASSED", FAIL: "FAILED"}.get(record.result, record.result)
+        self.say(self._paint(f"    Board {record.n} {words}", color) +
+                 f": chip id {record.chip_id}, {record.duration_s:.0f} s")
         if record.result != PASS:
             where = TITLES.get(record.failed_step, record.failed_step)
             self.say(self._paint(f"    {where}: {record.reason}", color))
@@ -318,17 +362,31 @@ class Bench(Protocol):
 
 class RealBench:
     """A person at the bench: actions are instructions on the console; boards
-    are found by the serial string they enumerate with."""
+    are found by the serial string they enumerate with. A TeensyROM already on
+    USB when the session starts belongs to another machine on the bench, or is
+    a board under test that was switched on early: neither is taken until it
+    has left USB."""
 
     def __init__(self, console: Console):
         self.console = console
+        ports = list_teensyrom_ports()
+        self.others = {port for port, _ in ports}
+        if ports:
+            names = ", ".join(f"{port} (chip id {teensyrom_uid(s) or '?'})" for port, s in ports)
+            console.warn(f"Already on USB, so not tested: {names}. If the board under test is one of "
+                         "them, switch its C64 off and on again.")
 
     def do(self, action: str) -> None:
         self.console.instruct(INSTRUCTIONS[action])
 
     def wait_for_board(self) -> tuple[str, str]:
-        found = wait_for_teensyrom()
-        return found.port, found.uid
+        while True:
+            self.others &= {port for port, _ in list_teensyrom_ports()}
+            try:
+                found = wait_for_teensyrom(exclude=tuple(self.others), timeout=1.0)
+            except NotFound:
+                continue
+            return found.port, found.uid
 
     def open_board(self, station: Station, timeout: float) -> Board:
         """The board, opened once its main image answers. A port that drops
@@ -599,6 +657,49 @@ def screen_codes(text: str, charset: str) -> bytes:
     return codes_for_text(text.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS], charset)
 
 
+@dataclass(frozen=True)
+class ReuView:
+    """One frame of the REU checker, by color."""
+    cells: str                # the bank map in order, one CELL_* per 64 KB
+    working: bool             # the WORKING line's ink is green
+    border_green: bool
+
+    def describe(self, reads: int) -> str:
+        rows = [self.cells[i:i + REU_MAP_COLS] for i in range(0, len(self.cells), REU_MAP_COLS)]
+        return "\n".join([f"% the last of {reads} video reads; {CELL_OK} OK, {CELL_ERROR} error, "
+                          f"{CELL_OTHER} anything else", *rows,
+                          f"WORKING line green: {'yes' if self.working else 'no'}",
+                          f"border green: {'yes' if self.border_green else 'no'}"]) + "\n"
+
+
+def hue_shares(pixels: np.ndarray) -> tuple[float, float]:
+    """The fractions of these BGR pixels that are green and that are red."""
+    p = pixels.reshape(-1, 3).astype(np.int16)
+    if not len(p):
+        return 0.0, 0.0
+    b, g, r = p[:, 0], p[:, 1], p[:, 2]
+    return float(((g - np.maximum(r, b)) > HUE_MARGIN).mean()), float(((r - np.maximum(g, b)) > HUE_MARGIN).mean())
+
+
+def cell_pixels(image: np.ndarray, cal: Calibration, row: int, col: int, inset: float = CELL_INSET) -> np.ndarray:
+    x, y = cal.x0 + col * cal.cell_w, cal.y0 + row * cal.cell_h
+    dx, dy = cal.cell_w * inset, cal.cell_h * inset
+    return image[round(y + dy):round(y + cal.cell_h - dy), round(x + dx):round(x + cal.cell_w - dx)]
+
+
+def reu_view(image: np.ndarray, cal: Calibration) -> ReuView:
+    cells = []
+    for row in range(REU_MAP_ROW, REU_MAP_ROW + REU_MAP_ROWS):
+        for col in range(REU_MAP_COL, REU_MAP_COL + REU_MAP_COLS):
+            green, red = hue_shares(cell_pixels(image, cal, row, col))
+            cells.append(CELL_OK if green >= OK_SHARE else CELL_ERROR if red >= ERROR_SHARE else CELL_OTHER)
+    line = np.concatenate([cell_pixels(image, cal, REU_WORKING_ROW, col, 0.0).reshape(-1, 3)
+                           for col in REU_WORKING_COLS])
+    green, _ = hue_shares(line)
+    border_green, _ = hue_shares(np.asarray(border_of(image), np.uint8))
+    return ReuView("".join(cells), green >= INK_SHARE, border_green > 0)
+
+
 # -- one board -------------------------------------------------------------------------------------------
 
 @dataclass
@@ -662,21 +763,6 @@ class Ctx:
             time.sleep(VIDEO_POLL_S)
         return None
 
-    def video_settled(self, quiet: float, timeout: float) -> ScreenRead | None:
-        """The screen once video has read it unchanged for ``quiet`` seconds,
-        or None when ``timeout`` passes first."""
-        screen = self.screen
-        deadline = time.monotonic() + timeout
-        last, since = None, time.monotonic()
-        while time.monotonic() < deadline:
-            read = screen.read_video()
-            if last is None or read.rows() != last.rows():
-                last, since = read, time.monotonic()
-            elif time.monotonic() - since >= quiet:
-                return read
-            time.sleep(VIDEO_POLL_S)
-        return None
-
     def save_screen(self, name: str, read: ScreenRead) -> None:
         save_golden(read.rows(), self.folder / f"{name}.screen.txt", (f"% {read.source} read",))
 
@@ -704,12 +790,31 @@ def step_firmware(c: Ctx) -> str:
     return f"{b.version}, built {b.built}"
 
 
+def launch_from_menu(c: Ctx, path: str) -> None:
+    """A Teensy Mem item launched the way an operator does, by keys through
+    the menu. A remote launch would allocate the firmware's directory buffer
+    in RAM2, and the External Ports test's first Ethernet start would then
+    leave a hole there when the REU frees it: the REU checker gets 63 of 64
+    banks, rounded down to 256K. The menu is read by DMA, which video's
+    misreads cannot fool."""
+    folder, _, name = path.rpartition("/")
+    screen = ScreenChannel(c.link, None, None, None, dma_allowed=c.board.dma_allowed)
+    menu = MenuDriver(screen, c.keys, board=c.board)
+    try:
+        menu.ensure_root("teensy")
+        for part in filter(None, folder.split("/")):
+            menu.open(f"/{part}")
+        menu.select(name)
+    except TreadmillError as e:
+        raise StepFailed(f"could not launch {name} from the menu: {e}") from None
+
+
 def step_external_ports(c: Ctx) -> str:
     """The board answers nothing while it waits for the buttons, so the wait
     sends nothing: it watches serial for the line sent after the buttons,
     and video for a fail the test printed before reaching them."""
     mark = c.mark()
-    c.link.launch(EPC_PATH, "teensy")
+    launch_from_menu(c, EPC_PATH)
     c.bench.do(BUTTONS)
     deadline = time.monotonic() + c.profile.epc_timeout_s
     hello, failed_reads = None, 0
@@ -773,7 +878,7 @@ def step_expansion_port(c: Ctx) -> str:
     done, video when the C64's half is, then one DMA read takes the verdict."""
     passes = c.profile.xpt_passes
     mark = c.mark()
-    c.link.launch(XPT_PATH, "teensy")
+    launch_from_menu(c, XPT_PATH)
     for n in range(1, passes + 1):
         def pass_over(text: str):
             lines, stall = xpt_serial(text)
@@ -822,10 +927,8 @@ def step_sd_root(c: Ctx) -> str:
 def step_reu(c: Ctx) -> str:
     """The checker's verdict is read by video only: the suite sends no DMA
     while the REU is live, since the checker's own transfers use the bus.
-    With no golden yet, the checker's settled screen is saved for one to be
-    made from, and the step fails."""
-    path = c.profile.reu_golden
-    golden = Golden.load(path) if path.is_file() else None
+    Its text is yellow and green on grey, which the glyph bank (learned on
+    the menu) cannot read reliably, so the verdict is its colors."""
     if not c.video.ok:
         raise StepFailed("the REU checker's verdict needs the video channel")
     mark = c.mark()
@@ -841,27 +944,72 @@ def step_reu(c: Ctx) -> str:
                          "REU size on serial")
     if size != c.profile.reu_kb or handler != c.profile.reu_kb:
         raise StepFailed(f"the REU is {size}K (handler {handler}KB), expected {c.profile.reu_kb}K")
-    if golden is None:
-        read = c.video_settled(REU_QUIET_S, c.profile.reu_timeout_s)
-        if read is not None:
-            c.save_screen("reu", read)
-        raise StepFailed(f"no REU checker golden at {path}" + (
-            f"; this board's screen is in {c.folder.name}/reu.screen.txt: check it, then copy it there"
-            if read is not None else "; the checker's screen never settled"))
-    read = c.video_until(lambda rows: not compare(rows, golden), c.profile.reu_timeout_s)
-    if read is None:
-        last = c.screen.read_video()
-        c.save_screen("reu", last)
-        (c.folder / "reu.diff.txt").write_text(diff_text(last.rows(), golden), encoding="utf-8")
-        raise StepFailed(f"the REU checker's screen did not match its pass golden within {c.profile.reu_timeout_s:g} s")
-    c.save_screen("reu", read)
+    banks = c.profile.reu_kb // REU_CELL_KB
+    watch_reu_checker(c, banks, c.profile.reu_timeout_s)
     c.board.reset()
     c.board.reu_live = False
     try:
         c.board.wait_for_menu(c.profile.boot_timeout_s)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back after the REU checker: {e}") from None
-    return f"{size}K, checker passed"
+    return f"{size}K, the checker's {banks} banks OK"
+
+
+def reu_error(view: ReuView) -> str | None:
+    bad = view.cells.find(CELL_ERROR)
+    return None if bad < 0 else f"the REU checker shows an error in the bank at {bad * REU_CELL_KB}K"
+
+
+def reu_verdict(view: ReuView, banks: int) -> str | None:
+    """What is wrong with the checker's finished screen, or None: ``banks``
+    OK cells and nothing past them, no error, the WORKING line green."""
+    error = reu_error(view)
+    if error:
+        return error
+    ok = len(view.cells) - len(view.cells.lstrip(CELL_OK))
+    if ok != banks or CELL_OK in view.cells[ok:]:
+        if CELL_OK not in view.cells[ok:]:
+            return f"the REU checker found {ok * REU_CELL_KB}K, expected {banks * REU_CELL_KB}K"
+        odd = [i * REU_CELL_KB for i in range(len(view.cells)) if (view.cells[i] == CELL_OK) != (i < banks)]
+        return f"the REU checker's bank map is not {banks * REU_CELL_KB}K OK (wrong at {odd[0]}K)"
+    if not view.working:
+        return "the REU checker's 'THE REU IS WORKING!' line is not green"
+    return None
+
+
+def watch_reu_checker(c: Ctx, banks: int, timeout: float) -> None:
+    """The checker tests its banks quickly, then holds still. Once it is up
+    (its border green, the menu's is not) a red cell fails at once, on two
+    reads in a row; otherwise the verdict is its bank map once that has not
+    changed for REU_SETTLE_S. The last read is kept as evidence."""
+    start = time.monotonic()
+    prev: ReuView | None = None
+    reads, since = 0, start
+    try:
+        while True:
+            frame = c.video.source.next_frame()
+            view = reu_view(frame.image, c.video.calibration)
+            now = time.monotonic()
+            reads += 1
+            if prev is None or view != prev:
+                since = now
+            up = view.border_green and prev is not None and prev.border_green
+            if up and reu_error(view) and reu_error(view) == reu_error(prev):
+                raise StepFailed(reu_error(view))
+            prev = view
+            if up and now - since >= REU_SETTLE_S:
+                break
+            if now - start >= timeout:
+                raise StepFailed(f"the REU checker's screen did not settle within {timeout:g} s" if view.border_green
+                                 else f"the REU checker did not come up (no green border) within {timeout:g} s")
+            time.sleep(VIDEO_POLL_S)
+        problem = reu_verdict(view, banks)
+        if problem:
+            raise StepFailed(problem)
+    finally:
+        if prev is not None:
+            (c.folder / "reu.colors.txt").write_text(prev.describe(reads), encoding="utf-8")
+            cv2.imwrite(str(c.folder / "reu.png"), frame.image)
 
 
 STEP_FUNCS: dict[str, Callable[[Ctx], str]] = {
@@ -882,20 +1030,19 @@ def pass_rows(record: BoardRecord) -> list[str]:
 
 
 def write_pass_screen(c: Ctx) -> None:
-    """A summary on green, then the CPU paused so the menu cannot redraw it."""
+    """A summary on green (``finish_screen`` then pauses the CPU)."""
     dump = c.link.read_screen()
     rows = pass_rows(c.record)
     rows += [""] * (SCREEN_ROWS - len(rows))
     c.link.write_memory(dump.address, b"".join(screen_codes(r, dump.charset) for r in rows))
     c.link.write_memory(COLOR_RAM, bytes([WHITE]) * SCREEN_BYTES)
     c.link.write_memory(VIC_BORDER, bytes([GREEN, GREEN]))
-    c.link.pause(True)
 
 
 def mark_fail_screen(c: Ctx, step: str, reason: str) -> None:
     """The failing screen kept: inverted on red, so it reads from across the
     bench and its own reason stays legible, the step and reason on the bottom
-    row, then the CPU paused so nothing redraws it."""
+    row (``finish_screen`` then pauses the CPU)."""
     dump = c.link.read_screen()
     charset = dump.charset if dump.charset == CHARSET_LOWER_UPPER else CHARSET_UPPER_GRAPHICS
     codes = bytearray(b ^ REVERSE_VIDEO for b in dump.codes)
@@ -907,30 +1054,63 @@ def mark_fail_screen(c: Ctx, step: str, reason: str) -> None:
     c.link.write_memory(dump.address, bytes(codes))
     c.link.write_memory(COLOR_RAM, bytes(colors))
     c.link.write_memory(VIC_BORDER, bytes([RED, RED]))
-    c.link.pause(True)
+
+
+def sid_voice(note: int, clock_hz: int, control: int) -> bytes:
+    freq = round(440.0 * 2 ** ((note - 69) / 12) * (1 << 24) / clock_hz)
+    return bytes([freq & 0xFF, freq >> 8, PULSE_WIDTH & 0xFF, PULSE_WIDTH >> 8, control, VOICE_AD, VOICE_SR])
+
+
+def sid_clock(board: Board, station: Station) -> int:
+    video = board.banner.video if board.banner else None
+    return SID_CLOCK_HZ.get(video or station.machine.region, SID_CLOCK_HZ["PAL"])
+
+
+def play_chords(link, jingle: Jingle, clock_hz: int) -> None:
+    """The jingle on the SID, timed from here, then the SID silent. The
+    running program's timer interrupt is masked first, so a tune it plays
+    stops writing the SID. The notes' writes skip the link's drain, which
+    would add its 300 mS to every one."""
+    link.write_memory(CIA1_ICR, bytes([CIA1_TIMER_A_OFF]))
+    link.write_memory(SID, bytes(SID_REGS))
+    link.write_memory(SID_VOLUME, bytes([0x0F]))
+    for chord, (held, gap) in zip(jingle.chords, jingle.times):
+        voices = list(zip(chord, jingle.waves))
+        link.write_memory(SID, b"".join(sid_voice(n, clock_hz, w | GATE) for n, w in voices), drain=0.0)
+        time.sleep(held)
+        link.write_memory(SID, b"".join(sid_voice(n, clock_hz, w) for n, w in voices), drain=0.0)
+        time.sleep(gap)
+    link.write_memory(SID, bytes(SID_REGS), drain=0.0)
 
 
 def finish_screen(c: Ctx, failure: tuple[str, StepFailed] | None) -> bool:
-    """Mark the C64's screen with the verdict; False when it could not be."""
+    """Play the verdict on the SID, mark the C64's screen with it, then pause
+    the CPU so nothing redraws it (the TR's LED flashes while it is paused).
+    The screen comes after the chords: the menu redraws its clock until the
+    pause. False when the screen could not be marked."""
     board = c.board
     if board is None or board.link.stream.ended:
         return False
     try:
         if failure is None:
+            play_chords(c.link, PASS_JINGLE, sid_clock(board, c.station))
             write_pass_screen(c)
+            c.link.pause(True)
             return True
         step, err = failure
         if not err.markable:
             return False
         if board.reu_live:
-            # Only once video shows the checker has stopped: its own transfers use the bus.
-            if not c.video.ok:
-                return False
-            c.screen.wait_settled(timeout=10.0)
+            # While the REU is set up the firmware refuses memory commands, and a pause would share the
+            # REU's DMA state: back to the menu, and the menu is marked.
+            board.reset()
             board.reu_live = False
+            board.wait_for_menu(c.profile.boot_timeout_s)
         if not board.dma_allowed():
             return False
+        play_chords(c.link, FAIL_JINGLE, sid_clock(board, c.station))
         mark_fail_screen(c, step, err.reason)
+        c.link.pause(True)
         return True
     except (TreadmillError, OSError) as e:
         c.log(f"[mfg] the C64's screen could not be marked: {e}")

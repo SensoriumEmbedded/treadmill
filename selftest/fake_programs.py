@@ -7,9 +7,12 @@ REU checker's is a sketch of the real one's layout and colors, which mfg
 reads by color, since the real one is a packed binary.
 
 ``faults`` (per board, from the fake bench) breaks one thing at a time:
-``epc_fail`` ("ethernet", "sd", "usb"), ``clock_offset_s``, ``xpt_fail_pass``,
-``reu_fail``, ``reu_kb``; ``leds`` lists what the operator types for each LED
-question (``FakeBoard.watch_led_questions``).
+``epc_fail`` ("ethernet", "sd", "usb"), ``clock_offset_s``, ``epc_key`` (a key on
+the C64 as the prompt shows, "prompt", or as mfg reads the verdict, "verdict"),
+``xpt_fail_pass``, ``xpt_early_fail_pass`` (that pass stops at its address
+test, before any serial line), ``reu_fail``, ``reu_kb``; ``leds`` lists what the
+operator types for each LED question (``FakeBoard.watch_led_questions``),
+``led_early`` what they press as each goes up.
 """
 
 from __future__ import annotations
@@ -86,6 +89,11 @@ class ExtPorts:
                                          " External Port Check Passed.", ""] + EPC_VERIFY
         self.board.show(rows, reverse={0, 2, rows.index(" External Port Check Passed.")})
         self.board.unblocked.set()
+        key = self.board.faults.get("epc_key")
+        if key == "prompt":              # pressed as the prompt shows, before anything mfg sends can land
+            self.board.type_keys("n")
+        elif key == "verdict":           # pressed as mfg first reads the screen after the Hello line
+            self.board.key_on_screen_read = "n"
 
     def key(self, code: int) -> None:
         self.board.return_to_menu()
@@ -109,6 +117,11 @@ class ExpPort:
             rows = ["TeensyROM+ v0.9 Test", ""] + XPT_TEENSY + [
                 " $ff: 3/4096 Failed", " Failed, additional details on serial", "",
                 " Expansion Port Test Failed! "] + XPT_PROMPT
+            self.board.show(rows, reverse={0, rows.index(" Expansion Port Test Failed! ")})
+            return
+        if self.board.faults.get("xpt_early_fail_pass") == self.passes:
+            rows = ["TeensyROM+ v0.9 Test", "", XPT_TEENSY[0][:-3], " Miscompare at $0010: Exp $04, Rd $00", "",
+                    " Expansion Port Test Failed! "] + XPT_PROMPT
             self.board.show(rows, reverse={0, rows.index(" Expansion Port Test Failed! ")})
             return
         for label, size in XPT_PATTERNS:

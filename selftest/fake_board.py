@@ -16,7 +16,7 @@ from selftest.fake_menu import TREE, UP_DIR, FakeMenu
 from selftest.fake_programs import ExpPort, ExtPorts, ReuChecker
 from treadmill.c64.screen import (
     KEYBUF, KEYBUF_SIZE, KEYCOUNT, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_RAM_DEFAULT, SCREEN_ROWS,
-    codes_for_text,
+    VIC_MEMPTR, codes_for_text,
 )
 from treadmill.link.banner import parse_banner
 from treadmill.mfg import IGETIN, LED_ROW
@@ -113,6 +113,8 @@ class FakeBoard:
     powered: bool = True
     buttons_pending: bool = False
     led_answers: list[str] | None = None  # what the operator types for each LED question still to come
+    led_asked: bool = False               # a question is on screen, and its answer comes once the buffer is emptied
+    key_on_screen_read: str = ""          # pressed on the C64 when a read of VIC_MEMPTR comes next
     unblocked: threading.Event = field(default_factory=threading.Event, repr=False)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     end: PipeEnd | None = field(default=None, repr=False)
@@ -221,7 +223,17 @@ class FakeBoard:
 
     def press_buttons(self) -> None:
         """The operator's MENU then ALT, for the External Ports test; pressed
-        before the test is up, they count once it is."""
+        before the test is up, they count once it is. They take
+        ``faults["buttons_after_s"]`` to get to them."""
+        delay = self.faults.get("buttons_after_s")
+        if delay:
+            timer = threading.Timer(delay, self._press_buttons)
+            timer.daemon = True
+            timer.start()
+        else:
+            self._press_buttons()
+
+    def _press_buttons(self) -> None:
         with self.lock:
             if isinstance(self.program, ExtPorts) and self.program.waiting:
                 self.program.buttons()
@@ -409,6 +421,9 @@ class FakeBoard:
         if self.idread is not None:
             self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
             self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 8] = self.idread.bytes()
+        if address == VIC_MEMPTR and self.key_on_screen_read:
+            keys, self.key_on_screen_read = self.key_on_screen_read, ""
+            self.type_keys(keys)
         self._reply(end, ACK)
         end.write(bytes(self.memory[address:address + length]))
 
@@ -430,6 +445,11 @@ class FakeBoard:
                 (self.program or self.menu).key(code)
         if address == LED_QUESTION_ROW and self.led_answers and \
                 LED_QUESTION_MARK in bytes(b & ~REVERSE_VIDEO for b in data):
+            # faults["led_early"]: keys the operator presses as each question goes up, too soon to have read it.
+            self.type_keys(self.faults.get("led_early", ""))
+            self.led_asked = True
+        elif address == KEYCOUNT and self.led_asked and self.led_answers:
+            self.led_asked = False
             self.type_keys(self.led_answers.pop(0))
 
     def _launch(self, end: PipeEnd) -> None:

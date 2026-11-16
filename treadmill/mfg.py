@@ -82,12 +82,17 @@ EPC_ANY_KEY = "Press any key to return"                            # after eithe
 # The LED questions. The test reads keys with JSR $FFE4 (c64defs.i), so through the KERNAL's IGETIN
 # vector; pointed at a stub that always says "no key", the test stays at its prompt while the IRQ's
 # scan keeps queueing keys, and the answers are read from the buffer with no race. The stub sits in
-# the cassette buffer, which the test leaves alone. Nothing points the vector back: the menu
-# cartridge's cold start clears $0002-$03FF and runs RESTOR (TeensyROMC64.asm), and until that reset
-# no key can end the test, whose exit (rCtlReturnToMainMenu) logs "Button detected" just as the
-# external reset of the next step does.
-IGETIN, NO_KEY_STUB = 0x032A, 0x033C
+# the cassette buffer, which the test leaves alone, at the vector's own low byte, so only the high
+# byte changes: the 6510 fetches the two bytes of JMP ($032A) on separate cycles, and a DMA write can
+# fall between them, so a two-byte change could send it to a third address. Nothing points the
+# vector back: the menu cartridge's cold start clears $0002-$03FF and runs RESTOR (TeensyROMC64.asm),
+# and until that reset no key can end the test, whose exit (rCtlReturnToMainMenu) logs "Button
+# detected" just as the external reset of the next step does.
+IGETIN = 0x032A
+CASSETTE_BUFFER = range(0x033C, 0x03FC)
 NO_KEY = bytes([0xA9, 0x00, 0x18, 0x60])                           # LDA #0; CLC; RTS
+EPC_ENDED = ("a key on the C64, or the TR's MENU button, ended the External Ports test before its LED "
+             "questions were answered")
 YES_KEYS, NO_KEYS = (0x59, 0xD9), (0x4E, 0xCE)                     # Y and N, either shift
 LED_ROW = SCREEN_ROWS - 1        # free: the prompt's return leaves the cursor on a blank line below it
 LED_QUESTIONS = (("led_ethernet", "Ethernet port's green LED on?", "the Ethernet green LED"),
@@ -105,11 +110,12 @@ PATTERNS_PER_PASS = 5                                              # ExpPortDMA'
 HELLO = re.compile(r"Hello from TR at: (\d\d):(\d\d):(\d\d) ([ap])m", re.I)
 # PrintDMAPatternResult: a clean pattern's line ends "  CLEAN", a bad one's ends at its counts. The
 # patterns are anchored on their own text, not a line start: the serial record holds every byte the
-# board sent, so a line can follow a command's reply bytes directly.
+# board sent, so a line can follow a command's reply bytes directly. A line counts once its newline is
+# in, since "  CLEAN" is a printf of its own and a read can end between the two.
 PATTERN_LINE = re.compile(r"(\$\w\w(?:/\$\w\w alt)? over \$\w\w @ \$\w+: \d+ bad of \d+ bytes"
-                          r"(?:, pre-fill \d+ bad)?)(  CLEAN)?[ \t\r]*$", re.M)
+                          r"(?:, pre-fill \d+ bad)?)(  CLEAN)?[ \t\r]*(?=\n)")
 PATTERN_STALL = re.compile(r"\b(no \S.* on pass \d+:[^\n]*)")
-LAUNCHED = re.compile(r"^F: (.+?)\s*$", re.M)
+LAUNCHED = re.compile(r"^F: (.+?)[ \t\r]*(?=\n)", re.M)
 REU_HANDLER = re.compile(r"Loading IO handler: (\d+)KB REU")
 REU_SIZE = re.compile(r"REU Size: (\d+)K bytes")
 EEPROM_DEFAULTS = "--> Setting EEPROM to defaults"
@@ -122,15 +128,17 @@ VERDICT_S = 20.0          # from the test's own end signal to its verdict on scr
 RESET_FOLLOW_S = 10.0     # 'Button detected' to 'Resetting C64'
 REU_LAUNCH_S = 20.0
 KEY_SETTLE_S = 0.5        # after the prompt shows: the program drains the key buffer right after printing it
-# ExtPortCheck still holds loop() after its Hello line, until the C64 takes its last message (3 s at most).
-EPC_SETTLE_S = 1.0
+# ExtPortCheck still holds loop() after its Hello line, until the C64 takes its last message (3 s at most):
+# a command sent then waits on USB and runs as loop() resumes. Only the Hello line's own end can still be
+# on its way, and the drain before that command is for it.
+HELLO_TAIL_S = 0.05
 NO_VIDEO_SETTLE_S = 5.0   # an Expansion Port pass's C64 half, waited out blind when there is no video
 REU_SETTLE_S = 2.0        # the checker's bank map unchanged this long: it has tested every bank
 VIDEO_SAME_READS = 2
 
 # -- the clock -----------------------------------------------------------------------------
 
-# This PC's clock is checked against NTP once a session, a sample from each of a few of the pool's
+# This PC's clock is checked against NTP before each board, a sample from each of a few of the pool's
 # servers, so one wrong server cannot move the median.
 NTP_SAMPLES, NTP_TIMEOUT_S = 3, 2.0
 NTP_EPOCH = 2208988800    # 1900 to 1970, in seconds
@@ -368,7 +376,8 @@ CONNECT, BUTTONS, LEDS, RESET_BUTTON, POWER_OFF = "connect", "buttons", "leds", 
 INSTRUCTIONS = {
     CONNECT: "Plug in the next TR+. Connect USB to this PC, Ethernet, the USB thumb drive and the "
              "SD card, then power on the C64.",
-    BUTTONS: "Follow the C64's screen: press and release the TR's MENU button, then its ALT button.",
+    BUTTONS: "Follow the C64's screen: press and release the TR's MENU button, then its ALT button. "
+             "Leave the C64's keyboard alone until its bottom row asks a question.",
     LEDS: "Look at the board's LEDs and answer the questions at the bottom of the C64's screen: "
           "Y or N on its keyboard.",
     RESET_BUTTON: "Press the C64's reset button.",
@@ -693,20 +702,24 @@ def ntp_offset(server: str, port: int = 123, samples: int = NTP_SAMPLES,
     return statistics.median(offsets) if offsets else None
 
 
-def pc_clock_offset(server: str, console: Console) -> float | None:
-    """This PC's offset from NTP for the session, said on the console."""
+def pc_clock_offset(server: str, console: Console, quiet: bool = False) -> float | None:
+    """This PC's offset from NTP, said on the console; ``quiet``, before each
+    board, says only an offset worth a warning. Measured again for each board,
+    since the operator may set the clock as the warning says, or Windows may."""
     if not server:
-        console.say("This PC's clock is not checked against NTP (the profile's ntp_server is empty).")
+        if not quiet:
+            console.say("This PC's clock is not checked against NTP (the profile's ntp_server is empty).")
         return None
     offset = ntp_offset(server)
     if offset is None:
-        console.warn(f"No time from {server}: boards' clocks are checked against this PC's clock as it is.")
+        if not quiet:
+            console.warn(f"No time from {server}: boards' clocks are checked against this PC's clock as it is.")
         return None
     where = f"{abs(offset):.1f} s {'behind' if offset > 0 else 'ahead of'} {server}"
     if abs(offset) > PC_CLOCK_WARN_S:
         console.warn(f"This PC's clock is {where}; boards are checked against NTP's time. "
                      "'w32tm /resync' from an administrator prompt sets it.")
-    else:
+    elif not quiet:
         console.say(f"This PC's clock is {where}.")
     return offset
 
@@ -872,6 +885,14 @@ class Ctx:
                 raise StepFailed(f"no {what} within {timeout:g} s")
             time.sleep(SERIAL_POLL_S)
 
+    def video_text(self) -> str | None:
+        """What video shows now, or None when a frame is lost or unreadable,
+        for a wait that watches serial too and so can carry on without it."""
+        try:
+            return self.screen.read_video().text()
+        except TreadmillError:
+            return None
+
     def video_until(self, predicate: Callable[[list[str]], bool], timeout: float) -> ScreenRead | None:
         """The first of two video reads in a row that satisfy ``predicate``,
         or None when ``timeout`` passes first: a wait that sends nothing to
@@ -950,16 +971,26 @@ def step_external_ports(c: Ctx) -> str:
         if c.link.stream.ended:
             raise StepFailed("the board left USB during the External Ports test", markable=False)
         if c.video.ok:
-            failed_reads = failed_reads + 1 if EPC_FAILED in c.screen.read_video().text() else 0
+            failed_reads = failed_reads + 1 if EPC_FAILED in (c.video_text() or "") else 0
             if failed_reads >= VIDEO_SAME_READS:
                 break
         if time.monotonic() >= deadline:
             raise StepFailed(f"no 'Hello from TR at:' line within {c.profile.epc_timeout_s:g} s: a button "
                              "was not detected, or the test stopped before the buttons", markable=False)
         time.sleep(SERIAL_POLL_S)
-    time.sleep(EPC_SETTLE_S)
-    read = c.screen.wait(lambda s: (EPC_PASSED in s.text() or EPC_FAILED in s.text()) and EPC_ANY_KEY in s.text(),
-                         VERDICT_S, exact=True, what="the External Ports verdict")
+
+    def ended() -> bool:
+        return hello is not None and "Button detected" in c.serial_since(mark)[hello.end():]
+
+    try:
+        if hello:
+            hold_epc_prompt(c)
+        read = c.screen.wait(lambda s: (EPC_PASSED in s.text() or EPC_FAILED in s.text()) and EPC_ANY_KEY in s.text(),
+                             VERDICT_S, exact=True, what="the External Ports verdict")
+    except TreadmillError:
+        if ended():
+            raise StepFailed(EPC_ENDED) from None
+        raise
     c.save_screen("external_ports", read)
     text = read.text()
     if EPC_PASSED not in text:
@@ -975,14 +1006,13 @@ def step_external_ports(c: Ctx) -> str:
     problem = clock_problem(delta, c.profile.time_tolerance_s, c.record.fresh_eeprom, c.pc_offset_s is not None)
     if problem:
         raise StepFailed(problem)
-    hold_epc_prompt(c)
     dump = c.link.read_screen()
     charset = dump.charset if dump.charset == CHARSET_LOWER_UPPER else CHARSET_UPPER_GRAPHICS
     row = dump.address + LED_ROW * SCREEN_COLUMNS
     c.link.write_memory(COLOR_RAM + LED_ROW * SCREEN_COLUMNS, bytes([YELLOW]) * SCREEN_COLUMNS)
     c.bench.do(LEDS)
     for attr, question, what in LED_QUESTIONS:
-        on = ask_on_c64(c, row, charset, question)
+        on = ask_on_c64(c, row, charset, question, ended)
         if on is None:
             raise StepFailed(f"no Y or N for {what} on the C64's keyboard within {c.profile.led_timeout_s:g} s")
         setattr(c.record, attr, "y" if on else "n")
@@ -994,18 +1024,25 @@ def step_external_ports(c: Ctx) -> str:
 
 def hold_epc_prompt(c: Ctx) -> None:
     """GETIN through the no-key stub (IGETIN above): the External Ports test
-    stays at its prompt, and keys typed from now on wait in the buffer."""
-    c.link.write_memory(NO_KEY_STUB, NO_KEY)
-    c.link.write_memory(IGETIN, NO_KEY_STUB.to_bytes(2, "little"))
+    stays at its prompt, and keys typed from now on wait in the buffer. Sent
+    as soon as the Hello line is in, so it runs as the board's loop() resumes
+    (HELLO_TAIL_S), while the C64 still prints the verdict above its prompt."""
+    vector = int.from_bytes(c.link.read_memory(IGETIN, 2, drain=HELLO_TAIL_S), "little")
+    stub = 0x0300 | vector & 0xFF
+    if stub not in CASSETTE_BUFFER or stub + len(NO_KEY) - 1 not in CASSETTE_BUFFER:
+        raise StepFailed(f"the C64's GETIN vector is ${vector:04X}: its low byte puts no stub in the cassette buffer")
+    c.link.write_memory(stub, NO_KEY, drain=0.0)
+    c.link.write_memory(IGETIN + 1, bytes([stub >> 8]), drain=0.0)
 
 
-def ask_on_c64(c: Ctx, row: int, charset: str, question: str) -> bool | None:
+def ask_on_c64(c: Ctx, row: int, charset: str, question: str, ended: Callable[[], bool]) -> bool | None:
     """The operator's Y (True) or N (False) to ``question``, shown at screen
     address ``row``; None when neither comes within the profile's
-    ``led_timeout_s``. Keys typed before it showed, and any key but Y and N,
-    do not count."""
-    c.link.write_memory(KEYCOUNT, b"\0")
+    ``led_timeout_s``. The buffer is emptied once the question is on screen,
+    so keys typed before it showed, and any key but Y and N, do not count.
+    ``ended`` says the test has gone back to the menu."""
     c.link.write_memory(row, bytes(b | REVERSE_VIDEO for b in screen_codes(f" {question} Y/N", charset)))
+    c.link.write_memory(KEYCOUNT, b"\0")
     deadline = time.monotonic() + c.profile.led_timeout_s
     while True:
         count = c.link.read_memory(KEYCOUNT, 1)[0]
@@ -1015,6 +1052,8 @@ def ask_on_c64(c: Ctx, row: int, charset: str, question: str) -> bool | None:
             answer = next((k for k in keys if k in YES_KEYS + NO_KEYS), None)
             if answer is not None:
                 return answer in YES_KEYS
+        if ended():
+            raise StepFailed(EPC_ENDED)
         if time.monotonic() >= deadline:
             return None
         time.sleep(SERIAL_POLL_S)
@@ -1042,17 +1081,7 @@ def step_expansion_port(c: Ctx) -> str:
     mark = c.mark()
     launch_from_menu(c, XPT_PATH)
     for n in range(1, passes + 1):
-        def pass_over(text: str):
-            lines, stall = xpt_serial(text)
-            if stall or len(lines) >= PATTERNS_PER_PASS or any(v != "CLEAN" for _, v in lines):
-                return lines, stall
-            return None
-        lines, stall = c.wait_serial(mark, pass_over, c.profile.xpt_pass_timeout_s,
-                                     f"pass {n}'s DMA pattern lines on serial")
-        if c.video.ok:
-            c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), c.profile.xpt_pass_timeout_s)
-        else:
-            time.sleep(NO_VIDEO_SETTLE_S)
+        lines, stall = wait_xpt_pass(c, mark, n)
         read = c.screen.wait(lambda s: XPT_PROMPT in s.text(), VERDICT_S, exact=True, what=f"pass {n}'s verdict")
         c.save_screen(f"expansion_port_{n}", read)
         rows = read.rows()
@@ -1061,6 +1090,9 @@ def step_expansion_port(c: Ctx) -> str:
         bad = stall or next((line for line, verdict in lines if verdict != "CLEAN"), None)
         if bad:
             raise StepFailed(f"pass {n}: serial: {bad}")
+        if len(lines) < PATTERNS_PER_PASS:
+            raise StepFailed(f"pass {n}: the screen shows it passed, but serial sent {len(lines)} of its "
+                             f"{PATTERNS_PER_PASS} DMA pattern lines")
         mark = c.mark()
         time.sleep(KEY_SETTLE_S)
         c.keys.press([KEY_O] if n < passes else [RETURN])
@@ -1069,6 +1101,36 @@ def step_expansion_port(c: Ctx) -> str:
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back after the test: {e}") from None
     return f"{passes} passes clean"
+
+
+def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str | None]:
+    """Pass ``n``'s DMA pattern lines and stall line from serial, once its
+    prompt is up. The Teensy's half can stop before its patterns (the
+    address tests report on screen only, StatusFunctions.c's ScreenDMA) and
+    go straight to the prompt with no Passed on screen: video seeing that
+    ends the wait early, with the lines sent so far."""
+    timeout = c.profile.xpt_pass_timeout_s
+    deadline = time.monotonic() + timeout
+    early_reads = 0
+    while True:
+        lines, stall = xpt_serial(c.serial_since(mark))
+        if stall or len(lines) >= PATTERNS_PER_PASS or any(v != "CLEAN" for _, v in lines):
+            break
+        if c.link.stream.ended:
+            raise StepFailed(f"the board left USB while waiting for pass {n}'s DMA pattern lines", markable=False)
+        if c.video.ok:
+            text = c.video_text() or ""
+            early_reads = early_reads + 1 if XPT_PROMPT in text and XPT_PASSED not in text else 0
+            if early_reads >= VIDEO_SAME_READS:
+                return lines, stall
+        if time.monotonic() >= deadline:
+            raise StepFailed(f"no pass {n}'s DMA pattern lines on serial within {timeout:g} s")
+        time.sleep(SERIAL_POLL_S)
+    if c.video.ok:
+        c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), timeout)
+    else:
+        time.sleep(NO_VIDEO_SETTLE_S)
+    return lines, stall
 
 
 def step_sd_root(c: Ctx) -> str:
@@ -1367,6 +1429,8 @@ def run_session(template: Station, profile: MfgProfile, bench: Bench, console: C
             n = len(records) + 1
             console.heading(f"Board {n}")
             bench.do(CONNECT)
+            if records:
+                pc_offset = pc_clock_offset(profile.ntp_server, console, quiet=True)
             console.say("Waiting for a TeensyROM on USB (Ctrl+C ends the session) ...")
             port, uid = bench.wait_for_board()
             console.say(f"Chip id {uid} on {port}")

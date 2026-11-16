@@ -7,15 +7,17 @@ import json
 import socket
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import numpy as np
 
 from selftest.fake_bench import SD_ROOT, FakeBench
-from selftest.fake_programs import DARK_GREY, GREEN, LIGHT_GREEN, YELLOW, checker_screen
+from selftest.fake_programs import DARK_GREY, GREEN, LIGHT_GREEN, YELLOW, ExtPorts, checker_screen
 from selftest.fake_programs import RED as REU_RED
 from selftest.synth import calibrated, frame_of
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
@@ -28,12 +30,14 @@ from treadmill import mfg
 from treadmill.link.banner import parse_banner
 from treadmill.link.discover import Found, NotFound, teensyrom_uid
 from treadmill.mfg import (
-    CIA1_ICR, FAIL, HELLO, IGETIN, NO_KEY, NO_KEY_STUB, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord, Console,
-    MfgProfile, RealBench,
+    CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord,
+    Console, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
     _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
     xpt_reason, xpt_serial,
 )
+from treadmill.observe.capture import CaptureTimeout
+from treadmill.observe.channels import ScreenChannel
 from treadmill.report.artifacts import RunDir
 from treadmill.station import load_station
 
@@ -220,6 +224,12 @@ def test_test_program_parsers():
                      ("$ff over $00 @ $c000: 3 bad of 16384 bytes", "BAD"),
                      ("$00/$ff alt over $00 @ $c000: 0 bad of 16384 bytes, pre-fill 2 bad", "BAD")]
     assert stall == "no read on pass 2: C64 bus not clocking"
+    # A line is read once its newline is in: "  CLEAN" is a printf of its own, and a read can end before it.
+    assert xpt_serial("$ff over $ff @ $c000: 0 bad of 4096 bytes")[0] == []
+    assert xpt_serial("$ff over $ff @ $c000: 0 bad of 4096 bytes  CLEAN\n")[0] == [
+        ("$ff over $ff @ $c000: 0 bad of 4096 bytes", "CLEAN")]
+    assert LAUNCHED.search("Remote Launch:\nP: /Test+Diags\nF: REU-Chec") is None
+    assert LAUNCHED.search("F: REU-Checker v1.0\r\n").group(1) == "REU-Checker v1.0"
     assert xpt_reason(["TeensyROM+ v0.9 Test", "IRQ Test OK", "NMI Test NMI not detected",
                        " Expansion Port Test Failed! "]) == "NMI Test NMI not detected"
     assert epc_reason("Ethernet connected\nCould not init SD\n External Port Check Failed!") == "Could not init SD"
@@ -411,7 +421,98 @@ def test_the_led_answers_come_from_the_c64(lab: Path):  # noqa: F811
     assert [(r["led_ethernet"], r["led_tr"]) for r in rows] == [("n", ""), ("y", "n"), ("y", "")]
     for fake, row in zip(seen, rows):
         assert row["c64_marked"] == "yes"
-        assert fake.memory[IGETIN:IGETIN + 2] == NO_KEY_STUB.to_bytes(2, "little")
-        assert fake.memory[NO_KEY_STUB:NO_KEY_STUB + len(NO_KEY)] == NO_KEY
+        assert fake.memory[IGETIN:IGETIN + 2] == b"\x3e\x03"
+        assert fake.memory[0x033E:0x033E + len(NO_KEY)] == NO_KEY
         assert "Button detected" not in (Path(row["evidence"]) / "serial.log").read_text(encoding="latin-1")
     assert "answer the questions at the bottom of the C64's screen" in out.getvalue()
+
+
+def test_the_getin_vector_changes_by_one_byte():
+    """The stub goes at the vector's own low byte, so only the high byte is
+    written: a 6510 between the two fetches of JMP ($032A) sees GETIN or the
+    stub, never a third address. A low byte that puts no stub in the cassette
+    buffer is refused before anything is written."""
+    class Link:
+        def __init__(self, vector: bytes):
+            self.vector, self.writes = vector, []
+
+        def read_memory(self, address, length, drain=None):
+            assert (address, length) == (IGETIN, 2)
+            return self.vector
+
+        def write_memory(self, address, data, drain=None):
+            self.writes.append((address, bytes(data)))
+
+    c = SimpleNamespace(link=Link(b"\x3e\xf1"))
+    hold_epc_prompt(c)
+    assert c.link.writes == [(0x033E, NO_KEY), (IGETIN + 1, b"\x03")]
+    for vector in (b"\x10\xf1", b"\xfa\xf1"):
+        c.link = Link(vector)
+        with pytest.raises(StepFailed, match="GETIN vector"):
+            hold_epc_prompt(c)
+        assert c.link.writes == []
+
+
+def test_keys_lost_frames_and_an_early_expansion_port_fail(lab: Path, monkeypatch):  # noqa: F811
+    """What an operator and a capture do to the tests.
+    1. A key on the C64 as mfg first reads the verdict waits in the buffer:
+       GETIN is held as soon as the Hello line is in, and each question
+       empties the buffer once it shows.
+    2. A key as the prompt shows, before anything sent can land, ends the
+       test, and the step says so.
+    3. A key pressed as a question goes up does not answer it.
+    4. Lost frames while the buttons are awaited are waited out.
+    5. An Expansion Port pass that stops at its address test, with no serial
+       line, fails on its screen's reason without waiting for serial.
+    Boards 1, 3 and 4 say N to the TR LED, so each stops at that question."""
+    monkeypatch.setattr(mfg, "VERDICT_S", 2.0)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    bench = FakeBench(console, boards=[{"epc_key": "verdict", "leds": ["y", "n"]}, {"epc_key": "prompt"},
+                                       {"leds": ["y", "n"], "led_early": "y"},
+                                       {"buttons_after_s": 1.0, "leds": ["y", "n"]}, {"xpt_early_fail_pass": 1}])
+    lost = []
+    read_video = ScreenChannel.read_video
+
+    def flaky(self, frame=None):
+        program = bench.fake.program
+        if isinstance(program, ExtPorts) and program.waiting:
+            lost.append(1)
+            raise CaptureTimeout("no frame from the capture")
+        return read_video(self, frame)
+    monkeypatch.setattr(ScreenChannel, "read_video", flaky)
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=5, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    led_off = "the TR LED is off (operator)"
+    assert [r["reason"] for r in rows] == [led_off, EPC_ENDED, led_off, led_off,
+                                           "pass 1: Miscompare at $0010: Exp $04, Rd $00"]
+    assert [r["failed_step"] for r in rows] == ["External Ports"] * 4 + ["Expansion Port"]
+    assert [(r["led_ethernet"], r["led_tr"]) for r in rows[:4]] == [("y", "n"), ("", ""), ("y", "n"), ("y", "n")]
+    assert lost and all(r["c64_marked"] == "yes" for r in rows)
+
+
+def test_this_pcs_clock_is_measured_for_each_board(lab: Path, monkeypatch):  # noqa: F811
+    """The PC's offset from NTP is measured again before each board, so a
+    clock set mid-session (as the warning says to) is not corrected twice.
+    Here NTP's second answer puts the fake board's exact clock 100 s fast."""
+    offsets = [0.0, -100.0]
+    monkeypatch.setattr(mfg, "ntp_offset", lambda server: offsets.pop(0))
+    profile = replace(MfgProfile.load(_profile(lab / "mfg")), ntp_server="pool.ntp.org")
+    console, out = _console()
+    bench = FakeBench(console, boards=[{"leds": ["y", "n"]}, {"leds": ["y", "n"]}])
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=2, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    assert rows[0]["reason"] == "the TR LED is off (operator)"
+    assert offsets == [] and 98 <= float(rows[1]["epc_time_delta_s"]) <= 100   # whole seconds: 0 to 2 s behind
+    assert rows[1]["reason"].endswith("s from UTC: the time fetch over Ethernet, or the RTC")
+    assert "This PC's clock is 100.0 s ahead of pool.ntp.org" in out.getvalue()

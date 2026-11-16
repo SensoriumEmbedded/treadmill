@@ -223,20 +223,25 @@ and with it the REU's size):
    and ALT. Its `Hello from TR at:` line agrees on serial and on screen, and
    is within `time_tolerance_s` (5 s) of UTC when it arrived (a new board's
    timezone setting is UTC). UTC is this PC's clock corrected by its offset
-   from `ntp_server`, measured once at the start of the session; with no
-   answer the PC's clock is used as it is, with a warning. The firmware
-   keeps only the whole seconds of its time fetch and prints whole seconds,
-   so a good board reads 0 to 2 s behind. A clock off by whole half hours
+   from `ntp_server`, measured before each board; with no answer the PC's
+   clock is used as it is, with a warning. The firmware keeps only the
+   whole seconds of its time fetch and prints whole seconds, so a good
+   board reads 0 to 2 s behind. A clock off by whole half hours
    on a board whose settings were not reset is reported as its timezone
    setting. Then the C64's bottom row asks whether the Ethernet port's
    green LED and the TR LED are on, and the operator answers Y or N on the
    C64's keyboard (`led_timeout_s`, 120 s, for each). The test's keys come
    through the KERNAL's GETIN vector, which mfg points at a stub that never
-   returns one: the test stays at its prompt, the answers wait in the
-   keyboard buffer, and no key can end the test before the external reset.
+   returns one as soon as the Hello line arrives: the test stays at its
+   prompt and the answers wait in the keyboard buffer. A key in the moment
+   before that, or the TR's MENU button, ends the test, and the step fails
+   saying so; the console asks the operator to leave the C64's keyboard
+   alone until the questions.
 4. External reset: the operator presses the C64's reset button, and the TR+
    must log `Button detected` and bring the menu back.
-5. Expansion Port: the built-in test passes `xpt_passes` times.
+5. Expansion Port: the built-in test passes `xpt_passes` times. A pass that
+   stops at its address tests, which report on screen only, fails on the
+   screen's reason as soon as its prompt shows.
 6. SD root: the card's root matches the master image's snapshot.
 7. REU: hot key 2 launches the REU checker with a 512K REU. Its text is
    yellow and green on grey, which video cannot read reliably, so the

@@ -77,6 +77,24 @@ cost or a wart with a known, small fix.
    In the PR #99 sweeps two NTSC C128s were mixed up (which one had the
    confirmed 74F245) until the registry was read by hand. Fix: add the
    registry row's notes to the station block and to `report.html`.
+27. **low** The manufacturing test can take another machine's TeensyROM as
+   the next board. `RealBench.wait_for_board` in `treadmill/mfg.py` leaves
+   out the ports present when the session starts, but drops a port from
+   that set once it leaves USB, so a bench TeensyROM that re-enumerates
+   mid-session (its machine power-cycled, or a treadmill run reflashing it)
+   comes back as a new board: mfg tests the wrong board, and its power-off
+   wait hangs. Excluding the chip ids that station files name would also
+   refuse a board under test that a station names. Fix, a choice to make:
+   remember the session's other boards by chip id rather than by port, or
+   ask the operator to confirm a chip id that was on USB at the start.
+28. **low** A lost frame during an Expansion Port pass fails a good board.
+   `Ctx.video_until` in `treadmill/mfg.py`, which waits for a pass's prompt
+   after its serial lines, calls `read_video()` unguarded: a
+   `CaptureTimeout` while the C64's half runs fails the step with the
+   capture's message, and the fail marking then sends DMA during the test
+   of the bus. The External Ports wait and the early-fail watch read
+   through `Ctx.video_text()`, which carries on. Fix: the same in
+   `video_until`.
 
 ## Video
 

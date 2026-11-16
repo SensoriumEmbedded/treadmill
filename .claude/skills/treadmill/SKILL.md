@@ -67,7 +67,10 @@ Globals: `session`, `station`, `board`, `link`, `screen`, `menu`, `keys`,
 `dbg`, `video`, `firmware`, `artifacts` (a folder to write into), `run_dir`,
 `log`. The board is at the menu when the script starts (not with `--as-is`).
 Set `result` to what the caller should get back. `scripts/example.py` is the
-pattern; keep one-off scripts under `scripts/`, dated in their docstring.
+pattern. Name a one-off script `scripts/YYYY-MM-DD-<topic>.py`, the day it
+first ran on a bench, with the same date in its docstring's first paragraph;
+README's "Adding a test or a script" has the rest (what the docstring says,
+putting things back, when a script becomes a test).
 
 ## Self-tests and the fake board
 

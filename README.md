@@ -19,7 +19,8 @@ treadmill/            the package: station model, link, observation, firmware, d
   mfg.py              the manufacturing test of new TR+ boards, one after another
 tests/                the hardware tests, one concern per file, selected by markers and --station
 selftest/             tests that need no hardware (fake board, rendered frames, config)
-scripts/              one-off investigation scripts for `treadmill exec`; kept, never part of the suite
+scripts/              dated one-off investigation scripts for `treadmill exec`; kept, never part of the suite
+spikes/               the Phase 1 feasibility probes and their results; a record, nothing new goes here
 data/                 rigs, stations, calibrations, glyph banks, goldens, SD fixtures (private parts are git-ignored)
 reports/              one folder per run: run.json, report.html, one folder per test
 ```
@@ -75,7 +76,8 @@ Files that name your own boards and machines stay out of git.
 `tests/` holds one concern per file: identity and reset (`smoke/`), files to
 the card and back (`transfer/`), a launched program (`launch/`), the menu's
 item-type marks and navigation (`menu/`), a debug build's timing knobs
-(`debug/`), and IO handlers the host drives over USB (`handlers/`: TR BASIC's
+(`debug/`), a timing knob's margin (`sweep/`), and IO handlers the host
+drives over USB (`handlers/`: TR BASIC's
 TPUT and TGET, which needs `--attended` until the keyboard board can type a
 SYS, and an ASID stream the C64's reads are logged against, which needs
 `pip install -e .[midi]`). A test names what it needs
@@ -84,11 +86,32 @@ build lacks it; `--caps-mask dma,keys_kernal` takes capabilities away to prove
 the plain-TR tier on a richer station, and `--fw-defines` names the defines a
 build flashed by other means carries. Screen goldens live in `tests/golden/`
 (`--golden-dir` for another set); the SD fixtures a test needs are put under
-`/treadmill` on the card by the run itself.
+`/treadmill` on the card by the run itself. These seven folders are the
+areas; a new one gets a line here when its first test lands.
 
-### Adding a test
+### Which tests run where
 
-A test is a function in a file under `tests/` that takes the fixtures it
+The whole suite runs on every station before a firmware release, and on a
+firmware PR that touches a pinned path: about 5 minutes a station, 12 with
+the ASID test, and the skips cover what a station lacks. Reset, launch,
+menu, sweep and handler tests matter on each machine class (C64 and C128,
+PAL and NTSC), since detection and timing differ between them; the transfer
+tests and the debug listing need one station per TR kind. There is no
+plain-TR station yet, so the plain-TR tier is proven with `--caps-mask`.
+
+### Adding a test or a script
+
+Decide first where the check belongs:
+
+- A string, a cut, a layout or a parser: the firmware's own host tests
+  (`Source/Teensy/tests/`). The bench would only repeat them.
+- A question for the bench, or a PR to try once: a script in `scripts/`.
+- A check only hardware can make (bus timing, DMA, video, one machine's
+  variance, a known issue coming back), needed again on each firmware change
+  or on more than one machine: a test in `tests/`.
+- TReadmill's own logic: `selftest/`.
+
+**A test** is a function in a file under `tests/` that takes the fixtures it
 needs: `at_menu` (the board, at the menu before and after; the invariants
 after it: no crash report, no boot banner, no unknown command), `link` (the
 remote protocol), `screen` (the screen through the channel policy: video
@@ -98,10 +121,48 @@ debug letters, gated on the build's defines), `programs("hello")` (an
 assembled C64 program, or a raw payload a test writes in by DMA), `sd_card`
 and `sd_fixtures` (the generated type set, on the card), `goldens` (`goldens.check(read, "menu/root")`), `artifacts` (the
 test's folder). Mark what it needs; declare its length with
-`@pytest.mark.duration(minutes)` so `--estimate` can add it up. The fake
-board runs the whole tree offline (`selftest/test_hw_tests_offline.py`), so
-a new test should pass or skip there before it meets a board; what the fake
-cannot show (timing, a real card, the picture) is the bench's to confirm.
+`@pytest.mark.duration(minutes)` so `--estimate` can add it up. The module
+docstring names what the test guards (a PR, a commit or a Known-Issues
+section) and the machines where that matters. The fake board runs the whole
+tree offline (`selftest/test_hw_tests_offline.py`), so a new test passes or
+skips there before it meets a board, and stays quick there: one that is slow
+on the fake (`pytest --durations`) gets a shorter fake path or skips with
+`fake_requested()`, as the ASID and TR BASIC tests do, so the self-tests stay
+near six minutes. What the fake cannot show (timing, a real card, the
+picture) is the bench's to confirm, and a test has run on a bench before it
+is committed.
+
+**A script** is `scripts/YYYY-MM-DD-<topic>.py`: the day it first ran on a
+bench, a kebab-case topic, no subfolders. The first paragraph of its
+docstring carries the same date, and the docstring gives the `treadmill
+exec` line, the firmware it needs (a ref, PR or commit, and defines), what
+the station needs (a TR+, keys, a card, video) and what `result` holds. It
+refuses early, with the reason, when the station or the build lacks
+something (`dbg.available`, `keys is None`, `station.has`); it puts back
+what it changed (knobs in a `finally`, files it posted, settings, the board
+at the menu), or its docstring names what stays; it sets `result` and
+writes only under `artifacts`. `selftest/test_scripts.py` checks the name,
+the date, that the script compiles and that its `treadmill` imports
+resolve; scripts are not run against the fake.
+
+**A script becomes a test** when only hardware shows the failure, it has
+caught one on some firmware or measures a margin a change could eat, it
+needs to run again on each firmware change or on several machines, and its
+verdict is a number or an exact compare (one that needs eyes or ears stays a
+script, or becomes an attended test). A BACKLOG item proposes it. The test
+uses fixtures and the public library API only. On the bench it passes on the
+firmware that fixed the issue and fails on a build with the defect, where one
+exists, on one station per machine class its docstring claims. The commit
+names the stations by model and registry id and the firmware that passed and
+failed. The script stays as the record.
+
+**Upkeep.** When a library change breaks a script's import, the same commit
+fixes the script if its question is still open, or deletes it if it was
+promoted or answered. Goldens are refreshed from a bench read, never by
+hand. A flaky test is not retried or quietly skipped: a machine's variance
+becomes a rate with a threshold, a harness fault a BACKLOG item. No port
+name, host, IP address, chip id or pet name goes into a committed file
+(`selftest/test_scripts.py` checks for ports and addresses).
 
 ## Special builds
 

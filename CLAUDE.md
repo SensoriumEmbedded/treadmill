@@ -11,6 +11,9 @@ and, on a TR+, DMA readback. Start with [README.md](README.md).
 - **Driving a station** is the [`treadmill`](.claude/skills/treadmill/SKILL.md)
   skill: which command fits which ask, the `--json` and exit-code contract,
   how to read a run.
+- **Adding a test or a script**: read README's "Adding a test or a script"
+  first: where a check belongs, how a script is named and dated, and when a
+  script becomes a test.
 - **The backlog** is [BACKLOG.md](BACKLOG.md); its header has the editing
   rules. "The backlog" in conversation means its open items. Follow-ups
   from a review or a merge go there, not into the firmware project's lists.

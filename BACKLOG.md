@@ -42,7 +42,7 @@ cost or a wart with a known, small fix.
    firmware has no USB, such as a TR+ running an extension host (SIDHost).
    `Harness.__enter__` in `treadmill/driver.py` always goes through
    `Board.open`, which opens the serial link, so `exec --as-is` fails with
-   "COM94: Cannot configure port" before the script runs; and `keys_for()` in
+   "<port>: Cannot configure port" before the script runs; and `keys_for()` in
    `treadmill/session.py` has only `KernalKeys`, DMA through that same link.
    Pressing X to leave the host, or reading the screen by video, needs a
    link-less open (video and keys only) and the C64-USBKeyboard backend
@@ -193,3 +193,29 @@ cost or a wart with a known, small fix.
    dimensional. Fix: a setup by data hold grid sweep with a heatmap in
    `report.html`, the chart an auto-calibration would choose its point
    from.
+24. **medium** MinimalBoot's read errors under USB traffic have no
+   regression test. `scripts/2026-11-15-minimalboot-usb.py` hands an
+   EasyFlash image with a bank-64 chip to MinimalBoot, asks it for its
+   version as fast as it answers and reads idread's counters by video: on
+   the Kawari C64 (registry 002b), NTSC, main before PR #103 gave 2,963
+   wrong ROM reads of 2.2 million and 1,320 wrong IO2 reads, the PR none.
+   Nothing reruns it when the firmware changes. Fix:
+   `tests/launch/test_minimalboot_handoff.py` with 30 s of traffic, the
+   script's `board._reconnect()` made public, a fake path or a skip on the
+   fake, and a bench run that fails on the commit before PR #103 and passes
+   after it.
+25. **medium** The hardware tests have passed on one machine only. Every
+   passing run of `tests/` is on the Kawari C64 (registry 002b); the C128
+   runs were of a test since dropped, and all the multi-machine numbers
+   (the PR #99 sweeps on six stations) came from scripts. Detection and
+   timing differ between C64 and C128 and between PAL and NTSC, which is
+   what the reset, launch, menu, sweep and handler tests are there for.
+   Fix: run the whole suite once on every station (README, "Which tests
+   run where"), and give each station a `[margins]` floor for `nS_PLAprop`
+   from its own sweep.
+26. **medium, with item 20** The DMA setup margin has no regression test.
+   `tests/sweep/test_tp_margin.py` guards `nS_PLAprop`, but nothing guards
+   `nS_DMASetup` once PR #99's sweeps are done. Fix, once `sweep e`
+   exists: `tests/sweep/test_dma_setup_margin.py`, the defaults clean on
+   the `z` and REU probes and a per-station `[margins]` floor, on every
+   TR+ machine class (factory NTSC C128s drift the most, item 20).

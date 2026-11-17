@@ -19,7 +19,7 @@ from treadmill.c64.screen import (
     VIC_MEMPTR, codes_for_text,
 )
 from treadmill.link.banner import parse_banner
-from treadmill.mfg import IGETIN, LED_ROW
+from treadmill.mfg import IGETIN, JIFFY_CLOCK, LED_ROW
 from treadmill.link.protocol import (
     ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, FAIL, FW_CHECK,
     FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, GOOD_SID, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
@@ -98,6 +98,7 @@ class FakeBoard:
     booting_for: int = 0
     startup_sid: bool = False            # the menu's startup SID, loaded partway through a boot, still to report
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
+    flooding: bool = False               # a line printed in a loop (flood())
     menu_draws_by_item: bool = False     # FakeMenu.draw_by_item from the first redraw on
     menu: object = field(default=None, repr=False)
     # The bus timing model: the firmware samples the select lines at max(nS_PLAprop, nS_RWnReady),
@@ -211,9 +212,13 @@ class FakeBoard:
         ``faults["leds"]`` says (Y to both by default); past its end, nothing."""
         self.led_answers = list(self.faults.get("leds", ["y", "y"]))
 
-    def return_to_menu(self) -> None:
-        """What BtnPressed does in loop(): the menu's handler back, the C64 reset."""
-        self.say("Button detected\nLoading IO handler: TeensyROM\nResetting C64\n")
+    def return_to_menu(self, sensed: bool = True) -> None:
+        """What BtnPressed does in loop(): the menu's handler back, the C64
+        reset. Not ``sensed``: the C64 reset by its own button with the TR+
+        none the wiser, so nothing on serial."""
+        if sensed:
+            self.say("Button detected\nLoading IO handler: TeensyROM\nResetting C64\n")
+        self.flooding = False
         with self.lock:                  # a program drawing from its own thread stops before the menu shows
             self.program = None
             self.busy = False
@@ -243,9 +248,20 @@ class FakeBoard:
                 self.buttons_pending = True
 
     def external_reset(self) -> None:
-        """A reset the board did not make: sensed unless the fault says not."""
-        if self.faults.get("reset_sense", True):
-            self.return_to_menu()
+        """A reset the board did not make: sensed unless the fault says not.
+        The C64 resets either way, so its screen goes."""
+        self.return_to_menu(sensed=self.faults.get("reset_sense", True))
+
+    def flood(self, line: str) -> None:
+        """The firmware printing ``line`` in a loop, as PollingHndlr does for a
+        status the C64 keeps writing, until the C64 is reset or powered off."""
+        self.flooding = True
+
+        def run():
+            while self.flooding and self.powered:
+                self.say(line)
+                time.sleep(0.003)
+        threading.Thread(target=run, name="fake-board-flood", daemon=True).start()
 
     def power_off(self) -> None:
         self.powered = False
@@ -428,6 +444,9 @@ class FakeBoard:
             self.type_keys(keys)
         if address == VIC_MEMPTR and self.program is None:
             self.menu.drawn_further()
+        if address <= JIFFY_CLOCK + 2 and address + length > JIFFY_CLOCK and not self.faults.get("jiffy_stopped"):
+            ticks = int(time.monotonic() * 60) & 0xFFFFFF          # the KERNAL's IRQ, 60 a second
+            self.memory[JIFFY_CLOCK:JIFFY_CLOCK + 3] = ticks.to_bytes(3, "big")
         self._reply(end, ACK)
         end.write(bytes(self.memory[address:address + length]))
 

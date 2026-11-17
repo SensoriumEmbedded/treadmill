@@ -79,6 +79,9 @@ class ExtPorts:
                                                                 "Press any key to return"]
             b.show(rows, reverse={0, 2, rows.index(" External Port Check Failed!")})
             return
+        if b.faults.get("epc_hang"):                # stuck before its button prompt, with no fail line
+            b.show(self.head(), reverse={0, 2})
+            return
         b.show(self.head() + EPC_BUTTONS[:2], reverse={0, 2})
         with b.lock:
             if b.buttons_pending:
@@ -131,8 +134,17 @@ class ExpPort:
                     " Expansion Port Test Failed! "] + XPT_PROMPT
             self.board.show(rows, reverse={0, rows.index(" Expansion Port Test Failed! ")})
             return
+        if self.board.faults.get("xpt_sout_pass") == self.passes:
+            self.board.say("\nSout Timeout!\n")      # the C64 stopped taking messages before the patterns
+            return
         for label, size in XPT_PATTERNS:
             self.board.say(f"{label} @ $c000: 0 bad of {size} bytes  CLEAN\n")
+        if self.board.faults.get("xpt_flood_pass") == self.passes:
+            # Board 5 on the bench: after the TR+'s part the C64 printed its last message, " OK", over and
+            # over and wrote its message reply ($C3) to the status register each time.
+            self.board.show([" OK" * 13] * 25)
+            self.board.flood("?Stat: c3\n")
+            return
         rows = ["TeensyROM+ v0.9 Test"] + XPT_TEENSY + XPT_SCREEN_PATTERNS + XPT_C64 + [
             " Expansion Port Test Passed. "] + XPT_PROMPT
         self.board.show(rows, reverse={0, rows.index(" Expansion Port Test Passed. ")})

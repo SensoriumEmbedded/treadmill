@@ -252,12 +252,22 @@ and with it the REU's size):
    prompt and the answers wait in the keyboard buffer. A key in the moment
    before that, or the TR's MENU button, ends the test, and the step fails
    saying so; the console asks the operator to leave the C64's keyboard
-   alone until the questions.
+   alone until the questions. The board's part, up to the button prompt,
+   gets 45 s (its slowest fail path, two DHCP timeouts, ends in a fail line
+   by then), counted while video reads frames that show no prompt; with
+   every frame lost, `epc_timeout_s` is added. `epc_timeout_s` (180 s)
+   starts when video shows the prompt. A C64 whose jiffy clock stands
+   still for 1 s under the LED questions fails then.
 4. External reset: the operator presses the C64's reset button, and the TR+
-   must log `Button detected` and bring the menu back.
+   must log `Button detected` and bring the menu back. The C64 resets
+   whether the TR+ senses it or not: its screen changing with no `Button
+   detected` 2 s later fails the step then, not at `reset_timeout_s`.
 5. Expansion Port: the built-in test passes `xpt_passes` times. A pass that
    stops at its address tests, which report on screen only, fails on the
-   screen's reason as soon as its prompt shows.
+   screen's reason as soon as its prompt shows. A C64 that stops mid-test
+   fails the pass as serial shows it: the TR+'s `Sout Timeout!` (a message
+   the C64 did not take), or one line 50 times in a row (a loop, such as
+   `?Stat: c3` from a C64 writing a status the TR+ does not know).
 6. SD root: the card's root matches the master image's snapshot.
 7. REU: hot key 2 launches the REU checker with a 512K REU. Its text is
    yellow and green on grey, which video cannot read reliably, so the

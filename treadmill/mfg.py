@@ -101,6 +101,8 @@ NO_KEY = bytes([0xA9, 0x00, 0x18, 0x60])                           # LDA #0; CLC
 EPC_ENDED = ("a key on the C64, or the TR's MENU button, ended the External Ports test before its LED "
              "questions were answered")
 YES_KEYS, NO_KEYS = (0x59, 0xD9), (0x4E, 0xCE)                     # Y and N, either shift
+JIFFY_CLOCK = 0x00A0     # TIME, $A0-$A2: the KERNAL's IRQ adds one 60 times a second
+JIFFY_STILL_S = 1.0
 LED_ROW = SCREEN_ROWS - 1        # free: the prompt's return leaves the cursor on a blank line below it
 LED_QUESTIONS = (("led_ethernet", "Ethernet port's green LED on?", "the Ethernet green LED"),
                  ("led_tr", "TR LED (by the MENU button) on?", "the TR LED"))
@@ -126,6 +128,13 @@ LAUNCHED = re.compile(r"^F: (.+?)[ \t\r]*(?=\n)", re.M)
 REU_HANDLER = re.compile(r"Loading IO handler: (\d+)KB REU")
 REU_SIZE = re.compile(r"REU Size: (\d+)K bytes")
 EEPROM_DEFAULTS = "--> Setting EEPROM to defaults"
+# SendMsgSerialStringBuf (FileParsers.ino) prints this when the C64 has not taken a message in 3 s; it is
+# in no passing board's serial log.
+SOUT_TIMEOUT = "Sout Timeout!"
+# One serial line this many times in a row is a loop: a C64 writing a status the TR+ does not know made it
+# print "?Stat: c3" 26,001 times; a passing board's whole log repeats no line more than 16 times.
+FLOOD_LINES = 50
+FLOOD_TAIL_CHARS = 81 * (FLOOD_LINES + 1)
 
 # -- timing --------------------------------------------------------------------------------
 
@@ -144,6 +153,8 @@ EPC_VERDICT_S = 8.0       # the Hello line to the verdict: ExtPortCheck's last m
 # fail path (two 15 s DHCP timeouts, the 2.5 s NTP wait, two SD starts, the 1.5 s USB wait) is 40 s.
 EPC_PROMPT_S = 45.0
 RESET_FOLLOW_S = 5.0      # 'Button detected' to 'Resetting C64': the same serial chunk every time
+RESET_SENSE_S = 2.0       # the C64's screen gone after a reset to 'Button detected': the same moment
+SCREEN_CHANGE_READS = 3
 MENU_BACK_S = 10.0        # the menu ready after a reset or a test's return: 2.33 s at most
 XPT_PROMPT_S = 15.0       # a pass's pattern lines to its prompt on video: 6.7 s at most
 REU_LAUNCH_S = 5.0        # hot key 2 to the launch, handler and size lines, all one chunk: 0.31 s at most
@@ -809,6 +820,21 @@ def xpt_serial(text: str) -> tuple[list[tuple[str, str]], str | None]:
     return lines, stall.group(1).strip() if stall else None
 
 
+def c64_stopped(text: str) -> str | None:
+    """Why the C64 has stopped following its test, from what the TR+ sent
+    since the test began, or None: the TR+ gave up on a message the C64
+    did not take, or one line repeats like a loop. Split on newlines only:
+    the record also holds DMA screen dumps, whose codes include the bytes
+    str.splitlines() treats as line ends."""
+    if SOUT_TIMEOUT in text:
+        return f"the C64 stopped taking the TR+'s messages (serial: {SOUT_TIMEOUT!r})"
+    lines = text[-FLOOD_TAIL_CHARS:].split("\n")[:-1][-FLOOD_LINES:]     # the last one may be unfinished
+    first = lines[0].strip() if lines else ""
+    if len(lines) == FLOOD_LINES and first.isprintable() and first and all(ln.strip() == first for ln in lines):
+        return f"serial repeated {first!r} {FLOOD_LINES} times in a row"
+    return None
+
+
 def xpt_reason(rows: list[str]) -> str:
     for row in rows:
         stripped = row.strip()
@@ -989,16 +1015,21 @@ class Ctx:
         except TreadmillError:
             return None
 
-    def video_until(self, predicate: Callable[[list[str]], bool], timeout: float) -> ScreenRead | None:
+    def video_until(self, predicate: Callable[[list[str]], bool], timeout: float,
+                    stop: Callable[[], str | None] | None = None) -> ScreenRead | None:
         """The first of two video reads in a row that satisfy ``predicate``,
         or None when ``timeout`` passes first: a wait that sends nothing to
         the board. A lost or unreadable frame counts as not satisfying it, as
         in ``video_text``: failing there would mark the screen, by DMA, in
-        the middle of the Expansion Port test."""
+        the middle of the Expansion Port test. ``stop`` gives a reason to end
+        the wait as a failure, or None."""
         screen = self.screen
         deadline = time.monotonic() + timeout
         run = 0
         while time.monotonic() < deadline:
+            reason = stop() if stop else None
+            if reason:
+                raise StepFailed(reason)
             try:
                 read = screen.read_video()
             except TreadmillError:
@@ -1068,34 +1099,52 @@ def launch_from_menu(c: Ctx, path: str) -> None:
 
 def step_external_ports(c: Ctx) -> str:
     """The board answers nothing while it waits for the buttons, so the wait
-    sends nothing: it watches serial for the line sent after the buttons,
-    and video for a fail the test printed before reaching them. The LED
-    questions go on the C64's bottom row once the test waits for its key."""
+    sends nothing: it watches serial for the line sent after the buttons and
+    for a C64 that stopped, and video for the button prompt and for a fail
+    the test printed before reaching it. The board's part gets EPC_PROMPT_S,
+    counted only while video reads frames that show no prompt: with every
+    frame lost, the operator's time is added, so a capture's trouble does
+    not fail a board. The operator's epc_timeout_s starts at the prompt.
+    The LED questions go on the C64's bottom row once the test waits for
+    its key."""
     mark = c.mark()
     with c.timed("epc_launch"):
         launch_from_menu(c, EPC_PATH)
     c.bench.do(BUTTONS)
     launched = time.monotonic()
-    deadline = launched + c.profile.epc_timeout_s
+    prompted = None if c.video.ok else launched
+    video_read = False
     hello, failed_reads, fetch_failed = None, 0, None
     while True:
-        hello = HELLO.search(c.serial_since(mark))
+        serial = c.serial_since(mark)
+        hello = HELLO.search(serial)
         if hello:
             c.waited("epc_hello", launched)
             break
         if c.link.stream.ended:
             raise StepFailed("the board left USB during the External Ports test", markable=False)
+        stopped = c64_stopped(serial)
+        if stopped:
+            raise StepFailed(stopped, markable=False)
         if c.video.ok:
-            text = c.video_text() or ""
-            if EPC_BUTTON_PROMPT in text and "epc_prompt" not in c.record.waits:
+            read = c.video_text()
+            video_read = video_read or read is not None
+            text = read or ""
+            if EPC_BUTTON_PROMPT in text and prompted is None:
+                prompted = time.monotonic()
                 c.waited("epc_prompt", launched)
             fetch_failed = fetch_failed or next((line for line in TIME_FETCH_FAILED if line in text), None)
             failed_reads = failed_reads + 1 if EPC_FAILED in text else 0
             if failed_reads >= VIDEO_SAME_READS:
                 break
-        if time.monotonic() >= deadline:
-            raise StepFailed(f"no 'Hello from TR at:' line within {c.profile.epc_timeout_s:g} s: a button "
-                             "was not detected, or the test stopped before the buttons", markable=False)
+        now = time.monotonic()
+        board_part = EPC_PROMPT_S if video_read else EPC_PROMPT_S + c.profile.epc_timeout_s
+        if prompted is None and now - launched >= board_part:
+            raise StepFailed(f"the External Ports test showed no button prompt and no fail line within "
+                             f"{board_part:g} s", markable=False)
+        if prompted is not None and now - prompted >= c.profile.epc_timeout_s:
+            raise StepFailed(f"no 'Hello from TR at:' line within {c.profile.epc_timeout_s:g} s of the button "
+                             "prompt: a button was not detected", markable=False)
         time.sleep(OPERATOR_POLL_S)
 
     def ended() -> bool:
@@ -1163,12 +1212,21 @@ def ask_on_c64(c: Ctx, row: int, charset: str, question: str, ended: Callable[[]
     address ``row``; None when neither comes within the profile's
     ``led_timeout_s``. The buffer is emptied once the question is on screen,
     so keys typed before it showed, and any key but Y and N, do not count.
-    ``ended`` says the test has gone back to the menu."""
+    ``ended`` says the test has gone back to the menu. Each poll reads the
+    jiffy clock with the key count: the KERNAL's IRQ ticks the one and fills
+    the other, so a clock standing still means no answer can come."""
     c.link.write_memory(row, bytes(b | REVERSE_VIDEO for b in screen_codes(f" {question} Y/N", charset)))
     c.link.write_memory(KEYCOUNT, b"\0")
     deadline = time.monotonic() + c.profile.led_timeout_s
+    jiffies, still_since = None, time.monotonic()
     while True:
-        count = c.link.read_memory(KEYCOUNT, 1)[0]
+        page = c.link.read_memory(JIFFY_CLOCK, KEYCOUNT - JIFFY_CLOCK + 1)
+        count, now = page[-1], time.monotonic()
+        if page[:3] != jiffies:
+            jiffies, still_since = page[:3], now
+        elif now - still_since >= JIFFY_STILL_S:
+            raise StepFailed(f"the C64 stopped during the LED questions: its jiffy clock stood still for "
+                             f"{JIFFY_STILL_S:g} s")
         if count:
             keys = c.link.read_memory(KEYBUF, count)
             c.link.write_memory(KEYCOUNT, b"\0")
@@ -1182,12 +1240,60 @@ def ask_on_c64(c: Ctx, row: int, charset: str, question: str, ended: Callable[[]
         time.sleep(OPERATOR_POLL_S)
 
 
+def rows_differ(a: str, b: str) -> int:
+    return sum(x != y for x, y in zip(a.split("\n"), b.split("\n")))
+
+
+def settled_video_text(c: Ctx, tries: int = 5) -> str | None:
+    """The screen on two video reads VIDEO_POLL_S apart that differ in one
+    row at most (the clock's), or None: a frame misread once is no screen to
+    measure a change against."""
+    previous = None
+    for _ in range(tries):
+        text = c.video_text()
+        if text is not None and previous is not None and rows_differ(text, previous) <= 1:
+            return text
+        previous = text
+        time.sleep(VIDEO_POLL_S)
+    return None
+
+
+def wait_reset_sensed(c: Ctx, mark: int, before: str | None) -> None:
+    """Until the TR+ logs 'Button detected' after the operator's reset. The
+    C64 resets whether the TR+ senses it or not, and its screen shows it: the
+    External Ports result (``before``) goes. Most rows changing on
+    SCREEN_CHANGE_READS video reads in a row with no 'Button detected'
+    RESET_SENSE_S later is the TR+ missing the reset, failed then rather than
+    at the operator's limit; the screen's own clock changes one row."""
+    deadline = time.monotonic() + c.profile.reset_timeout_s
+    changed, changed_at = 0, None
+    while True:
+        if "Button detected" in c.serial_since(mark):
+            return
+        if c.link.stream.ended:
+            raise StepFailed("the board left USB while waiting for the external reset", markable=False)
+        now = time.monotonic()
+        if before is not None:
+            text = c.video_text()
+            if text is not None:
+                changed = changed + 1 if rows_differ(text, before) > SCREEN_ROWS // 2 else 0
+            if changed >= SCREEN_CHANGE_READS and changed_at is None:
+                changed_at = now
+        if changed_at is not None and now - changed_at >= RESET_SENSE_S:
+            raise StepFailed("the C64 reset (its screen changed), but the TR+ did not sense it: no 'Button "
+                             "detected' on serial")
+        if now >= deadline:
+            raise StepFailed(f"no 'Button detected' on serial within {c.profile.reset_timeout_s:g} s: the "
+                             "TR+ did not sense the reset")
+        time.sleep(OPERATOR_POLL_S)
+
+
 def step_external_reset(c: Ctx) -> str:
     mark = c.mark()
+    before = settled_video_text(c) if c.video.ok else None      # before the operator is asked
     c.reset.apply()
     with c.timed("reset_press"):
-        c.wait_serial(mark, lambda t: "Button detected" in t, c.profile.reset_timeout_s,
-                      "'Button detected' on serial: the TR+ did not sense the reset")
+        wait_reset_sensed(c, mark, before)
     with c.timed("reset_follow"):
         c.wait_serial(mark, lambda t: "Resetting C64" in t, RESET_FOLLOW_S, "'Resetting C64' after the reset")
     try:
@@ -1244,13 +1350,21 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
     start = time.monotonic()
     deadline = start + timeout
     early_reads = 0
+
+    def stopped() -> str | None:
+        reason = c64_stopped(c.serial_since(mark))
+        return reason and f"pass {n}: {reason}"
     while True:
-        lines, stall = xpt_serial(c.serial_since(mark))
+        serial = c.serial_since(mark)
+        lines, stall = xpt_serial(serial)
         if stall or len(lines) >= PATTERNS_PER_PASS or any(v != "CLEAN" for _, v in lines):
             c.waited(f"xpt{n}_lines", start)
             break
         if c.link.stream.ended:
             raise StepFailed(f"the board left USB while waiting for pass {n}'s DMA pattern lines", markable=False)
+        reason = stopped()
+        if reason:
+            raise StepFailed(reason)
         if c.video.ok:
             text = c.video_text() or ""
             early_reads = early_reads + 1 if XPT_PROMPT in text and XPT_PASSED not in text else 0
@@ -1261,7 +1375,7 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
         time.sleep(SERIAL_POLL_S)
     with c.timed(f"xpt{n}_prompt"):
         if c.video.ok:
-            c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), XPT_PROMPT_S)
+            c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), XPT_PROMPT_S, stopped)
         else:
             time.sleep(NO_VIDEO_SETTLE_S)
     return lines, stall

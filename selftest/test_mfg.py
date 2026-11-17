@@ -646,3 +646,33 @@ def test_a_failed_time_fetch_is_named_in_the_clock_failure(lab: Path):  # noqa: 
     row = _rows(profile.log)[0]
     assert row["failed_step"] == "External Ports" and row["reason"].startswith(
         "the time fetch over Ethernet failed (the screen showed 'NTP Response timeout!'): the board's clock is +17")
+
+
+def test_a_c64_that_stops_fails_its_board_at_once(lab: Path, monkeypatch):  # noqa: F811
+    """What serial and video show of a C64 that stopped, each ending its
+    step then rather than at a timeout: the TR+ giving up on a message
+    ('Sout Timeout!'), a line printed in a loop (board 5's '?Stat: c3'), the
+    External Ports test stuck before its prompt, the C64 resetting with no
+    'Button detected', and the jiffy clock standing still under the LED
+    questions."""
+    monkeypatch.setattr(mfg, "EPC_PROMPT_S", 2.0)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{"xpt_sout_pass": 2}, {"xpt_flood_pass": 3}, {"epc_hang": True},
+                                       {"reset_sense": False}, {"jiffy_stopped": True, "leds": []}])
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=5, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    assert [(r["failed_step"], r["reason"]) for r in rows] == [
+        ("Expansion Port", "pass 2: the C64 stopped taking the TR+'s messages (serial: 'Sout Timeout!')"),
+        ("Expansion Port", "pass 3: serial repeated '?Stat: c3' 50 times in a row"),
+        ("External Ports", "the External Ports test showed no button prompt and no fail line within 2 s"),
+        ("External reset", "the C64 reset (its screen changed), but the TR+ did not sense it: no 'Button "
+                           "detected' on serial"),
+        ("External Ports", "the C64 stopped during the LED questions: its jiffy clock stood still for 1 s")]
+    seconds = [json.loads((Path(r["evidence"]) / "result.json").read_text(encoding="utf-8"))["steps"] for r in rows]
+    assert seconds[1]["expansion_port"]["seconds"] < 10 and seconds[3]["external_reset"]["seconds"] < 10

@@ -67,7 +67,9 @@ class FakeBench:
         self.uid = str(FIRST_UID + self.count)
         banner = faults.pop("banner", BANNER).replace("19277260", self.uid)
         listing = faults.pop("sd_root", SD_ROOT)
-        self.fake, self.stream = start_fake_board(banner=banner, faults=faults, listing=list(listing))
+        by_item = faults.pop("menu_draws_by_item", False)
+        self.fake, self.stream = start_fake_board(banner=banner, faults=faults, listing=list(listing),
+                                                  menu_draws_by_item=by_item)
         self.port = f"FAKE{self.count}"
 
     def wait_for_board(self) -> tuple[str, str]:

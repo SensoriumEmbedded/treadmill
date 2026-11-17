@@ -106,6 +106,11 @@ def card_entries(board, path: str) -> list[Entry]:
 class FakeMenu:
     def __init__(self, board):
         self.board = board
+        # The real menu draws a listing an item at a time, its legend first and the clock last, and a
+        # read with no drain before it lands in the middle. Set, each screen read after a redraw sees
+        # one more item, the way the bench's reads did.
+        self.draw_by_item = False
+        self._drawing: list[bytes] = []
         self.reset()
 
     def reset(self) -> None:
@@ -143,16 +148,34 @@ class FakeMenu:
         return render_listing(self.source, shown_path(self.path), entries, (self.page, self.pages()), clock=CLOCK, banner=banner)
 
     def render(self) -> None:
-        codes = bytearray()
-        for row in self.rows():
-            codes += codes_for_text(row)
-        for i in range(SCREEN_COLUMNS):
-            codes[i] |= REVERSE_VIDEO
+        codes = self._codes(self.rows())
         if not self.info_page:
             row = FIRST_ITEM_ROW + self.cursor
             for i in range(row * SCREEN_COLUMNS, (row + 1) * SCREEN_COLUMNS):
                 codes[i] |= REVERSE_VIDEO
-        self.board.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = codes[:SCREEN_BYTES]
+        frames = [codes]
+        if self.draw_by_item and not self.info_page:
+            entries = self.page_entries()
+            frames = [self._codes(render_listing(self.source, shown_path(self.path), entries[:k],
+                                                 (self.page, self.pages()), clock="",
+                                                 banner=self.board.version_string()))
+                      for k in range(len(entries))] + frames
+        self._drawing = frames[1:]
+        self.board.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = frames[0][:SCREEN_BYTES]
+
+    def drawn_further(self) -> None:
+        """A screen read came: the menu has drawn one more item since the last."""
+        if self._drawing:
+            self.board.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = self._drawing.pop(0)[:SCREEN_BYTES]
+
+    @staticmethod
+    def _codes(rows: list[str]) -> bytearray:
+        codes = bytearray()
+        for row in rows:
+            codes += codes_for_text(row)
+        for i in range(SCREEN_COLUMNS):
+            codes[i] |= REVERSE_VIDEO
+        return codes
 
     # -- keys ----------------------------------------------------------------------
 

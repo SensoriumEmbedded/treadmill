@@ -98,6 +98,7 @@ class FakeBoard:
     booting_for: int = 0
     startup_sid: bool = False            # the menu's startup SID, loaded partway through a boot, still to report
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
+    menu_draws_by_item: bool = False     # FakeMenu.draw_by_item from the first redraw on
     menu: object = field(default=None, repr=False)
     # The bus timing model: the firmware samples the select lines at max(nS_PLAprop, nS_RWnReady),
     # both counted from the cycle's start, and a path's reads come back right only while that point
@@ -126,6 +127,7 @@ class FakeBoard:
         self.cold_start()
         self.unblocked.set()
         self.menu = FakeMenu(self)       # draws the Teensy Mem root into screen RAM
+        self.menu.draw_by_item = self.menu_draws_by_item
 
     def version_string(self) -> str:
         return parse_banner(self.banner).version or "TeensyROM"
@@ -424,6 +426,8 @@ class FakeBoard:
         if address == VIC_MEMPTR and self.key_on_screen_read:
             keys, self.key_on_screen_read = self.key_on_screen_read, ""
             self.type_keys(keys)
+        if address == VIC_MEMPTR and self.program is None:
+            self.menu.drawn_further()
         self._reply(end, ACK)
         end.write(bytes(self.memory[address:address + length]))
 

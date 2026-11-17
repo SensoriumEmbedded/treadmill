@@ -528,7 +528,9 @@ def test_a_passing_board_waits_only_for_stray_bytes(lab: Path, monkeypatch):  # 
     """The link's fixed drain before every command was about a third of a
     passing board's time. With drain_when_pending a command waits only when
     the board sent something unasked first: the Hello line, the lines after a
-    reset, a pass's pattern lines, the REU launch."""
+    reset, a pass's pattern lines, the REU launch. The menu here draws its
+    listings an item at a time, as the bench's does, so a launch read with no
+    drain before it lands mid-draw."""
     switch: list[bool] = []          # each command's drain_when_pending
     stray: list[bytes] = []          # what each settle found waiting
     send, settle = Link._send, ByteStream.settle
@@ -545,14 +547,14 @@ def test_a_passing_board_waits_only_for_stray_bytes(lab: Path, monkeypatch):  # 
     monkeypatch.setattr(ByteStream, "settle", counted_settle)
     profile = MfgProfile.load(_profile(lab / "mfg"))
     console, _ = _console()
-    bench = FakeBench(console, boards=[{}])
+    bench = FakeBench(console, boards=[{"menu_draws_by_item": True}])
     video = bench.video_kit()
     try:
         summary = run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
                               boards=1, log=lambda m: None)
     finally:
         video.close()
-    assert summary["counts"][PASS] == 1
+    assert summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
     after = switch[switch.index(True):]           # Board.open's probe comes before the switch
     assert all(after) and len(after) > 100
     assert len(stray) == len(after) and sum(1 for stale in stray if stale) <= 10

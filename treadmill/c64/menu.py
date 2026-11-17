@@ -16,13 +16,18 @@ the top of the directory.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Callable
 
 from treadmill.c64.keys import CRSR_DOWN, CRSR_RIGHT, F1, F3, F5, HOME, RETURN, UP_ARROW, Keys
 from treadmill.c64.screen import SCREEN_COLUMNS, SCREEN_ROWS
 from treadmill.errors import TreadmillError
-from treadmill.observe.channels import DEFAULT_TIMEOUT, ScreenChannel
+from treadmill.observe.channels import DEFAULT_TIMEOUT, POLL_S, ScreenChannel
+
+# How long read() lets two reads disagree before taking the last: a listing draws in well under
+# a second, and only video's misreads keep two reads of a still screen apart.
+SETTLE_S = 2.0
 
 SOURCES = {"teensy": "Teensy Mem", "sd": "SD Card", "usb": "USB Drive"}
 SOURCE_KEYS = {"teensy": F1, "sd": F3, "usb": F5}
@@ -183,23 +188,33 @@ class MenuDriver:
         self.keys.press(bytes(codes))
 
     def read(self, exact: bool = False) -> Listing:
-        rows = self.screen.read(exact).rows()
-        listing = parse_listing(rows)
-        if listing is None:
-            raise MenuError("the screen is not the menu listing:\n" + "\n".join(rows))
-        return listing
+        """The listing on screen once two reads in a row parse the same. The
+        menu draws a listing an item at a time, its legend first, so a read
+        while it draws parses as a shorter listing. Reads that never agree,
+        as video's misreads can make, give the last one after SETTLE_S."""
+        deadline = time.monotonic() + SETTLE_S
+        previous = None
+        while True:
+            rows = self.screen.read(exact).rows()
+            listing = parse_listing(rows)
+            if listing is None:
+                raise MenuError("the screen is not the menu listing:\n" + "\n".join(rows))
+            if listing == previous or time.monotonic() >= deadline:
+                return listing
+            previous = listing
+            time.sleep(POLL_S)
 
     def wait(self, predicate: Callable[[Listing], bool] = lambda listing: True, what: str = "the menu listing",
              timeout: float | None = None, exact: bool = False) -> Listing:
-        """The first listing ``predicate`` accepts, on agreeing reads."""
-        found: list[Listing] = []
+        """The first listing ``predicate`` accepts, on two reads in a row that
+        parse the same, as ``read`` takes it."""
+        found: list[Listing | None] = []
 
         def accept(read) -> bool:
             listing = parse_listing(read.rows())
-            if listing is None or not predicate(listing):
-                return False
+            agreed = listing is not None and bool(found) and listing == found[-1]
             found.append(listing)
-            return True
+            return agreed and predicate(listing)
         self.screen.wait(accept, self.timeout if timeout is None else timeout, exact, what=what)
         return found[-1]
 

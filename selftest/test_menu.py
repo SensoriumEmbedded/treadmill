@@ -148,6 +148,20 @@ def test_driver_walks_the_fake_menu(fake):
     assert menu.up().page == (1, 1)
 
 
+def test_the_driver_waits_out_a_listing_the_menu_is_still_drawing(fake):
+    """With no drain before each read, a read lands while the menu draws a
+    listing an item at a time; on the bench one read of /TeensyROM Specific
+    had only its first row, and the launch failed with the test "not in" it."""
+    board, link = fake
+    link.drain_when_pending = True
+    board.menu.draw_by_item = True
+    menu = MenuDriver(ScreenChannel(link, None, None, None, dma_allowed=lambda: True), _Press(link))
+    menu.select_source("teensy")
+    assert menu.open("/Games").entries == tuple(GAMES)
+    listing, index = menu.find(GAMES[-1].name)
+    assert listing.entries[index] == GAMES[-1]
+    assert menu.up().entries == tuple(ROOT)
+
 def test_find_matches_a_name_with_an_underscore(fake):
     board, link = fake
     board.directories += ["/treadmill", "/treadmill/hvsc"]

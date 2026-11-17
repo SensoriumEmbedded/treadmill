@@ -127,6 +127,12 @@ def test_the_clock_problem_named():
     assert "the time fetch" in clock_problem(3600, 5, True, True)      # settings at defaults: no timezone
     assert "the time fetch" in clock_problem(600, 5, False, True)
     assert clock_problem(600, 5, False, False).endswith("; this PC's clock was not checked against NTP")
+    # The screen showed the time fetch fail: the clock was never set, so no timezone reading of it either.
+    for delta in (17455, 3601):
+        assert clock_problem(delta, 5, False, True, "NTP Response timeout!") == (
+            f"the time fetch over Ethernet failed (the screen showed 'NTP Response timeout!'): the board's clock "
+            f"is {delta:+d} s from UTC")
+    assert clock_problem(-1.8, 5, False, True, "RTC not updated") is None
 
 
 class FakeNtp:
@@ -622,3 +628,21 @@ def test_a_c64_in_the_other_standard_is_set_right_and_its_board_starts_over(lab:
     text = out.getvalue()
     assert text.count("The C64 runs PAL, and this station tests in NTSC.") == 2
     assert text.count(INSTRUCTIONS[SET_STANDARD]) == 2 and "Board 1 PASSED" in text and "FAIL" not in text
+
+
+def test_a_failed_time_fetch_is_named_in_the_clock_failure(lab: Path):  # noqa: F811
+    """The bench has no RTC battery, so a board whose time fetch over
+    Ethernet failed reads the RTC's count since power-on (00:00:14 am on the
+    bench, +17455 s). The screen says the fetch failed, and so does the reason."""
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{"time_fetch": "timeout", "clock_offset_s": 17455}])
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    row = _rows(profile.log)[0]
+    assert row["failed_step"] == "External Ports" and row["reason"].startswith(
+        "the time fetch over Ethernet failed (the screen showed 'NTP Response timeout!'): the board's clock is +17")

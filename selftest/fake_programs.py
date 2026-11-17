@@ -65,6 +65,13 @@ class ExtPorts:
         self.fail = board.faults.get("epc_fail")
         self.waiting = False
 
+    def head(self) -> list[str]:
+        """The lines above the buttons; with the time_fetch fault, the time
+        fetch's failure where SetRTCfromNet prints it, before ExtPortCheck."""
+        if self.board.faults.get("time_fetch") == "timeout":
+            return EPC_HEAD[:3] + ["NTP Response timeout!"] + EPC_HEAD[4:]
+        return EPC_HEAD
+
     def start(self) -> None:
         b = self.board
         if self.fail:
@@ -72,7 +79,7 @@ class ExtPorts:
                                                                 "Press any key to return"]
             b.show(rows, reverse={0, 2, rows.index(" External Port Check Failed!")})
             return
-        b.show(EPC_HEAD + EPC_BUTTONS[:2], reverse={0, 2})
+        b.show(self.head() + EPC_BUTTONS[:2], reverse={0, 2})
         with b.lock:
             if b.buttons_pending:
                 b.buttons_pending = False
@@ -85,8 +92,8 @@ class ExtPorts:
         self.waiting = False
         clock = hello_clock(self.board.faults.get("clock_offset_s", 0.0))
         self.board.say(f"\r\nHello from TR at: {clock}\n\r\n")
-        rows = EPC_HEAD + EPC_BUTTONS + ["Sent to USB Serial:", f"   Hello from TR at: {clock}", "",
-                                         " External Port Check Passed.", ""] + EPC_VERIFY
+        rows = self.head() + EPC_BUTTONS + ["Sent to USB Serial:", f"   Hello from TR at: {clock}", "",
+                                            " External Port Check Passed.", ""] + EPC_VERIFY
         self.board.show(rows, reverse={0, 2, rows.index(" External Port Check Passed.")})
         self.board.unblocked.set()
         key = self.board.faults.get("epc_key")

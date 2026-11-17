@@ -83,6 +83,9 @@ EPC_PASSED = "External Port Check Passed."
 EPC_FAILED = "External Port Check Failed!"
 EPC_ANY_KEY = "Press any key to return"                            # after either verdict, then a return
 EPC_BUTTON_PROMPT = "Waiting for press"                            # ExtPortCheck, before each button
+# SetRTCfromNet's lines when the time fetch fails, on the C64's screen only (StatusFunctions.c): the
+# NTP reply did not come within 2.5 s, and then, for that or a failed Ethernet start, the RTC kept its time.
+TIME_FETCH_FAILED = ("NTP Response timeout!", "RTC not updated")
 # The LED questions. The test reads keys with JSR $FFE4 (c64defs.i), so through the KERNAL's IGETIN
 # vector; pointed at a stub that always says "no key", the test stays at its prompt while the IRQ's
 # scan keeps queueing keys, and the answers are read from the buffer with no race. The stub sits in
@@ -692,13 +695,20 @@ def utc_zone(steps: int) -> str:
     return f"UTC{'-' if steps < 0 else '+'}{minutes // 60}:{minutes % 60:02d}"
 
 
-def clock_problem(delta: float, tolerance: float, fresh_eeprom: bool | None, pc_checked: bool) -> str | None:
-    """Why a board's clock fails, or None. A board whose settings were kept
+def clock_problem(delta: float, tolerance: float, fresh_eeprom: bool | None, pc_checked: bool,
+                  fetch_failed: str | None = None) -> str | None:
+    """Why a board's clock fails, or None. ``fetch_failed`` is the time
+    fetch's failure line when the screen showed one: the clock was then never
+    set (the bench has no RTC battery, so it counts from power-on), and no
+    timezone reading of it means anything. A board whose settings were kept
     from earlier use may carry a timezone, which moves its clock by whole
     half hours. The wrap to half a day either way shows UTC+13:00 as
     UTC-11:00, and the line has no date to tell them apart."""
     if abs(delta) <= tolerance:
         return None
+    if fetch_failed:
+        return (f"the time fetch over Ethernet failed (the screen showed {fetch_failed!r}): the board's clock is "
+                f"{delta:+.0f} s from UTC")
     steps = round(delta / TZ_STEP_S)
     residual = delta - steps * TZ_STEP_S
     if not fresh_eeprom and steps and abs(residual) <= tolerance:
@@ -1055,7 +1065,7 @@ def step_external_ports(c: Ctx) -> str:
     c.bench.do(BUTTONS)
     launched = time.monotonic()
     deadline = launched + c.profile.epc_timeout_s
-    hello, failed_reads = None, 0
+    hello, failed_reads, fetch_failed = None, 0, None
     while True:
         hello = HELLO.search(c.serial_since(mark))
         if hello:
@@ -1067,6 +1077,7 @@ def step_external_ports(c: Ctx) -> str:
             text = c.video_text() or ""
             if EPC_BUTTON_PROMPT in text and "epc_prompt" not in c.record.waits:
                 c.waited("epc_prompt", launched)
+            fetch_failed = fetch_failed or next((line for line in TIME_FETCH_FAILED if line in text), None)
             failed_reads = failed_reads + 1 if EPC_FAILED in text else 0
             if failed_reads >= VIDEO_SAME_READS:
                 break
@@ -1100,7 +1111,8 @@ def step_external_ports(c: Ctx) -> str:
     sent = utc_at(arrival(c.link.stream.tap.chunks[mark:], hello.start()), c.pc_offset_s)
     delta = clock_delta(hello, sent)
     c.record.epc_time_delta_s = round(delta, 1)
-    problem = clock_problem(delta, c.profile.time_tolerance_s, c.record.fresh_eeprom, c.pc_offset_s is not None)
+    problem = clock_problem(delta, c.profile.time_tolerance_s, c.record.fresh_eeprom, c.pc_offset_s is not None,
+                            fetch_failed)
     if problem:
         raise StepFailed(problem)
     dump = c.link.read_screen()

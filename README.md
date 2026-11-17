@@ -241,7 +241,10 @@ and with it the REU's size):
    whole seconds of its time fetch and prints whole seconds, so a good
    board reads 0 to 2 s behind. A clock off by whole half hours
    on a board whose settings were not reset is reported as its timezone
-   setting. Then the C64's bottom row asks whether the Ethernet port's
+   setting. A clock that fails after the screen showed the time fetch
+   failing ("NTP Response timeout!" or "RTC not updated") is reported as
+   that failure: with no RTC battery on the bench, such a clock counts
+   from power-on. Then the C64's bottom row asks whether the Ethernet port's
    green LED and the TR LED are on, and the operator answers Y or N on the
    C64's keyboard (`led_timeout_s`, 120 s, for each). The test's keys come
    through the KERNAL's GETIN vector, which mfg points at a stub that never

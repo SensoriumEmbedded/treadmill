@@ -1,12 +1,16 @@
 """The link against the fake board: framing, refusals, guards and the
 unprompted text between commands."""
 
+import threading
+import time
+
 import pytest
 
 from treadmill.c64.screen import (
     C128_RESET, KEYBUF, KEYBUF_128, KEYCOUNT, KEYCOUNT_128, RESET_VECTOR, SCREEN_BYTES,
 )
-from treadmill.link import Link, NotAllowed, Refused
+from treadmill.link import Link, LinkError, NotAllowed, Refused, trlink
+from treadmill.link.transport import open_pipe
 from treadmill.link.protocol import DRIVE_SD
 from selftest.fake_board import BANNER, BANNER_TR, start_fake_board
 
@@ -143,3 +147,75 @@ def test_reset_boot_polls(board_and_link):
     assert link.banner().boot == "in progress"
     assert link.banner().boot == "in progress"
     assert link.banner().boot == "complete"
+
+
+# -- drain_when_pending: a command waits only for stray bytes ---------------------------------
+
+def _arrived(stream, count: int = 1, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while len(stream.tap.chunks) < count and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+
+def test_settle_returns_at_once_on_a_quiet_stream_and_waits_out_stray_bytes():
+    stream, far = open_pipe()
+    try:
+        t0 = time.monotonic()
+        assert stream.settle(5.0, 10.0) == (b"", True)          # 0.5 s of quiet on the pipe, not waited
+        assert time.monotonic() - t0 < 0.25
+        far.write(b"Loading IO handler: TeensyROM\n")
+        _arrived(stream)
+        t0 = time.monotonic()
+        assert stream.settle(1.0, 10.0) == (b"Loading IO handler: TeensyROM\n", True)
+        assert time.monotonic() - t0 >= 0.1
+    finally:
+        stream.close()
+
+
+def test_settle_gives_up_on_a_stream_that_never_goes_quiet():
+    stream, far = open_pipe()
+    stop = threading.Event()
+
+    def flood():
+        while not stop.is_set():
+            far.write(b"?Stat: c3\n")
+            time.sleep(0.005)
+    thread = threading.Thread(target=flood, daemon=True)
+    thread.start()
+    try:
+        _arrived(stream)
+        t0 = time.monotonic()
+        stale, quiet = stream.settle(1.0, 0.5)
+        assert not quiet and b"?Stat: c3\n" in stale
+        assert 0.5 <= time.monotonic() - t0 < 1.5
+    finally:
+        stop.set()
+        thread.join()
+        stream.close()
+
+
+def test_with_drain_when_pending_stray_text_is_logged_and_a_flood_refuses_the_command(board_and_link, monkeypatch):
+    board, link, chatter = board_and_link
+    link.probe()
+    link.drain_when_pending = True
+    board.say("Loading IO handler: TeensyROM\n")
+    _arrived(link.stream, len(link.stream.tap.chunks) + 1)
+    assert len(link.read_memory(KEYBUF, 4)) == 4
+    assert b"Loading IO handler: TeensyROM\n" in b"".join(chatter)
+    monkeypatch.setattr(trlink, "FLOOD_S", 0.3)
+    stop = threading.Event()
+
+    def flood():
+        while not stop.is_set():
+            board.say("?Stat: c3\n")
+            time.sleep(0.005)
+    seen = len(link.stream.tap.chunks)
+    thread = threading.Thread(target=flood, daemon=True)
+    thread.start()
+    try:
+        _arrived(link.stream, seen + 1)       # a flood already running; one starting mid-reply is not this guard's
+        with pytest.raises(LinkError, match=r"did not go quiet in 0\.3 s, so nothing was sent: '\?Stat: c3'"):
+            link.read_memory(KEYBUF, 4)
+    finally:
+        stop.set()
+        thread.join()

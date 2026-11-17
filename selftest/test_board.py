@@ -22,6 +22,7 @@ def test_reconnect_probes_again_and_keeps_the_caps(lab):  # noqa: F811
         assert board.link.dma_allowed
         assert board.station.has("dma", "fw:Dbg_SerDMA") and not board.station.has("screen_dma")
         board.link.ping()
+        board.link.drain_when_pending = True
         before = list(board.link.stream.tap.chunks)
         assert before
         board.reboot_hook = lambda: None
@@ -29,7 +30,7 @@ def test_reconnect_probes_again_and_keeps_the_caps(lab):  # noqa: F811
         first.close()                                   # the USB went away under the link
         board.ensure_menu()
         assert board.recoveries == ["usb-reboot"] and board.link.stream is second
-        assert board.link.dma_allowed and not board.probe_pending
+        assert board.link.dma_allowed and not board.probe_pending and board.link.drain_when_pending
         assert board.station.has("dma", "fw:Dbg_SerDMA") and not board.station.has("screen_dma")
         assert board.link.stream.tap.chunks[:len(before)] == before
     finally:

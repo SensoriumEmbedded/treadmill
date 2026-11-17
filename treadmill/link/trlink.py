@@ -43,6 +43,9 @@ TRAILER_S = 0.3
 TEXT_REPLY = (5.0, 0.3, 30.0)    # first byte, idle, total
 FAIL_TEXT = (1.0, 0.1, 2.0)
 KEYBUF_DRAIN_S = 5.0
+# With drain_when_pending, how long stray bytes may keep arriving before a command is refused: a
+# board printing the same line in a loop would otherwise have its text read as the reply.
+FLOOD_S = 2.0
 # After a failed transfer the board discards what the sender still owed until a second passes with
 # nothing arriving (ControlComms.md, under Write C64 Memory Spans; PostFile does the same), and a
 # command sent inside that second is discarded with it.
@@ -105,6 +108,9 @@ class Link:
         self.dma_allowed = dma_allowed
         self.c128 = False
         self._on_unsolicited = on_unsolicited or (lambda data: None)
+        # False: every command first waits out its drain time and discards what came. True: a
+        # command goes at once when nothing is waiting, else after the stray bytes have stopped.
+        self.drain_when_pending = False
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -340,9 +346,16 @@ class Link:
     # -- framing -----------------------------------------------------------
 
     def _send(self, data: bytes, drain: float = DRAIN_S) -> None:
-        stale = self._s.drain(drain)
+        if self.drain_when_pending:
+            stale, quiet = self._s.settle(drain, FLOOD_S)
+        else:
+            stale, quiet = self._s.drain(drain), True
         if stale:
             self._on_unsolicited(stale)
+        if not quiet:
+            lines = [ln.strip() for ln in stale.decode("latin-1").splitlines() if ln.strip().isprintable()]
+            last = f": {lines[-1][:40]!r}" if lines else ""
+            raise LinkError(f"serial did not go quiet in {FLOOD_S:g} s, so nothing was sent{last}")
         self._s.write(data)
 
     def _ack(self, what: str, timeout: float = REPLY_S) -> None:

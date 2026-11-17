@@ -256,5 +256,6 @@ class Board:
         old.close()
         self.link = self.reconnect_hook()
         self.link._on_unsolicited = self.events.feed
+        self.link.drain_when_pending = old.drain_when_pending
         self.link.stream.tap.chunks[:0] = old.stream.tap.chunks
         self.probe_pending = True

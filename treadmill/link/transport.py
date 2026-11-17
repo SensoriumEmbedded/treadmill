@@ -152,6 +152,29 @@ class ByteStream:
         with self._cv:
             return self._take(len(self._buf))
 
+    def settle(self, quiet: float, limit: float) -> tuple[bytes, bool]:
+        """Discard what is waiting, and once anything was, what follows until
+        nothing has arrived for ``quiet``; with nothing waiting, return at
+        once. Returns the bytes for the log and whether the stream went quiet
+        within ``limit``: a board that never stops sending is not."""
+        quiet *= self.quiet_scale
+        taken = bytearray()
+        deadline = time.monotonic() + limit
+        quiet_until = 0.0
+        with self._cv:
+            if not self._buf:
+                return b"", True
+            while True:
+                now = time.monotonic()
+                if self._buf:
+                    taken += self._take(len(self._buf))
+                    quiet_until = now + quiet
+                elif self._ended or now >= quiet_until:
+                    return bytes(taken), True
+                if now >= deadline:
+                    return bytes(taken), False
+                self._cv.wait(min(quiet_until, deadline) - now)
+
     def _end_of_first(self, markers: list[bytes]) -> int:
         ends = []
         for m in markers:

@@ -135,9 +135,18 @@ BOARD_POLL_S = 0.5        # USB, for the next board; no port is opened
 # sends a DMA read, and a quarter second is nothing next to a hand.
 OPERATOR_POLL_S = 0.25
 VIDEO_POLL_S = 0.1
-VERDICT_S = 20.0          # from the test's own end signal to its verdict on screen
-RESET_FOLLOW_S = 10.0     # 'Button detected' to 'Resetting C64'
-REU_LAUNCH_S = 20.0
+# The machine's waits, each twice the longest measured on the bench and at least 5 s more than it,
+# rounded up to 5 s (result.json `waits`, six NTSC boards on 2026-11-17); one the firmware bounds is
+# at least that bound and 5 s. The operator's waits are the profile's epc_, led_ and reset_timeout_s.
+VERDICT_S = 5.0           # a verdict or menu read by DMA once its end signal is in: 0.33 s at most
+EPC_VERDICT_S = 8.0       # the Hello line to the verdict: ExtPortCheck's last message waits up to 3 s
+# The External Ports test's launch to its button prompt or its fail line: 7.5 s at most, but the slowest
+# fail path (two 15 s DHCP timeouts, the 2.5 s NTP wait, two SD starts, the 1.5 s USB wait) is 40 s.
+EPC_PROMPT_S = 45.0
+RESET_FOLLOW_S = 5.0      # 'Button detected' to 'Resetting C64': the same serial chunk every time
+MENU_BACK_S = 10.0        # the menu ready after a reset or a test's return: 2.33 s at most
+XPT_PROMPT_S = 15.0       # a pass's pattern lines to its prompt on video: 6.7 s at most
+REU_LAUNCH_S = 5.0        # hot key 2 to the launch, handler and size lines, all one chunk: 0.31 s at most
 # After the prompt shows. The program empties the key buffer right after printing its prompt, about
 # 10 mS after "o:Once" appears; a key written before that is lost and the next pass never starts.
 # The prompt has already been on two video reads at least VIDEO_POLL_S apart by then.
@@ -258,11 +267,13 @@ class MfgProfile:
     xpt_passes: int = 3
     time_tolerance_s: float = 5.0
     ntp_server: str = "pool.ntp.org"
-    epc_timeout_s: float = 180.0
-    boot_timeout_s: float = 60.0
-    reset_timeout_s: float = 60.0
-    xpt_pass_timeout_s: float = 90.0
-    reu_timeout_s: float = 30.0
+    epc_timeout_s: float = 180.0       # the operator: the button prompt to the Hello line
+    # On USB to the menu: 3.9 s at most; a factory-new board's first boot, its settings written to
+    # defaults, is not measured yet.
+    boot_timeout_s: float = 20.0
+    reset_timeout_s: float = 60.0      # the operator: the prompt to press reset to 'Button detected'
+    xpt_pass_timeout_s: float = 10.0   # a pass's start to its serial pattern lines: 4.5 s at most
+    reu_timeout_s: float = 10.0        # the REU checker up and still: 3.96 s at most
     led_timeout_s: float = 120.0
     require_release: bool = True
 
@@ -1006,12 +1017,13 @@ def step_power_up(c: Ctx) -> str:
     """The link sends each command at once when nothing stray is waiting
     (``drain_when_pending``): a fixed drain before every command was about
     a third of a passing board's time."""
+    deadline = time.monotonic() + c.profile.boot_timeout_s
     with c.timed("open"):
         c.board = c.bench.open_board(c.station, c.profile.boot_timeout_s)
     c.board.link.drain_when_pending = True
     try:
         with c.timed("menu"):
-            c.board.wait_for_menu(c.profile.boot_timeout_s)
+            c.board.wait_for_menu(max(deadline - time.monotonic(), 1.0))
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come up: {e}", markable=False) from None
     c.board.probe()          # what answered when the port first opened may have been MinimalBoot: no DMA
@@ -1094,7 +1106,8 @@ def step_external_ports(c: Ctx) -> str:
             if hello:
                 hold_epc_prompt(c)
             read = c.screen.wait(lambda s: (EPC_PASSED in s.text() or EPC_FAILED in s.text())
-                                 and EPC_ANY_KEY in s.text(), VERDICT_S, exact=True, what="the External Ports verdict")
+                                 and EPC_ANY_KEY in s.text(), EPC_VERDICT_S, exact=True,
+                                 what="the External Ports verdict")
     except TreadmillError:
         if ended():
             raise StepFailed(EPC_ENDED) from None
@@ -1179,7 +1192,7 @@ def step_external_reset(c: Ctx) -> str:
         c.wait_serial(mark, lambda t: "Resetting C64" in t, RESET_FOLLOW_S, "'Resetting C64' after the reset")
     try:
         with c.timed("reset_menu"):
-            c.board.wait_for_menu(c.profile.boot_timeout_s)
+            c.board.wait_for_menu(MENU_BACK_S)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back: {e}") from None
     with c.timed("reset_listing"):
@@ -1215,7 +1228,7 @@ def step_expansion_port(c: Ctx) -> str:
             c.keys.press([KEY_O] if n < passes else [RETURN])
     try:
         with c.timed("xpt_menu"):
-            c.board.wait_for_menu(c.profile.boot_timeout_s)
+            c.board.wait_for_menu(MENU_BACK_S)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back after the test: {e}") from None
     return f"{passes} passes clean"
@@ -1248,7 +1261,7 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
         time.sleep(SERIAL_POLL_S)
     with c.timed(f"xpt{n}_prompt"):
         if c.video.ok:
-            c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), timeout)
+            c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), XPT_PROMPT_S)
         else:
             time.sleep(NO_VIDEO_SETTLE_S)
     return lines, stall
@@ -1299,7 +1312,7 @@ def step_reu(c: Ctx) -> str:
     c.board.reset()
     c.board.reu_live = False
     try:
-        c.board.wait_for_menu(c.profile.boot_timeout_s)
+        c.board.wait_for_menu(MENU_BACK_S)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back after the REU checker: {e}") from None
     finally:
@@ -1460,7 +1473,7 @@ def finish_screen(c: Ctx, failure: tuple[str, StepFailed] | None) -> bool:
             # REU's DMA state: back to the menu, and the menu is marked.
             board.reset()
             board.reu_live = False
-            board.wait_for_menu(c.profile.boot_timeout_s)
+            board.wait_for_menu(MENU_BACK_S)
         if not board.dma_allowed():
             return False
         play_chords(c.link, FAIL_JINGLE, sid_clock(board, c.station))

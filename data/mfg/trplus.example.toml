@@ -19,10 +19,12 @@ log = "boards.csv"
 xpt_passes = 3                 # Expansion Port test passes
 time_tolerance_s = 5           # the board's clock against UTC, after its time fetch (README)
 ntp_server = "pool.ntp.org"    # this PC's clock is checked against it before each board; "" skips that
-epc_timeout_s = 180            # External Ports: launch to the line sent after both buttons
+# The operator's waits.
+epc_timeout_s = 180            # External Ports: the button prompt to the line sent after both buttons
 led_timeout_s = 120            # External Ports: each LED question on the C64 to its Y or N
-boot_timeout_s = 60
 reset_timeout_s = 60           # the prompt to press reset, to the TR+ reporting it
-xpt_pass_timeout_s = 90
-reu_timeout_s = 30             # the REU checker up and its screen still; a red bank fails at once
+# The machine's, each twice the longest the bench measured and 5 s more at least (mfg.py, timing).
+boot_timeout_s = 20            # on USB to the menu at power-up
+xpt_pass_timeout_s = 10        # an Expansion Port pass's start to its serial pattern lines
+reu_timeout_s = 10             # the REU checker up and its screen still; a red bank fails at once
 require_release = true         # false lets a tagged or dirty build through, to try the test on a dev board

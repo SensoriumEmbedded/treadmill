@@ -48,6 +48,8 @@ XPT_C64 = ["IRQ Test OK", "NMI Test OK", "IO1 Read Test OK", "IO1 Wr, IO2 Rd Tes
            "Game, ExROM, ROMH, ROML Tests:", " No Cart ROM Test OK", " 8k Cart ROM Test OK",
            " 16k Cart ROM Test OK", " Ultimax Cart ROM Test OK"]
 XPT_PROMPT = [" Apply External Reset to test Rst Input", " l:Loop, o:Once, any other key to exit"]
+# Board 5's pass 2 on the bench: 'k' of "Walking" read as 'i', 'n' of "Transition" as 'l', bit 1 low.
+BIT1_CELLS = (3 * SCREEN_COLUMNS + 3, 6 * SCREEN_COLUMNS + 11)
 
 KEY_O = 0x4F
 
@@ -145,9 +147,16 @@ class ExpPort:
             self.board.show([" OK" * 13] * 25)
             self.board.flood("?Stat: c3\n")
             return
-        rows = ["TeensyROM+ v0.9 Test"] + XPT_TEENSY + XPT_SCREEN_PATTERNS + XPT_C64 + [
+        clock = datetime.now().strftime("%I:%M:%S%p").lstrip("0").lower()
+        rows = ["TeensyROM+ v0.9 Test".center(SCREEN_COLUMNS), clock.rjust(SCREEN_COLUMNS - 1),
+                " C64/TeensyROM Expansion Port Test"] + XPT_TEENSY + XPT_SCREEN_PATTERNS + XPT_C64 + [
             " Expansion Port Test Passed. "] + XPT_PROMPT
         self.board.show(rows, reverse={0, rows.index(" Expansion Port Test Passed. ")})
+        if self.board.faults.get("xpt_bit_pass") == self.passes:          # in screen memory: the C64's read
+            for at in BIT1_CELLS:
+                self.board.memory[SCREEN_RAM_DEFAULT + at] &= ~0x02
+        if self.board.faults.get("xpt_dma_bit_pass") == self.passes:      # in the TR+'s next screen read only
+            self.board.dma_bit_once = BIT1_CELLS
 
     def key(self, code: int) -> None:
         if code == KEY_O:

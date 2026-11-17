@@ -748,3 +748,29 @@ def test_a_board_that_stops_answering_says_what_it_is_doing(lab: Path, monkeypat
     assert [r["c64_marked"] for r in rows] == ["no", "no"]
     finish = json.loads((Path(rows[0]["evidence"]) / "result.json").read_text(encoding="utf-8"))["waits"]["finish"]
     assert finish < 1.0                                              # no 5 s spent trying to mark it
+
+
+def test_a_pass_screen_with_a_bit_wrong_fails_and_says_which_way(lab: Path):  # noqa: F811
+    """Board 5's pass 2 on the bench showed "Waliing" and "Tralsition", bit 1
+    low in two codes, and passed: only "Passed." and serial were checked. The
+    whole screen is now held to the test's, and the reason says where the bit
+    went: in the C64's screen memory (a second DMA read and video agree), or
+    in the TR+'s first read of it alone."""
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{"xpt_bit_pass": 2}, {"xpt_dma_bit_pass": 2}])
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=2, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    head = ("pass 2: the screen reads 'Waliing ones address Test OK' where the test prints 'Walking ones address "
+            "Test OK', data bit 1 low in 2 character(s)")
+    assert [r["reason"] for r in rows] == [
+        head + ": a second DMA read and video show it too, so the C64 took the TR+'s message text with data bit 1 "
+               "low",
+        head + ": a second DMA read shows the test's text, so the TR+'s first DMA read of the screen had data "
+               "bit 1 low"]
+    assert (Path(rows[1]["evidence"]) / "expansion_port_2.again.screen.txt").is_file()

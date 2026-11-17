@@ -1,0 +1,28 @@
+% The Expansion Port test's screen after a pass: ExpansionPortTest.asm and StatusFunctions.c,
+% firmware 0.9. Row 0 is the version banner, the clock on row 1 is a wildcard; every pass screen
+% the bench saved through 2026-11-16 matched it but the one with bit 1 dropped from two codes.
+|*                                       |
+|                             ?????????? |
+| C64/TeensyROM Expansion Port Test      |
+|Walking ones address Test OK            |
+|Cascading ones address Test OK          |
+|DMA Page Read/Write Tests OK            |
+|DMA Bit Transition Tests                |
+| $ff: 0/4096 OK                         |
+| $ff: 0/16384 OK                        |
+| $00: 0/16384 OK                        |
+| $00/$ff: 0/16384 OK                    |
+| $55/$aa: 0/16384 OK                    |
+|IRQ Test OK                             |
+|NMI Test OK                             |
+|IO1 Read Test OK                        |
+|IO1 Wr, IO2 Rd Test OK                  |
+|IO2 Wr, IO1 Rd Test OK                  |
+|Game, ExROM, ROMH, ROML Tests:          |
+| No Cart ROM Test OK                    |
+| 8k Cart ROM Test OK                    |
+| 16k Cart ROM Test OK                   |
+| Ultimax Cart ROM Test OK               |
+| Expansion Port Test Passed.            |
+| Apply External Reset to test Rst Input |
+| l:Loop, o:Once, any other key to exit  |

@@ -65,9 +65,9 @@ from treadmill.observe.calibrate import Calibration, border_of, calibration_path
 from treadmill.observe.capture import FrameSource, save_strip
 from treadmill.observe.channels import ScreenChannel, ScreenRead
 from treadmill.observe.glyphs import GlyphBank
-from treadmill.observe.golden import save_golden
+from treadmill.observe.golden import Golden, Mismatch, compare, save_golden
 from treadmill.report.artifacts import RunDir, write_board_artifacts
-from treadmill.station.config import ConfigError, data_dir
+from treadmill.station.config import ConfigError, data_dir, repo_root
 from treadmill.station.model import Station
 
 T = TypeVar("T")
@@ -110,6 +110,7 @@ LED_QUESTIONS = (("led_ethernet", "Ethernet port's green LED on?", "the Ethernet
 EPC_REASONS = ("Could not init Ethernet", "Could not init SD", "Couldn't open SD file", "No SD filename",
                "Could not init USB", "Couldn't open USB file", "No USB filename")
 XPT_PASSED = "Expansion Port Test Passed."
+XPT_PASS_GOLDEN = "mfg/expansion_port_pass.screen.txt"            # under tests/golden: a pass's whole screen
 XPT_FAILED = "Expansion Port Test Failed!"
 XPT_PROMPT = "o:Once"
 XPT_FAULTS = ("Fail", "Miscompare", "not detected", "No read", "No write", "no clock", "timed out")
@@ -1351,6 +1352,10 @@ def step_expansion_port(c: Ctx) -> str:
         if len(lines) < PATTERNS_PER_PASS:
             raise StepFailed(f"pass {n}: the screen shows it passed, but serial sent {len(lines)} of its "
                              f"{PATTERNS_PER_PASS} DMA pattern lines")
+        golden = Golden.load(repo_root() / "tests" / "golden" / XPT_PASS_GOLDEN)
+        wrong = compare(rows, golden)
+        if wrong:
+            raise StepFailed(f"pass {n}: {wrong_screen_reason(c, n, read, golden, wrong)}")
         mark = c.mark()
         with c.timed(f"xpt{n}_key"):
             time.sleep(KEY_SETTLE_S)
@@ -1403,6 +1408,48 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
         else:
             time.sleep(NO_VIDEO_SETTLE_S)
     return lines, stall
+
+
+def wrong_bits(read: ScreenRead, wrong: list[Mismatch]) -> str:
+    """The data bits the wrong cells differ from the golden's in, as a
+    repair tech reads them: a line held low or high."""
+    low = high = 0
+    for m in wrong:
+        want = codes_for_text(m.expected, read.charset)[0] & 0x7F
+        got = int(read.codes[m.row * SCREEN_COLUMNS + m.col]) & 0x7F
+        low, high = low | (want & ~got), high | (got & ~want)
+    if (low | high) and not (low and high) and not (low | high) & ((low | high) - 1):
+        return f"data bit {(low | high).bit_length() - 1} {'low' if low else 'high'}"
+    return f"data bits ${low | high:02X} wrong"
+
+
+def wrong_screen_reason(c: Ctx, n: int, read: ScreenRead, golden: Golden, wrong: list[Mismatch]) -> str:
+    """Why a pass that says it passed shows a screen other than the test's.
+    A bit wrong on this bus test is this board's either way, never a read to
+    retry; a second DMA read and video only say which way it went: a wrong
+    first read alone is the TR+'s DMA read of the screen, the same text on
+    both is in the C64's screen memory, so the C64 read the TR+'s message
+    text wrong (it reads it from IO1, which the TR+ drives)."""
+    first = wrong[0]
+    got, want = read.rows()[first.row].strip(), (golden.rows[first.row] or "").strip()
+    bits = wrong_bits(read, wrong)
+    head = f"the screen reads {got!r} where the test prints {want!r}, {bits} in {len(wrong)} character(s)"
+    try:
+        again = c.screen.read_dma()
+        c.save_screen(f"expansion_port_{n}.again", again)
+        again_right = not compare(again.rows(), golden)
+    except TreadmillError:
+        again_right = None
+    video = c.video_text() if c.video.ok else None
+    shown = video.split("\n") if video else None
+    video_wrong = shown is not None and any(shown[m.row][m.col:m.col + 1] == m.actual for m in wrong)
+    video_right = shown is not None and all(shown[m.row][m.col:m.col + 1] == m.expected for m in wrong)
+    if again_right and not video_wrong:
+        return f"{head}: a second DMA read shows the test's text, so the TR+'s first DMA read of the screen had {bits}"
+    if again_right is False and not video_right:
+        both = "a second DMA read and video show it too" if video_wrong else "a second DMA read shows it too"
+        return f"{head}: {both}, so the C64 took the TR+'s message text with {bits}"
+    return head
 
 
 def step_sd_root(c: Ctx) -> str:

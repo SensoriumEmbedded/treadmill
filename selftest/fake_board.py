@@ -99,6 +99,7 @@ class FakeBoard:
     startup_sid: bool = False            # the menu's startup SID, loaded partway through a boot, still to report
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
     flooding: bool = False               # a line printed in a loop (flood())
+    dma_bit_once: tuple = ()             # screen cells the next DMA read of the screen returns with bit 1 low
     menu_draws_by_item: bool = False     # FakeMenu.draw_by_item from the first redraw on
     menu: object = field(default=None, repr=False)
     # The bus timing model: the firmware samples the select lines at max(nS_PLAprop, nS_RWnReady),
@@ -448,8 +449,13 @@ class FakeBoard:
         if address <= JIFFY_CLOCK + 2 and address + length > JIFFY_CLOCK and not self.faults.get("jiffy_stopped"):
             ticks = int(time.monotonic() * 60) & 0xFFFFFF          # the KERNAL's IRQ, 60 a second
             self.memory[JIFFY_CLOCK:JIFFY_CLOCK + 3] = ticks.to_bytes(3, "big")
+        data = bytearray(self.memory[address:address + length])
+        if self.dma_bit_once and address == SCREEN_RAM_DEFAULT:
+            for at in self.dma_bit_once:                # bit 1 low on this read, not in memory
+                data[at] &= ~0x02
+            self.dma_bit_once = ()
         self._reply(end, ACK)
-        end.write(bytes(self.memory[address:address + length]))
+        end.write(bytes(data))
 
     def _write_memory(self, end: PipeEnd) -> None:
         if not self.dma:

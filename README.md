@@ -270,7 +270,12 @@ and with it the REU's size):
    `?Stat: c3` from a C64 writing a status the TR+ does not know, named in
    the reason). A TR+ in such a loop never goes quiet for a DMA command, so
    its C64 is reset and the failure marked on the menu (`reset_before_mark`
-   in `result.json`).
+   in `result.json`). Each pass's whole screen is held to the test's
+   (`tests/golden/mfg/expansion_port_pass.screen.txt`, the clock a
+   wildcard): a wrong character fails the pass, naming the data bit, and a
+   second DMA read and video say whether it is in the C64's screen memory
+   (the C64 read the TR+'s message text wrong) or in the TR+'s first read
+   only. Either way the bus dropped a bit, so it is never retried.
 6. SD root: the card's root matches the master image's snapshot.
 7. REU: hot key 2 launches the REU checker with a 512K REU. Its text is
    yellow and green on grey, which video cannot read reliably, so the

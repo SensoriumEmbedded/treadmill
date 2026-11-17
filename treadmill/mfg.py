@@ -39,6 +39,7 @@ import struct
 import sys
 import time
 import tomllib
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -79,6 +80,7 @@ KEY_O, KEY_2 = 0x4F, 0x32                                          # PETSCII as 
 EPC_PASSED = "External Port Check Passed."
 EPC_FAILED = "External Port Check Failed!"
 EPC_ANY_KEY = "Press any key to return"                            # after either verdict, then a return
+EPC_BUTTON_PROMPT = "Waiting for press"                            # ExtPortCheck, before each button
 # The LED questions. The test reads keys with JSR $FFE4 (c64defs.i), so through the KERNAL's IGETIN
 # vector; pointed at a stub that always says "no key", the test stays at its prompt while the IRQ's
 # scan keeps queueing keys, and the answers are read from the buffer with no race. The stub sits in
@@ -122,12 +124,18 @@ EEPROM_DEFAULTS = "--> Setting EEPROM to defaults"
 
 # -- timing --------------------------------------------------------------------------------
 
-SERIAL_POLL_S = 0.25
+SERIAL_POLL_S = 0.05
+# The waits on a person (the buttons, the LED answers) poll more slowly: each round reads video or
+# sends a DMA read, and a quarter second is nothing next to a hand.
+OPERATOR_POLL_S = 0.25
 VIDEO_POLL_S = 0.1
 VERDICT_S = 20.0          # from the test's own end signal to its verdict on screen
 RESET_FOLLOW_S = 10.0     # 'Button detected' to 'Resetting C64'
 REU_LAUNCH_S = 20.0
-KEY_SETTLE_S = 0.5        # after the prompt shows: the program drains the key buffer right after printing it
+# After the prompt shows. The program empties the key buffer right after printing its prompt, about
+# 10 mS after "o:Once" appears; a key written before that is lost and the next pass never starts.
+# The prompt has already been on two video reads at least VIDEO_POLL_S apart by then.
+KEY_SETTLE_S = 0.1
 # ExtPortCheck still holds loop() after its Hello line, until the C64 takes its last message (3 s at most):
 # a command sent then waits on USB and runs as loop() resumes. Only the Hello line's own end can still be
 # on its way, and the drain before that command is for it.
@@ -530,6 +538,7 @@ class BoardRecord:
     c64_marked: bool | None = None
     fresh_eeprom: bool | None = None
     evidence: str = ""
+    waits: dict[str, float] = field(default_factory=dict)   # seconds each wait took, in result.json only
 
     def csv_row(self) -> dict[str, object]:
         row: dict[str, object] = {
@@ -853,6 +862,9 @@ class Ctx:
     log: Callable[[str], None]
     board: Board | None = None
     pc_offset_s: float | None = None     # this PC's clock to NTP's; None when not known
+    # serial_since's last answer: (the tap's chunk list, mark, chunks decoded, text). The list itself,
+    # not its id: a reconnect replaces it, and a freed list's id can be reused.
+    _serial: tuple = field(default=(None, 0, 0, ""), repr=False)
 
     @property
     def link(self):
@@ -866,11 +878,34 @@ class Ctx:
     def keys(self) -> KernalKeys:
         return KernalKeys(self.board)
 
+    @contextmanager
+    def timed(self, name: str):
+        """Keep how long the block took in the record's ``waits``, failed or
+        not, so each timeout can be set from what boards really take."""
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            self.waited(name, t0)
+
+    def waited(self, name: str, since: float) -> None:
+        self.record.waits[name] = round(time.monotonic() - since, 2)
+
     def mark(self) -> int:
         return len(self.board.link.stream.tap.chunks)
 
     def serial_since(self, mark: int) -> str:
-        return b"".join(c for _, c in self.board.link.stream.tap.chunks[mark:]).decode("latin-1")
+        """What the board sent since ``mark``. A wait polls this 20 times a
+        second, and a board flooding serial sends thousands of chunks, so
+        each call decodes only what arrived since the last one."""
+        chunks = self.board.link.stream.tap.chunks
+        held, held_mark, end, text = self._serial
+        if held is not chunks or held_mark != mark or end > len(chunks):
+            end, text = mark, ""
+        now = len(chunks)
+        text += b"".join(c for _, c in chunks[end:now]).decode("latin-1")
+        self._serial = (chunks, mark, now, text)
+        return text
 
     def wait_serial(self, mark: int, found: Callable[[str], T], timeout: float, what: str) -> T:
         """Until ``found`` gives something truthy for what the board said since ``mark``."""
@@ -913,9 +948,15 @@ class Ctx:
 
 
 def step_power_up(c: Ctx) -> str:
-    c.board = c.bench.open_board(c.station, c.profile.boot_timeout_s)
+    """The link sends each command at once when nothing stray is waiting
+    (``drain_when_pending``): a fixed drain before every command was about
+    a third of a passing board's time."""
+    with c.timed("open"):
+        c.board = c.bench.open_board(c.station, c.profile.boot_timeout_s)
+    c.board.link.drain_when_pending = True
     try:
-        c.board.wait_for_menu(c.profile.boot_timeout_s)
+        with c.timed("menu"):
+            c.board.wait_for_menu(c.profile.boot_timeout_s)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come up: {e}", markable=False) from None
     c.board.probe()          # what answered when the port first opened may have been MinimalBoot: no DMA
@@ -925,7 +966,7 @@ def step_power_up(c: Ctx) -> str:
 
 
 def step_firmware(c: Ctx) -> str:
-    c.board.probe()
+    """Read from power-up's last probe, made once the menu was up."""
     b = c.board.banner
     if b is not None:
         c.record.fw_version, c.record.fw_built = b.version or "", b.built or ""
@@ -960,33 +1001,40 @@ def step_external_ports(c: Ctx) -> str:
     and video for a fail the test printed before reaching them. The LED
     questions go on the C64's bottom row once the test waits for its key."""
     mark = c.mark()
-    launch_from_menu(c, EPC_PATH)
+    with c.timed("epc_launch"):
+        launch_from_menu(c, EPC_PATH)
     c.bench.do(BUTTONS)
-    deadline = time.monotonic() + c.profile.epc_timeout_s
+    launched = time.monotonic()
+    deadline = launched + c.profile.epc_timeout_s
     hello, failed_reads = None, 0
     while True:
         hello = HELLO.search(c.serial_since(mark))
         if hello:
+            c.waited("epc_hello", launched)
             break
         if c.link.stream.ended:
             raise StepFailed("the board left USB during the External Ports test", markable=False)
         if c.video.ok:
-            failed_reads = failed_reads + 1 if EPC_FAILED in (c.video_text() or "") else 0
+            text = c.video_text() or ""
+            if EPC_BUTTON_PROMPT in text and "epc_prompt" not in c.record.waits:
+                c.waited("epc_prompt", launched)
+            failed_reads = failed_reads + 1 if EPC_FAILED in text else 0
             if failed_reads >= VIDEO_SAME_READS:
                 break
         if time.monotonic() >= deadline:
             raise StepFailed(f"no 'Hello from TR at:' line within {c.profile.epc_timeout_s:g} s: a button "
                              "was not detected, or the test stopped before the buttons", markable=False)
-        time.sleep(SERIAL_POLL_S)
+        time.sleep(OPERATOR_POLL_S)
 
     def ended() -> bool:
         return hello is not None and "Button detected" in c.serial_since(mark)[hello.end():]
 
     try:
-        if hello:
-            hold_epc_prompt(c)
-        read = c.screen.wait(lambda s: (EPC_PASSED in s.text() or EPC_FAILED in s.text()) and EPC_ANY_KEY in s.text(),
-                             VERDICT_S, exact=True, what="the External Ports verdict")
+        with c.timed("epc_verdict"):
+            if hello:
+                hold_epc_prompt(c)
+            read = c.screen.wait(lambda s: (EPC_PASSED in s.text() or EPC_FAILED in s.text())
+                                 and EPC_ANY_KEY in s.text(), VERDICT_S, exact=True, what="the External Ports verdict")
     except TreadmillError:
         if ended():
             raise StepFailed(EPC_ENDED) from None
@@ -1012,7 +1060,8 @@ def step_external_ports(c: Ctx) -> str:
     c.link.write_memory(COLOR_RAM + LED_ROW * SCREEN_COLUMNS, bytes([YELLOW]) * SCREEN_COLUMNS)
     c.bench.do(LEDS)
     for attr, question, what in LED_QUESTIONS:
-        on = ask_on_c64(c, row, charset, question, ended)
+        with c.timed(attr):
+            on = ask_on_c64(c, row, charset, question, ended)
         if on is None:
             raise StepFailed(f"no Y or N for {what} on the C64's keyboard within {c.profile.led_timeout_s:g} s")
         setattr(c.record, attr, "y" if on else "n")
@@ -1056,20 +1105,24 @@ def ask_on_c64(c: Ctx, row: int, charset: str, question: str, ended: Callable[[]
             raise StepFailed(EPC_ENDED)
         if time.monotonic() >= deadline:
             return None
-        time.sleep(SERIAL_POLL_S)
+        time.sleep(OPERATOR_POLL_S)
 
 
 def step_external_reset(c: Ctx) -> str:
     mark = c.mark()
     c.reset.apply()
-    c.wait_serial(mark, lambda t: "Button detected" in t, c.profile.reset_timeout_s,
-                  "'Button detected' on serial: the TR+ did not sense the reset")
-    c.wait_serial(mark, lambda t: "Resetting C64" in t, RESET_FOLLOW_S, "'Resetting C64' after the reset")
+    with c.timed("reset_press"):
+        c.wait_serial(mark, lambda t: "Button detected" in t, c.profile.reset_timeout_s,
+                      "'Button detected' on serial: the TR+ did not sense the reset")
+    with c.timed("reset_follow"):
+        c.wait_serial(mark, lambda t: "Resetting C64" in t, RESET_FOLLOW_S, "'Resetting C64' after the reset")
     try:
-        c.board.wait_for_menu(c.profile.boot_timeout_s)
+        with c.timed("reset_menu"):
+            c.board.wait_for_menu(c.profile.boot_timeout_s)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back: {e}") from None
-    c.screen.wait(lambda s: parse_listing(s.rows()) is not None, VERDICT_S, exact=True, what="the menu")
+    with c.timed("reset_listing"):
+        c.screen.wait(lambda s: parse_listing(s.rows()) is not None, VERDICT_S, exact=True, what="the menu")
     return "sensed, back at the menu"
 
 
@@ -1079,10 +1132,12 @@ def step_expansion_port(c: Ctx) -> str:
     done, video when the C64's half is, then one DMA read takes the verdict."""
     passes = c.profile.xpt_passes
     mark = c.mark()
-    launch_from_menu(c, XPT_PATH)
+    with c.timed("xpt_launch"):
+        launch_from_menu(c, XPT_PATH)
     for n in range(1, passes + 1):
         lines, stall = wait_xpt_pass(c, mark, n)
-        read = c.screen.wait(lambda s: XPT_PROMPT in s.text(), VERDICT_S, exact=True, what=f"pass {n}'s verdict")
+        with c.timed(f"xpt{n}_verdict"):
+            read = c.screen.wait(lambda s: XPT_PROMPT in s.text(), VERDICT_S, exact=True, what=f"pass {n}'s verdict")
         c.save_screen(f"expansion_port_{n}", read)
         rows = read.rows()
         if XPT_PASSED not in "\n".join(rows):
@@ -1094,10 +1149,12 @@ def step_expansion_port(c: Ctx) -> str:
             raise StepFailed(f"pass {n}: the screen shows it passed, but serial sent {len(lines)} of its "
                              f"{PATTERNS_PER_PASS} DMA pattern lines")
         mark = c.mark()
-        time.sleep(KEY_SETTLE_S)
-        c.keys.press([KEY_O] if n < passes else [RETURN])
+        with c.timed(f"xpt{n}_key"):
+            time.sleep(KEY_SETTLE_S)
+            c.keys.press([KEY_O] if n < passes else [RETURN])
     try:
-        c.board.wait_for_menu(c.profile.boot_timeout_s)
+        with c.timed("xpt_menu"):
+            c.board.wait_for_menu(c.profile.boot_timeout_s)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back after the test: {e}") from None
     return f"{passes} passes clean"
@@ -1110,11 +1167,13 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
     go straight to the prompt with no Passed on screen: video seeing that
     ends the wait early, with the lines sent so far."""
     timeout = c.profile.xpt_pass_timeout_s
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
     early_reads = 0
     while True:
         lines, stall = xpt_serial(c.serial_since(mark))
         if stall or len(lines) >= PATTERNS_PER_PASS or any(v != "CLEAN" for _, v in lines):
+            c.waited(f"xpt{n}_lines", start)
             break
         if c.link.stream.ended:
             raise StepFailed(f"the board left USB while waiting for pass {n}'s DMA pattern lines", markable=False)
@@ -1126,10 +1185,11 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
         if time.monotonic() >= deadline:
             raise StepFailed(f"no pass {n}'s DMA pattern lines on serial within {timeout:g} s")
         time.sleep(SERIAL_POLL_S)
-    if c.video.ok:
-        c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), timeout)
-    else:
-        time.sleep(NO_VIDEO_SETTLE_S)
+    with c.timed(f"xpt{n}_prompt"):
+        if c.video.ok:
+            c.video_until(lambda rows: XPT_PROMPT in "\n".join(rows), timeout)
+        else:
+            time.sleep(NO_VIDEO_SETTLE_S)
     return lines, stall
 
 
@@ -1139,7 +1199,8 @@ def step_sd_root(c: Ctx) -> str:
     except (OSError, ValueError, KeyError) as e:
         raise StepFailed(f"no SD golden at {c.profile.sd_golden} ({e}); make it with "
                          "treadmill mfg --snapshot-sd <master image folder>") from None
-    listing = c.link.list_directory("/", "sd")
+    with c.timed("sd_list"):
+        listing = c.link.list_directory("/", "sd")
     (c.folder / "sd_root.json").write_text(json.dumps(listing, indent=2), encoding="utf-8")
     problems = compare_sd(listing, golden, c.profile.sd_ignore)
     if problems:
@@ -1156,26 +1217,32 @@ def step_reu(c: Ctx) -> str:
     if not c.video.ok:
         raise StepFailed("the REU checker's verdict needs the video channel")
     mark = c.mark()
-    c.keys.press([KEY_2])
-    c.board.reu_live = True
-    name = c.wait_serial(mark, lambda t: (m := LAUNCHED.search(t)) and m.group(1), REU_LAUNCH_S,
-                         "launch from hot key 2 on serial")
-    if not name.startswith(REU_NAME):
-        raise StepFailed(f"hot key 2 launched {name!r}, not the REU checker: the settings are not at their defaults")
-    handler = c.wait_serial(mark, lambda t: (m := REU_HANDLER.search(t)) and int(m.group(1)), REU_LAUNCH_S,
-                            "REU handler on serial")
-    size = c.wait_serial(mark, lambda t: (m := REU_SIZE.search(t)) and int(m.group(1)), REU_LAUNCH_S,
-                         "REU size on serial")
+    with c.timed("reu_launch"):
+        c.keys.press([KEY_2])
+        c.board.reu_live = True
+        name = c.wait_serial(mark, lambda t: (m := LAUNCHED.search(t)) and m.group(1), REU_LAUNCH_S,
+                             "launch from hot key 2 on serial")
+        if not name.startswith(REU_NAME):
+            raise StepFailed(f"hot key 2 launched {name!r}, not the REU checker: the settings are not at their "
+                             "defaults")
+        handler = c.wait_serial(mark, lambda t: (m := REU_HANDLER.search(t)) and int(m.group(1)), REU_LAUNCH_S,
+                                "REU handler on serial")
+        size = c.wait_serial(mark, lambda t: (m := REU_SIZE.search(t)) and int(m.group(1)), REU_LAUNCH_S,
+                             "REU size on serial")
     if size != c.profile.reu_kb or handler != c.profile.reu_kb:
         raise StepFailed(f"the REU is {size}K (handler {handler}KB), expected {c.profile.reu_kb}K")
     banks = c.profile.reu_kb // REU_CELL_KB
-    watch_reu_checker(c, banks, c.profile.reu_timeout_s)
+    with c.timed("reu_checker"):
+        watch_reu_checker(c, banks, c.profile.reu_timeout_s)
+    t0 = time.monotonic()
     c.board.reset()
     c.board.reu_live = False
     try:
         c.board.wait_for_menu(c.profile.boot_timeout_s)
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come back after the REU checker: {e}") from None
+    finally:
+        c.waited("reu_menu", t0)
     return f"{size}K, the checker's {banks} banks OK"
 
 
@@ -1217,7 +1284,10 @@ def watch_reu_checker(c: Ctx, banks: int, timeout: float) -> None:
             reads += 1
             if prev is None or view != prev:
                 since = now
+                c.waited("reu_last_change", start)      # how soon the map holds still: REU_SETTLE_S's margin
             up = view.border_green and prev is not None and prev.border_green
+            if up and "reu_up" not in c.record.waits:
+                c.waited("reu_up", start)
             if up and reu_error(view) and reu_error(view) == reu_error(prev):
                 raise StepFailed(reu_error(view))
             prev = view
@@ -1389,7 +1459,8 @@ def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
         record.result = FAIL if failure else PASS
         if failure:
             record.failed_step, record.reason = failure[0], failure[1].reason
-        record.c64_marked = finish_screen(c, failure)
+        with c.timed("finish"):
+            record.c64_marked = finish_screen(c, failure)
     except KeyboardInterrupt:
         record.result, record.reason = ABORTED, "stopped by the operator"
         raise

@@ -29,9 +29,11 @@ from treadmill.firmware.hexinfo import MAIN_BASE, encode_hex, inspect_hex
 from treadmill import mfg
 from treadmill.link.banner import parse_banner
 from treadmill.link.discover import Found, NotFound, teensyrom_uid
+from treadmill.link.transport import ByteStream
+from treadmill.link.trlink import DRAIN_S, Link
 from treadmill.mfg import (
     CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord,
-    Console, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
+    Console, Ctx, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
     _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
     xpt_reason, xpt_serial,
@@ -310,6 +312,10 @@ def test_a_passing_board_through_the_cli(lab: Path, capsys):  # noqa: F811
     folder = Path(row["evidence"])
     result = json.loads((folder / "result.json").read_text(encoding="utf-8"))
     assert result["fw_version"] == "TeensyROM+ v0.9" and result["fresh_eeprom"] is False
+    assert {"open", "menu", "epc_launch", "epc_prompt", "epc_hello", "epc_verdict", "led_ethernet", "led_tr",
+            "reset_press", "reset_follow", "reset_menu", "reset_listing", "xpt_launch", "xpt1_lines",
+            "xpt1_prompt", "xpt1_verdict", "xpt3_key", "xpt_menu", "sd_list", "reu_launch", "reu_up",
+            "reu_last_change", "reu_checker", "reu_menu", "finish"} <= set(result["waits"])
     assert (folder / "serial.log").is_file() and (folder / "expansion_port_3.screen.txt").is_file()
     assert "Hello from TR at:" in (folder / "serial.log").read_text(encoding="latin-1")
     assert "#### " in out and "Board 1 PASSED" in out and "1 board(s): 1 passed, 0 failed" in out
@@ -516,3 +522,50 @@ def test_this_pcs_clock_is_measured_for_each_board(lab: Path, monkeypatch):  # n
     assert offsets == [] and 98 <= float(rows[1]["epc_time_delta_s"]) <= 100   # whole seconds: 0 to 2 s behind
     assert rows[1]["reason"].endswith("s from UTC: the time fetch over Ethernet, or the RTC")
     assert "This PC's clock is 100.0 s ahead of pool.ntp.org" in out.getvalue()
+
+
+def test_a_passing_board_waits_only_for_stray_bytes(lab: Path, monkeypatch):  # noqa: F811
+    """The link's fixed drain before every command was about a third of a
+    passing board's time. With drain_when_pending a command waits only when
+    the board sent something unasked first: the Hello line, the lines after a
+    reset, a pass's pattern lines, the REU launch."""
+    switch: list[bool] = []          # each command's drain_when_pending
+    stray: list[bytes] = []          # what each settle found waiting
+    send, settle = Link._send, ByteStream.settle
+
+    def counted_send(self, data, drain=DRAIN_S):
+        switch.append(self.drain_when_pending)
+        return send(self, data, drain)
+
+    def counted_settle(self, quiet, limit):
+        stale, quiet_ok = settle(self, quiet, limit)
+        stray.append(stale)
+        return stale, quiet_ok
+    monkeypatch.setattr(Link, "_send", counted_send)
+    monkeypatch.setattr(ByteStream, "settle", counted_settle)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{}])
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"][PASS] == 1
+    after = switch[switch.index(True):]           # Board.open's probe comes before the switch
+    assert all(after) and len(after) > 100
+    assert len(stray) == len(after) and sum(1 for stale in stray if stale) <= 10
+
+
+def test_serial_since_extends_its_last_answer_and_starts_over_for_a_new_mark_or_link():
+    chunks = [(0.0, b"one\n"), (0.0, b"two\n")]
+    c = Ctx(*([None] * 10))
+    c.board = SimpleNamespace(link=SimpleNamespace(stream=SimpleNamespace(tap=SimpleNamespace(chunks=chunks))))
+    assert c.serial_since(0) == "one\ntwo\n"
+    chunks.append((0.0, b"three\n"))
+    assert c.serial_since(0) == "one\ntwo\nthree\n"
+    assert c.serial_since(1) == "two\nthree\n"
+    replaced = [*chunks, (0.0, b"four\n")]          # a reconnect: a new list, the old chunks first
+    c.board.link.stream.tap.chunks = replaced
+    assert c.serial_since(1) == "two\nthree\nfour\n"

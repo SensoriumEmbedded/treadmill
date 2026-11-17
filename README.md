@@ -263,7 +263,9 @@ board adds:
   firmware, result, the failed step and reason, every step's result and the
   LED answers;
 - a folder under `reports/<run>/boards/` with its serial log, every screen
-  read and `result.json`.
+  read and `result.json`, whose `waits` holds the seconds each wait took
+  (the menu's return, each pass's pattern lines, the operator's buttons),
+  the measurements a timeout is set from.
 
 The console then asks for the power-off, waits for the board to leave USB,
 and starts the next one. Ctrl+C ends the session; `--boards N` stops after N.

@@ -37,7 +37,11 @@ cost or a wart with a known, small fix.
    `treadmill/link/trlink.py`; a ping costs about 600 ms on a quiet link
    and a 200-step menu walk spends two minutes in fixed waits. A design
    choice: drain only when the tap has seen bytes since the last command,
-   and end a text reply on its known terminator where one exists.
+   and end a text reply on its known terminator where one exists. The
+   manufacturing test already sends with `Link.drain_when_pending` (a
+   command waits only for stray bytes, and refuses a board whose bytes do
+   not stop); the rest of the suite keeps the fixed drain until soak runs
+   have tried it.
 13. **medium, with the keyboard board** No way to drive a board whose
    firmware has no USB, such as a TR+ running an extension host (SIDHost).
    `Harness.__enter__` in `treadmill/driver.py` always goes through

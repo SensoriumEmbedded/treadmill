@@ -931,13 +931,18 @@ class Ctx:
     def video_until(self, predicate: Callable[[list[str]], bool], timeout: float) -> ScreenRead | None:
         """The first of two video reads in a row that satisfy ``predicate``,
         or None when ``timeout`` passes first: a wait that sends nothing to
-        the board."""
+        the board. A lost or unreadable frame counts as not satisfying it, as
+        in ``video_text``: failing there would mark the screen, by DMA, in
+        the middle of the Expansion Port test."""
         screen = self.screen
         deadline = time.monotonic() + timeout
         run = 0
         while time.monotonic() < deadline:
-            read = screen.read_video()
-            run = run + 1 if predicate(read.rows()) else 0
+            try:
+                read = screen.read_video()
+            except TreadmillError:
+                read = None
+            run = run + 1 if read is not None and predicate(read.rows()) else 0
             if run >= VIDEO_SAME_READS:
                 return read
             time.sleep(VIDEO_POLL_S)

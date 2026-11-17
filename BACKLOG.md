@@ -91,14 +91,13 @@ cost or a wart with a known, small fix.
    refuse a board under test that a station names. Fix, a choice to make:
    remember the session's other boards by chip id rather than by port, or
    ask the operator to confirm a chip id that was on USB at the start.
-28. **low** A lost frame during an Expansion Port pass fails a good board.
-   `Ctx.video_until` in `treadmill/mfg.py`, which waits for a pass's prompt
-   after its serial lines, calls `read_video()` unguarded: a
-   `CaptureTimeout` while the C64's half runs fails the step with the
-   capture's message, and the fail marking then sends DMA during the test
-   of the bus. The External Ports wait and the early-fail watch read
-   through `Ctx.video_text()`, which carries on. Fix: the same in
-   `video_until`.
+28. **closed 2026-11-17, with the guarded video_until.** A lost frame
+   during an Expansion Port pass failed a good board. `Ctx.video_until` in
+   `treadmill/mfg.py`, which waits for a pass's prompt after its serial
+   lines, called `read_video()` unguarded: a `CaptureTimeout` while the
+   C64's half ran failed the step with the capture's message, and the fail
+   marking then sent DMA during the test of the bus. A read that raises
+   now counts as not matching, as in `Ctx.video_text()`.
 
 ## Video
 

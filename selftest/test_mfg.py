@@ -17,7 +17,7 @@ import pytest
 import numpy as np
 
 from selftest.fake_bench import SD_ROOT, FakeBench
-from selftest.fake_programs import DARK_GREY, GREEN, LIGHT_GREEN, YELLOW, ExtPorts, checker_screen
+from selftest.fake_programs import DARK_GREY, GREEN, LIGHT_GREEN, YELLOW, ExpPort, ExtPorts, checker_screen
 from selftest.fake_programs import RED as REU_RED
 from selftest.synth import calibrated, frame_of
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
@@ -571,3 +571,28 @@ def test_serial_since_extends_its_last_answer_and_starts_over_for_a_new_mark_or_
     replaced = [*chunks, (0.0, b"four\n")]          # a reconnect: a new list, the old chunks first
     c.board.link.stream.tap.chunks = replaced
     assert c.serial_since(1) == "two\nthree\nfour\n"
+
+
+def test_a_lost_frame_while_a_pass_shows_its_prompt_is_waited_out(lab: Path, monkeypatch):  # noqa: F811
+    """Backlog 28: after a pass's serial lines, the wait for its prompt reads
+    video only. A lost frame there failed a good board with the capture's
+    message, and marked its screen by DMA in the middle of the bus test."""
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{}])
+    lost = []
+    read_video = ScreenChannel.read_video
+
+    def flaky(self, frame=None):
+        if isinstance(bench.fake.program, ExpPort) and bench.fake.program.passes and not lost:
+            lost.append(1)
+            raise CaptureTimeout("no frame from the capture")
+        return read_video(self, frame)
+    monkeypatch.setattr(ScreenChannel, "read_video", flaky)
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert lost and summary["counts"][PASS] == 1, summary["boards"][0]["reason"]

@@ -267,7 +267,10 @@ and with it the REU's size):
    screen's reason as soon as its prompt shows. A C64 that stops mid-test
    fails the pass as serial shows it: the TR+'s `Sout Timeout!` (a message
    the C64 did not take), or one line 50 times in a row (a loop, such as
-   `?Stat: c3` from a C64 writing a status the TR+ does not know).
+   `?Stat: c3` from a C64 writing a status the TR+ does not know, named in
+   the reason). A TR+ in such a loop never goes quiet for a DMA command, so
+   its C64 is reset and the failure marked on the menu (`reset_before_mark`
+   in `result.json`).
 6. SD root: the card's root matches the master image's snapshot.
 7. REU: hot key 2 launches the REU checker with a 512K REU. Its text is
    yellow and green on grey, which video cannot read reliably, so the
@@ -289,9 +292,10 @@ board adds:
   firmware, result, the failed step and reason, every step's result and the
   LED answers;
 - a folder under `reports/<run>/boards/` with its serial log, every screen
-  read and `result.json`, whose `waits` holds the seconds each wait took
-  (the menu's return, each pass's pattern lines, the operator's buttons),
-  the measurements a timeout is set from.
+  read, on a failure the capture's last 3 s before it was found
+  (`frames.png`), and `result.json`, whose `waits` holds the seconds each
+  wait took (the menu's return, each pass's pattern lines, the operator's
+  buttons), the measurements a timeout is set from.
 
 The console then asks for the power-off, waits for the board to leave USB,
 and starts the next one. Ctrl+C ends the session; `--boards N` stops after N.

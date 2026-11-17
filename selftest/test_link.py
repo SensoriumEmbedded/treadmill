@@ -219,3 +219,16 @@ def test_with_drain_when_pending_stray_text_is_logged_and_a_flood_refuses_the_co
     finally:
         stop.set()
         thread.join()
+
+
+def test_a_reset_goes_through_a_board_printing_in_a_loop(board_and_link):
+    """A TR+ printing '?Stat: c3' for each status its stuck C64 writes never
+    goes quiet for a drain; the reset is sent through it, and its reply read
+    once the loop stops with the C64."""
+    board, link, _ = board_and_link
+    link.probe()
+    link.drain_when_pending = True
+    seen = len(link.stream.tap.chunks)
+    board.flood("?Stat: c3\n")
+    _arrived(link.stream, seen + 1)
+    assert "Reset cmd received" in link.reset(through_noise=True) and not board.flooding

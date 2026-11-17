@@ -174,10 +174,16 @@ class Link:
 
     # -- control ---------------------------------------------------------
 
-    def reset(self) -> str:
+    def reset(self, *, through_noise: bool = False) -> str:
         """Reset the C64 to the menu. Answers with text lines, not an Ack; from
-        the minimal image this restarts the board, so the port may drop."""
-        self._send(to_board(RESET_C64))
+        the minimal image this restarts the board, so the port may drop.
+        ``through_noise`` sends it whatever the board is sending: a board
+        printing in a loop until its C64 resets never goes quiet for the
+        drain, and the reply is read once the loop's output stops."""
+        if through_noise:
+            self._s.write(to_board(RESET_C64))
+        else:
+            self._send(to_board(RESET_C64))
         return self._s.read_idle(*TEXT_REPLY).decode("latin-1").strip()
 
     def pause(self, on: bool) -> None:

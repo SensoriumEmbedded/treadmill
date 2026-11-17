@@ -416,6 +416,7 @@ class FakeBoard:
         end.write(text.encode("latin-1"))
 
     def _reset(self, end: PipeEnd) -> None:
+        self.flooding = False            # the C64's reset ends what it was looping on
         self.booting_for = self.boot_polls
         self.startup_sid = True
         self.busy = False

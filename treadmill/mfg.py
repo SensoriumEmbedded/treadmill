@@ -135,6 +135,9 @@ SOUT_TIMEOUT = "Sout Timeout!"
 # print "?Stat: c3" 26,001 times; a passing board's whole log repeats no line more than 16 times.
 FLOOD_LINES = 50
 FLOOD_TAIL_CHARS = 81 * (FLOOD_LINES + 1)
+# PollingHndlr_TeensyROM (IOH_TeensyROM.c) prints this for each status write past rsNumStatusTypes.
+UNKNOWN_STATUS = re.compile(r"\?Stat: ([0-9a-fA-F]{2})")
+STATUS_NAMES = {0xC3: "its reply to a message, rsContinue"}            # Menu_Regs.h
 
 # -- timing --------------------------------------------------------------------------------
 
@@ -244,12 +247,15 @@ class MfgError(TreadmillError):
 class StepFailed(TreadmillError):
     """A check did not pass. ``markable`` is False when the board cannot take
     the DMA writes that mark its screen: it left USB, or it is inside a test
-    that services nothing until a button is pressed."""
+    that services nothing until a button is pressed. ``reset_first``: its
+    C64 is reset before the marking, which then goes on the menu; the frames
+    of the failure are kept from before."""
 
-    def __init__(self, reason: str, markable: bool = True):
+    def __init__(self, reason: str, markable: bool = True, reset_first: bool = False):
         super().__init__(reason)
         self.reason = reason
         self.markable = markable
+        self.reset_first = reset_first
 
 
 class WrongStandard(TreadmillError):
@@ -604,6 +610,7 @@ class BoardRecord:
     evidence: str = ""
     waits: dict[str, float] = field(default_factory=dict)   # seconds each wait took, in result.json only
     restarts: list[str] = field(default_factory=list)       # why it started over first, in result.json only
+    reset_before_mark: bool = False      # its failure was marked on the menu, after a reset (result.json only)
 
     def csv_row(self) -> dict[str, object]:
         row: dict[str, object] = {
@@ -820,19 +827,27 @@ def xpt_serial(text: str) -> tuple[list[tuple[str, str]], str | None]:
     return lines, stall.group(1).strip() if stall else None
 
 
-def c64_stopped(text: str) -> str | None:
+def c64_stopped(text: str) -> tuple[str, bool] | None:
     """Why the C64 has stopped following its test, from what the TR+ sent
-    since the test began, or None: the TR+ gave up on a message the C64
-    did not take, or one line repeats like a loop. Split on newlines only:
-    the record also holds DMA screen dumps, whose codes include the bytes
-    str.splitlines() treats as line ends."""
+    since the test began, and whether the TR+ is printing in a loop; None
+    when it has not: the TR+ gave up on a message the C64 did not take, or
+    one line repeats. A '?Stat: xx' loop is a C64 writing a status the TR+
+    does not know, named. Split on newlines only: the record also holds DMA
+    screen dumps, whose codes include the bytes str.splitlines() treats as
+    line ends."""
     if SOUT_TIMEOUT in text:
-        return f"the C64 stopped taking the TR+'s messages (serial: {SOUT_TIMEOUT!r})"
+        return f"the C64 stopped taking the TR+'s messages (serial: {SOUT_TIMEOUT!r})", False
     lines = text[-FLOOD_TAIL_CHARS:].split("\n")[:-1][-FLOOD_LINES:]     # the last one may be unfinished
     first = lines[0].strip() if lines else ""
-    if len(lines) == FLOOD_LINES and first.isprintable() and first and all(ln.strip() == first for ln in lines):
-        return f"serial repeated {first!r} {FLOOD_LINES} times in a row"
-    return None
+    if len(lines) < FLOOD_LINES or not first or not first.isprintable() or any(ln.strip() != first for ln in lines):
+        return None
+    repeated = f"serial repeated {first!r} {FLOOD_LINES} times in a row"
+    status = UNKNOWN_STATUS.fullmatch(first)
+    if status is None:
+        return repeated, True
+    value = int(status.group(1), 16)
+    what = f" ({STATUS_NAMES[value]})" if value in STATUS_NAMES else ""
+    return f"the C64 kept writing ${value:02X}{what} to the TR+'s status register: {repeated}", True
 
 
 def xpt_reason(rows: list[str]) -> str:
@@ -952,6 +967,8 @@ class Ctx:
     # serial_since's last answer: (the tap's chunk list, mark, chunks decoded, text). The list itself,
     # not its id: a reconnect replaces it, and a freed list's id can be reused.
     _serial: tuple = field(default=(None, 0, 0, ""), repr=False)
+    # The capture's last seconds when a step failed, before the chords, the marking or a reset replace them.
+    failure_frames: list | None = field(default=None, repr=False)
 
     @property
     def link(self):
@@ -1016,20 +1033,20 @@ class Ctx:
             return None
 
     def video_until(self, predicate: Callable[[list[str]], bool], timeout: float,
-                    stop: Callable[[], str | None] | None = None) -> ScreenRead | None:
+                    stop: Callable[[], "StepFailed | None"] | None = None) -> ScreenRead | None:
         """The first of two video reads in a row that satisfy ``predicate``,
         or None when ``timeout`` passes first: a wait that sends nothing to
         the board. A lost or unreadable frame counts as not satisfying it, as
         in ``video_text``: failing there would mark the screen, by DMA, in
-        the middle of the Expansion Port test. ``stop`` gives a reason to end
-        the wait as a failure, or None."""
+        the middle of the Expansion Port test. ``stop`` gives a failure that
+        ends the wait, or None."""
         screen = self.screen
         deadline = time.monotonic() + timeout
         run = 0
         while time.monotonic() < deadline:
-            reason = stop() if stop else None
-            if reason:
-                raise StepFailed(reason)
+            failure = stop() if stop else None
+            if failure:
+                raise failure
             try:
                 read = screen.read_video()
             except TreadmillError:
@@ -1125,7 +1142,7 @@ def step_external_ports(c: Ctx) -> str:
             raise StepFailed("the board left USB during the External Ports test", markable=False)
         stopped = c64_stopped(serial)
         if stopped:
-            raise StepFailed(stopped, markable=False)
+            raise StepFailed(stopped[0], markable=False)
         if c.video.ok:
             read = c.video_text()
             video_read = video_read or read is not None
@@ -1351,20 +1368,21 @@ def wait_xpt_pass(c: Ctx, mark: int, n: int) -> tuple[list[tuple[str, str]], str
     deadline = start + timeout
     early_reads = 0
 
-    def stopped() -> str | None:
-        reason = c64_stopped(c.serial_since(mark))
-        return reason and f"pass {n}: {reason}"
+    def stopped() -> StepFailed | None:
+        """A C64 that stopped mid-pass. A TR+ printing in a loop never goes
+        quiet for a DMA command, so its C64 is reset before it is marked."""
+        found = c64_stopped(c.serial_since(mark))
+        return found and StepFailed(f"pass {n}: {found[0]}", reset_first=found[1])
     while True:
-        serial = c.serial_since(mark)
-        lines, stall = xpt_serial(serial)
+        lines, stall = xpt_serial(c.serial_since(mark))
         if stall or len(lines) >= PATTERNS_PER_PASS or any(v != "CLEAN" for _, v in lines):
             c.waited(f"xpt{n}_lines", start)
             break
         if c.link.stream.ended:
             raise StepFailed(f"the board left USB while waiting for pass {n}'s DMA pattern lines", markable=False)
-        reason = stopped()
-        if reason:
-            raise StepFailed(reason)
+        failure = stopped()
+        if failure:
+            raise failure
         if c.video.ok:
             text = c.video_text() or ""
             early_reads = early_reads + 1 if XPT_PROMPT in text and XPT_PASSED not in text else 0
@@ -1582,11 +1600,14 @@ def finish_screen(c: Ctx, failure: tuple[str, StepFailed] | None) -> bool:
         step, err = failure
         if not err.markable:
             return False
-        if board.reu_live:
+        if board.reu_live or err.reset_first:
             # While the REU is set up the firmware refuses memory commands, and a pause would share the
-            # REU's DMA state: back to the menu, and the menu is marked.
-            board.reset()
+            # REU's DMA state; a TR+ printing in a loop until its C64 resets never goes quiet for one, and a
+            # pause would not hold (every DMA command's CloseDMA releases it). Back to the menu, which is
+            # marked; the reset command goes through the loop's output, which stops with the C64.
+            board.reset(through_noise=err.reset_first)
             board.reu_live = False
+            c.record.reset_before_mark = True
             board.wait_for_menu(MENU_BACK_S)
         if not board.dma_allowed():
             return False
@@ -1609,7 +1630,8 @@ def save_evidence(c: Ctx) -> None:
     # Not for a restart: its rerun writes to the same folder, and a pass saves no frames to replace them.
     if c.record.result not in (PASS, RESTARTED) and c.video.source is not None:
         try:
-            save_strip(c.video.source.ring(), folder / "frames.png")
+            frames = c.failure_frames if c.failure_frames is not None else c.video.source.ring()
+            save_strip(frames, folder / "frames.png")
         except Exception as e:      # a picture for the record: never the reason a board's row goes missing
             c.log(f"[mfg] frames not saved: {e}")
     (folder / "result.json").write_text(json.dumps(c.record.to_dict(), indent=2, default=str), encoding="utf-8")
@@ -1649,6 +1671,8 @@ def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
                 c.console.step(number, step, RESTARTED, wrong.reason)
                 break
             if failure:
+                if c.video.source is not None:
+                    c.failure_frames = c.video.source.ring()
                 result.status, result.detail = FAIL, failure[1].reason
                 c.console.step(number, step, FAIL, failure[1].reason)
                 break

@@ -149,9 +149,10 @@ class Board:
         return (self.link.dma_allowed and self.station.has("dma") and not self.reu_live
                 and time.monotonic() >= self.dma_hold_until)
 
-    def reset(self) -> None:
-        """Reset the C64 and start the hold-off a C128 needs before any DMA."""
-        self.link.reset()
+    def reset(self, *, through_noise: bool = False) -> None:
+        """Reset the C64 and start the hold-off a C128 needs before any DMA.
+        ``through_noise``: see ``Link.reset``."""
+        self.link.reset(through_noise=through_noise)
         if self.is_c128:
             self.dma_hold_until = time.monotonic() + C128_RESET_HOLD_S
 

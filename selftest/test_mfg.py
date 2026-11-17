@@ -669,10 +669,45 @@ def test_a_c64_that_stops_fails_its_board_at_once(lab: Path, monkeypatch):  # no
     rows = _rows(profile.log)
     assert [(r["failed_step"], r["reason"]) for r in rows] == [
         ("Expansion Port", "pass 2: the C64 stopped taking the TR+'s messages (serial: 'Sout Timeout!')"),
-        ("Expansion Port", "pass 3: serial repeated '?Stat: c3' 50 times in a row"),
+        ("Expansion Port", "pass 3: the C64 kept writing $C3 (its reply to a message, rsContinue) to the TR+'s "
+                           "status register: serial repeated '?Stat: c3' 50 times in a row"),
         ("External Ports", "the External Ports test showed no button prompt and no fail line within 2 s"),
         ("External reset", "the C64 reset (its screen changed), but the TR+ did not sense it: no 'Button "
                            "detected' on serial"),
         ("External Ports", "the C64 stopped during the LED questions: its jiffy clock stood still for 1 s")]
     seconds = [json.loads((Path(r["evidence"]) / "result.json").read_text(encoding="utf-8"))["steps"] for r in rows]
     assert seconds[1]["expansion_port"]["seconds"] < 10 and seconds[3]["external_reset"]["seconds"] < 10
+
+
+def test_a_board_whose_tr_loops_is_marked_on_the_menu_after_a_reset(lab: Path):  # noqa: F811
+    """Board 5 on the bench: after pass 3's TR+ half the C64 printed " OK" in
+    a loop and wrote its message reply ($C3) to the status register each
+    time, and the TR+ printed '?Stat: c3' for each, 26,001 times. A DMA
+    command never sees serial go quiet then, and a pause would not hold, so
+    the C64 is reset and the menu marked; the frames are the ones from the
+    failure, kept before the reset."""
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{"xpt_flood_pass": 3}])
+    seen = []
+    power_on = bench._power_on
+
+    def keep():
+        power_on()
+        seen.append(bench.fake)
+    bench._power_on = keep
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    row = _rows(profile.log)[0]
+    assert row["reason"].startswith("pass 3: the C64 kept writing $C3") and row["c64_marked"] == "yes"
+    folder = Path(row["evidence"])
+    assert json.loads((folder / "result.json").read_text(encoding="utf-8"))["reset_before_mark"] is True
+    assert (folder / "frames.png").is_file() and "?Stat: c3" in (folder / "serial.log").read_text(encoding="latin-1")
+    fake = seen[0]
+    assert fake.memory[VIC_BORDER] == RED and not fake.flooding
+    assert screen_rows(bytes(fake.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES]))[24].startswith(
+        "FAIL 5 Expansion Port")

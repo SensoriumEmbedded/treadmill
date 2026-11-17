@@ -41,7 +41,9 @@ cost or a wart with a known, small fix.
    manufacturing test already sends with `Link.drain_when_pending` (a
    command waits only for stray bytes, and refuses a board whose bytes do
    not stop); the rest of the suite keeps the fixed drain until soak runs
-   have tried it.
+   have tried it. Its text replies still end on the idle: about a dozen a
+   board (banner, ping, reset), about 3 s, where the banner reply could end
+   on its `Boot:` line and the ping reply on its `ready!` line.
 13. **medium, with the keyboard board** No way to drive a board whose
    firmware has no USB, such as a TR+ running an extension host (SIDHost).
    `Harness.__enter__` in `treadmill/driver.py` always goes through
@@ -99,6 +101,14 @@ cost or a wart with a known, small fix.
    C64's half ran failed the step with the capture's message, and the fail
    marking then sent DMA during the test of the bus. A read that raises
    now counts as not matching, as in `Ctx.video_text()`.
+29. **low** The manufacturing test's REU step waits out a 2 s settle.
+   `watch_reu_checker` in `treadmill/mfg.py` passes once the checker's bank
+   map has stayed unchanged for `REU_SETTLE_S` (2.0 s), but in the 11 bench
+   runs of 2026-11-17 the map stopped changing 1.68-1.76 s after the watch
+   began (result.json `waits.reu_last_change`), so each board spends the
+   whole 2 s waiting. A shorter settle, set from more boards'
+   `reu_last_change`, saves about 1.5 s a board; a checker that changes its
+   map again after a pause would then be judged early, so measure first.
 
 ## Video
 

@@ -57,7 +57,7 @@ from treadmill.c64.screen import (
 )
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.firmware.hexinfo import HexError, HexInfo, inspect_hex
-from treadmill.link import LinkError, NotFound, TransportError, list_teensyrom_ports, teensyrom_uid, wait_for_teensyrom
+from treadmill.link import LinkError, NotFound, TransportError, list_teensyrom_ports, teensyrom_uid
 from treadmill.link.banner import TR_PLUS, Banner
 from treadmill.observe.calibrate import Calibration, border_of, calibration_path
 from treadmill.observe.capture import FrameSource, save_strip
@@ -125,6 +125,7 @@ EEPROM_DEFAULTS = "--> Setting EEPROM to defaults"
 # -- timing --------------------------------------------------------------------------------
 
 SERIAL_POLL_S = 0.05
+BOARD_POLL_S = 0.5        # USB, for the next board; no port is opened
 # The waits on a person (the buttons, the LED answers) poll more slowly: each round reads video or
 # sends a DMA read, and a quarter second is nothing next to a hand.
 OPERATOR_POLL_S = 0.25
@@ -402,31 +403,32 @@ class Bench(Protocol):
 
 class RealBench:
     """A person at the bench: actions are instructions on the console; boards
-    are found by the serial string they enumerate with. A TeensyROM already on
-    USB when the session starts belongs to another machine on the bench, or is
-    a board under test that was switched on early: neither is taken until it
-    has left USB."""
+    are found by the serial string they enumerate with, which names the chip
+    id with no port opened. A TeensyROM already on USB when the session
+    starts belongs to another machine on the bench, or is a board under test
+    that was switched on early: neither is taken this session. They are known
+    by chip id, so one that leaves USB and comes back, on any port (its
+    machine power-cycled, a treadmill run reflashing it), is not taken either."""
 
     def __init__(self, console: Console):
         self.console = console
         ports = list_teensyrom_ports()
-        self.others = {port for port, _ in ports}
+        self.others = {uid for _, s in ports if (uid := teensyrom_uid(s))}
         if ports:
             names = ", ".join(f"{port} (chip id {teensyrom_uid(s) or '?'})" for port, s in ports)
-            console.warn(f"Already on USB, so not tested: {names}. If the board under test is one of "
-                         "them, switch its C64 off and on again.")
+            console.warn(f"Already on USB, so skipped for this session: {names}. A board under test among "
+                         "them is skipped too: end the session, switch its C64 off, and start again.")
 
     def do(self, action: str) -> None:
         self.console.instruct(INSTRUCTIONS[action])
 
     def wait_for_board(self) -> tuple[str, str]:
         while True:
-            self.others &= {port for port, _ in list_teensyrom_ports()}
-            try:
-                found = wait_for_teensyrom(exclude=tuple(self.others), timeout=1.0)
-            except NotFound:
-                continue
-            return found.port, found.uid
+            for port, serial_string in list_teensyrom_ports():
+                uid = teensyrom_uid(serial_string)
+                if uid and uid not in self.others:
+                    return port, uid
+            time.sleep(BOARD_POLL_S)
 
     def open_board(self, station: Station, timeout: float) -> Board:
         """The board, opened once its main image answers. A port that drops

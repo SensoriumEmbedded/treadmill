@@ -28,7 +28,6 @@ from treadmill.cli import EXIT_FAILED, EXIT_OK, main
 from treadmill.firmware.hexinfo import MAIN_BASE, encode_hex, inspect_hex
 from treadmill import mfg
 from treadmill.link.banner import parse_banner
-from treadmill.link.discover import Found, NotFound, teensyrom_uid
 from treadmill.link.transport import ByteStream
 from treadmill.link.trlink import DRAIN_S, Link
 from treadmill.mfg import (
@@ -272,26 +271,26 @@ def _bench_on(monkeypatch, states: list[list[tuple[str, str]]]) -> tuple[RealBen
         now[:] = next(seq, now)
         return list(now)
 
-    def wait(exclude=(), timeout=None):
-        for port, serial_string in now:
-            if port not in exclude:
-                return Found(port, teensyrom_uid(serial_string), "serial-string")
-        raise NotFound("none")
-
     monkeypatch.setattr(mfg, "list_teensyrom_ports", ports)
-    monkeypatch.setattr(mfg, "wait_for_teensyrom", wait)
+    monkeypatch.setattr(mfg, "BOARD_POLL_S", 0.0)
     console, out = _console()
     return RealBench(console), out
 
 
-def test_a_board_on_usb_before_the_session_is_taken_only_once_it_comes_back(monkeypatch):
+def test_a_teensyrom_on_usb_before_the_session_is_never_taken(monkeypatch):
+    """Backlog 27: the boards on USB at the start are known by chip id, so
+    one that leaves USB and comes back, on its port or another (its machine
+    power-cycled, a treadmill run reflashing it), is not taken for the next
+    board. A board under test switched on early stays skipped too, as the
+    warning says. A PJRC device that names no chip id is never a board."""
     other, early, new = (("COM3", "TEENSYROM-SERIAL-11111111"), ("COM4", "TEENSYROM-SERIAL-22222222"),
                          ("COM5", "TEENSYROM-SERIAL-33333333"))
-    bench, out = _bench_on(monkeypatch, [[other], [other], [other, new]])
-    assert "COM3 (chip id 11111111)" in out.getvalue()
+    keyboard = ("COM6", "12345678")
+    bench, out = _bench_on(monkeypatch, [[other, early, keyboard], [other, early, keyboard], [keyboard],
+                                         [("COM7", other[1]), keyboard], [("COM7", other[1]), early, keyboard, new]])
     assert bench.wait_for_board() == ("COM5", "33333333")
-    bench, _ = _bench_on(monkeypatch, [[other, early], [other, early], [other], [other, early]])
-    assert bench.wait_for_board() == ("COM4", "22222222")
+    assert "COM3 (chip id 11111111), COM4 (chip id 22222222), COM6 (chip id ?)" in out.getvalue()
+    assert "skipped for this session" in out.getvalue() and "start again" in out.getvalue()
 
 
 # -- whole sessions against fake boards ----------------------------------------------------------------

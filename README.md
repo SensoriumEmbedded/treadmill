@@ -211,7 +211,11 @@ table (`nS_PLAprop = 200`) fails the test when reads go wrong below it.
 `treadmill mfg --station <id>` tests new TR+ boards one after another on a
 station's rig. The station gives the rig and the machine; each board is
 found by the serial string it enumerates with. A TR+ takes its power from
-the machine, so switching the machine on is what starts a board. The steps
+the machine, so switching the machine on is what starts a board. A
+TeensyROM already on USB when the session starts is skipped for the whole
+session by its chip id, even when it leaves USB and comes back: it belongs
+to another machine on the bench. A board under test switched on before the
+session is skipped with them, until the session is restarted with it off. The steps
 run in order, launching the two built-in tests through the menu by keys, as
 an operator does (a remote launch changes how the firmware lays out RAM2,
 and with it the REU's size):

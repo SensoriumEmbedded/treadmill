@@ -10,7 +10,7 @@ from treadmill.c64.screen import (
     C128_RESET, KEYBUF, KEYBUF_128, KEYCOUNT, KEYCOUNT_128, RESET_VECTOR, SCREEN_BYTES,
 )
 from treadmill.link import Link, LinkError, NotAllowed, Refused, trlink
-from treadmill.link.transport import open_pipe
+from treadmill.link.transport import ByteStream, TransportError, open_pipe
 from treadmill.link.protocol import DRIVE_SD
 from selftest.fake_board import BANNER, BANNER_TR, start_fake_board
 
@@ -232,3 +232,25 @@ def test_a_reset_goes_through_a_board_printing_in_a_loop(board_and_link):
     board.flood("?Stat: c3\n")
     _arrived(link.stream, seen + 1)
     assert "Reset cmd received" in link.reset(through_noise=True) and not board.flooding
+
+
+def test_a_write_the_port_refuses_is_a_transport_error():
+    """pyserial raises 'Write timeout' (an OSError) when the board stopped
+    reading or has gone; the stream says so as a TransportError, which the
+    link's callers handle as a board that cannot be reached."""
+    class Refusing:
+        def read(self, n):
+            time.sleep(0.05)
+            return b""
+
+        def write(self, data):
+            raise OSError("Write timeout")
+
+        def close(self):
+            pass
+    stream = ByteStream(Refusing(), "refusing")
+    try:
+        with pytest.raises(TransportError, match="refusing: Write timeout"):
+            stream.write(b"d")
+    finally:
+        stream.close()

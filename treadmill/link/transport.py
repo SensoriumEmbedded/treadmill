@@ -186,9 +186,14 @@ class ByteStream:
     # -- writing and closing ---------------------------------------------
 
     def write(self, data: bytes) -> None:
+        """A write the port refuses or times out on (pyserial's 'Write timeout'
+        when the board stopped reading, or has gone) is a TransportError."""
         if self._ended:
             raise TransportError(f"{self.name}: the connection to the board closed")
-        self._raw.write(data)
+        try:
+            self._raw.write(data)
+        except OSError as e:
+            raise TransportError(f"{self.name}: {e}") from e
 
     def close(self) -> None:
         with self._cv:

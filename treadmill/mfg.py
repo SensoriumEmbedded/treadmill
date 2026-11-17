@@ -59,7 +59,7 @@ from treadmill.c64.screen import (
 )
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.firmware.hexinfo import HexError, HexInfo, inspect_hex
-from treadmill.link import LinkError, NotFound, TransportError, list_teensyrom_ports, teensyrom_uid
+from treadmill.link import LinkError, NoReply, NotFound, TransportError, list_teensyrom_ports, teensyrom_uid
 from treadmill.link.banner import TR_PLUS, Banner
 from treadmill.observe.calibrate import Calibration, border_of, calibration_path
 from treadmill.observe.capture import FrameSource, save_strip
@@ -128,6 +128,11 @@ LAUNCHED = re.compile(r"^F: (.+?)[ \t\r]*(?=\n)", re.M)
 REU_HANDLER = re.compile(r"Loading IO handler: (\d+)KB REU")
 REU_SIZE = re.compile(r"REU Size: (\d+)K bytes")
 EEPROM_DEFAULTS = "--> Setting EEPROM to defaults"
+BOOT_LINE = " is on-line"            # the main image's boot banner: "TeensyROM+ v0.9 is on-line"
+# A reply the link missed, or a write the port would not take: the board may have stopped, restarted or
+# left, and the reason says which (diagnose_silence).
+SILENCES = (NoReply, TransportError)
+REAPPEAR_S = 5.0                     # a restarting TR+ back on USB: the bench's open it 3.3 s after power-on
 # SendMsgSerialStringBuf (FileParsers.ino) prints this when the C64 has not taken a message in 3 s; it is
 # in no passing board's serial log.
 SOUT_TIMEOUT = "Sout Timeout!"
@@ -969,6 +974,7 @@ class Ctx:
     _serial: tuple = field(default=(None, 0, 0, ""), repr=False)
     # The capture's last seconds when a step failed, before the chords, the marking or a reset replace them.
     failure_frames: list | None = field(default=None, repr=False)
+    step_mark: int = 0                   # the serial record's length when the current step began
 
     @property
     def link(self):
@@ -1111,7 +1117,7 @@ def launch_from_menu(c: Ctx, path: str) -> None:
             menu.open(f"/{part}")
         menu.select(name)
     except TreadmillError as e:
-        raise StepFailed(f"could not launch {name} from the menu: {e}") from None
+        raise StepFailed(f"could not launch {name} from the menu: {e}") from e
 
 
 def step_external_ports(c: Ctx) -> str:
@@ -1642,6 +1648,43 @@ def first_line(e: BaseException) -> str:
     return text.splitlines()[0] if text else type(e).__name__
 
 
+def diagnose_silence(c: Ctx) -> tuple[str, bool]:
+    """What a board that missed a reply is doing, and whether it can still be
+    marked: gone from USB (and whether it came back, a restart), restarted on
+    USB (its boot banner again), answering after all, or on USB and silent,
+    its firmware stopped while the C64, if it still shows the menu, runs on."""
+    if c.board.link.stream.ended or c.bench.gone(c.record.port):
+        deadline = time.monotonic() + REAPPEAR_S
+        while time.monotonic() < deadline:
+            if not c.bench.gone(c.record.port):
+                return "the TR+ left USB and came back: it restarted", False
+            time.sleep(BOARD_POLL_S)
+        return "the TR+ left USB", False
+    if BOOT_LINE in c.serial_since(c.step_mark):
+        return "the TR+ restarted: it printed its boot banner again", False
+    try:
+        image = c.link.fw_check()
+    except (LinkError, TransportError):
+        image = None
+    if image:
+        return f"a reply from the TR+ was lost, though it answers a firmware check now ({image} image)", True
+    text = c.video_text() if c.video.ok else None
+    menu = text is not None and parse_listing(text.split("\n")) is not None
+    return ("the TR+ stopped answering on USB: it is still on USB, and a firmware check got no reply"
+            + ("; the C64 still shows the menu" if menu else "")), False
+
+
+def explained(c: Ctx, failure: StepFailed, cause: BaseException | None) -> StepFailed:
+    """``failure`` with a missed reply's cause (the link's bare 'no reply'
+    or 'Write timeout') replaced by what the board is doing."""
+    if not isinstance(cause, SILENCES) or c.board is None:
+        return failure
+    diagnosis, markable = diagnose_silence(c)
+    said = first_line(cause)
+    head = failure.reason[:-len(said)].rstrip(": ") if failure.reason.endswith(said) else failure.reason
+    return StepFailed(f"{head}: {diagnosis}" if head else diagnosis, markable=markable)
+
+
 def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
     """Every step in order up to the first failure, the screen marked, the
     evidence saved and the row logged, whatever happened, Ctrl+C included.
@@ -1655,15 +1698,16 @@ def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
         for number, step in enumerate(STEPS, 1):
             s0 = time.monotonic()
             c.console.step_start(number, step)
+            c.step_mark = c.mark() if c.board is not None else 0
             try:
                 detail = STEP_FUNCS[step](c)
             except WrongStandard as e:
                 wrong = e
             except StepFailed as e:
-                failure = (step, e)
+                failure = (step, explained(c, e, e.__cause__))
             except (TreadmillError, OSError) as e:
                 ended = c.board is None or c.board.link.stream.ended
-                failure = (step, StepFailed(first_line(e), markable=not ended))
+                failure = (step, explained(c, StepFailed(first_line(e), markable=not ended), e))
             result = record.steps[step]
             result.seconds = round(time.monotonic() - s0, 1)
             if wrong:

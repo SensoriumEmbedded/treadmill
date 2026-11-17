@@ -283,7 +283,12 @@ and with it the REU's size):
 The first failure halts the board. Its screen turns red and inverted, the
 bottom row names the step and the reason, and the C64 is paused so nothing
 redraws it. The firmware takes no memory commands while the REU checker's
-REU is set up, so an REU failure is marked on the menu after a reset. A passing board gets a green summary instead. Before the
+REU is set up, so an REU failure is marked on the menu after a reset. A
+board that misses a reply is not left at the link's "no reply": the reason
+says whether the TR+ left USB, restarted, answers again, or stays on USB
+with its firmware silent (and whether the C64 still shows the menu), and
+one that cannot answer is not marked. A passing board gets a green summary
+instead. Before the
 pause the SID plays four chords, rising on a pass and falling on a fail,
 then falls silent; the TR's LED flashes while the C64 is paused. Each
 board adds:

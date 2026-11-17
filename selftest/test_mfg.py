@@ -711,3 +711,40 @@ def test_a_board_whose_tr_loops_is_marked_on_the_menu_after_a_reset(lab: Path): 
     assert fake.memory[VIC_BORDER] == RED and not fake.flooding
     assert screen_rows(bytes(fake.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES]))[24].startswith(
         "FAIL 5 Expansion Port")
+
+
+def test_a_board_that_stops_answering_says_what_it_is_doing(lab: Path, monkeypatch):  # noqa: F811
+    """Board 3 on the bench: the menu launch's first DMA read got no reply,
+    logged as the link's bare 'read of $D018: no reply from the board', and
+    marking it waited out another 5 s. The reason now says whether the TR+
+    left USB, restarted, or stays on USB silent, and a silent board is not
+    marked. Board 1 goes silent at the launch; board 2 leaves USB there."""
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{}, {}])
+    launch, boards = mfg.launch_from_menu, []
+
+    def stop_then_launch(c, path):
+        if path == mfg.EPC_PATH:
+            boards.append(bench.fake)
+            if len(boards) == 1:
+                bench.fake.silent = True
+            else:
+                bench.fake.power_off()
+        return launch(c, path)
+    monkeypatch.setattr(mfg, "launch_from_menu", stop_then_launch)
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=2, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    launch_failed = "could not launch TeensyROM External Ports Test from the menu: "
+    assert [r["reason"] for r in rows] == [
+        launch_failed + "the TR+ stopped answering on USB: it is still on USB, and a firmware check got no "
+                        "reply; the C64 still shows the menu",
+        launch_failed + "the TR+ left USB"]
+    assert [r["c64_marked"] for r in rows] == ["no", "no"]
+    finish = json.loads((Path(rows[0]["evidence"]) / "result.json").read_text(encoding="utf-8"))["waits"]["finish"]
+    assert finish < 1.0                                              # no 5 s spent trying to mark it

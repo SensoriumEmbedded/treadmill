@@ -4,7 +4,9 @@
 takes its power from the machine, so a board on USB is a machine switched on)
 and runs the checks a board gets before it ships, in order:
 
-1. power-up: the main image boots to the menu;
+1. power-up: the main image boots to the menu, and the C64 runs the station's
+   video standard (a C64 in the other one is set by the operator, and the
+   board starts over: not its fault, so not logged);
 2. firmware: version and build stamp equal the factory hex's, no tag, not dirty;
 3. External Ports: the built-in test passes, its clock line on serial and on
    screen agree and are within a tolerance of UTC (which proves the time
@@ -179,6 +181,7 @@ TITLES = {"power_up": "Power-up", "firmware": "Firmware", "external_ports": "Ext
           "external_reset": "External reset", "expansion_port": "Expansion Port", "sd_root": "SD root",
           "reu": "REU"}
 PASS, FAIL, NOT_RUN, ABORTED = "PASS", "FAIL", "NOT RUN", "ABORTED"
+RESTARTED = "RESTARTED"     # a board started over after the C64 was set right; not a result, so not logged
 CSV_FIELDS = ("start", "duration_s", "chip_id", "fw_version", "fw_built", "result", "failed_step", "reason",
               *STEPS, "led_ethernet", "led_tr", "epc_time_delta_s", "c64_marked", "evidence")
 
@@ -224,6 +227,18 @@ class StepFailed(TreadmillError):
         super().__init__(reason)
         self.reason = reason
         self.markable = markable
+
+
+class WrongStandard(TreadmillError):
+    """The C64 runs the other video standard from the station's. Not the
+    board's fault: its tests would run against a calibration, glyph bank and
+    SID clock made for the station's standard, so it starts over once the
+    C64 is set right."""
+
+    def __init__(self, found: str, want: str):
+        self.found, self.want = found, want
+        self.reason = f"the C64 runs {found}, and this station tests in {want}"
+        super().__init__(self.reason)
 
 
 # -- the profile -----------------------------------------------------------------------------
@@ -382,6 +397,7 @@ class Console:
 # -- the bench: boards appearing, and the operator's hands ------------------------------------------
 
 CONNECT, BUTTONS, LEDS, RESET_BUTTON, POWER_OFF = "connect", "buttons", "leds", "reset", "power_off"
+SET_STANDARD = "standard"
 INSTRUCTIONS = {
     CONNECT: "Plug in the next TR+. Connect USB to this PC, Ethernet, the USB thumb drive and the "
              "SD card, then power on the C64.",
@@ -391,6 +407,8 @@ INSTRUCTIONS = {
           "Y or N on its keyboard.",
     RESET_BUTTON: "Press the C64's reset button.",
     POWER_OFF: "Power off the C64 and remove the board.",
+    SET_STANDARD: "Power off the C64, set its Kawari to the station's video standard, then power it on "
+                  "with the same board in. The board starts over.",
 }
 
 
@@ -460,6 +478,25 @@ class OperatorReset:
 
     def apply(self) -> None:
         self.bench.do(RESET_BUTTON)
+
+
+class StandardSwitch(Protocol):
+    def apply(self, standard: str, port: str) -> None: ...
+
+
+class OperatorSwitch:
+    """The C64's video standard set until the keyboard board's V command can
+    switch the Kawari: the operator does it. The Kawari reads its standard
+    only when its FPGA configures, so the C64 is powered off and on, and the
+    board leaves USB; this returns once it has."""
+
+    def __init__(self, bench: Bench):
+        self.bench = bench
+
+    def apply(self, standard: str, port: str) -> None:
+        self.bench.do(SET_STANDARD)
+        while not self.bench.gone(port):
+            time.sleep(BOARD_POLL_S)
 
 
 # -- video ---------------------------------------------------------------------------------------------
@@ -541,6 +578,7 @@ class BoardRecord:
     fresh_eeprom: bool | None = None
     evidence: str = ""
     waits: dict[str, float] = field(default_factory=dict)   # seconds each wait took, in result.json only
+    restarts: list[str] = field(default_factory=list)       # why it started over first, in result.json only
 
     def csv_row(self) -> dict[str, object]:
         row: dict[str, object] = {
@@ -967,6 +1005,10 @@ def step_power_up(c: Ctx) -> str:
     except (LinkError, TransportError, NotFound) as e:
         raise StepFailed(f"the menu did not come up: {e}", markable=False) from None
     c.board.probe()          # what answered when the port first opened may have been MinimalBoot: no DMA
+    # Before the video is fitted: a calibration taken from the other standard's picture would be saved.
+    found, want = c.board.banner.video if c.board.banner else None, c.station.machine.region
+    if found and want in ("NTSC", "PAL") and found != want:
+        raise WrongStandard(found, want)
     c.video.fit(c.board, c.log)
     c.record.fresh_eeprom = EEPROM_DEFAULTS in c.serial_since(0)
     return "menu up" + (", settings at defaults" if c.record.fresh_eeprom else "")
@@ -1425,7 +1467,8 @@ def save_evidence(c: Ctx) -> None:
             write_board_artifacts(folder, c.board, since=0.0, mark=0)
         except (TreadmillError, OSError) as e:
             c.log(f"[mfg] serial log not written: {e}")
-    if c.record.result != PASS and c.video.source is not None:
+    # Not for a restart: its rerun writes to the same folder, and a pass saves no frames to replace them.
+    if c.record.result not in (PASS, RESTARTED) and c.video.source is not None:
         try:
             save_strip(c.video.source.ring(), folder / "frames.png")
         except Exception as e:      # a picture for the record: never the reason a board's row goes missing
@@ -1440,16 +1483,21 @@ def first_line(e: BaseException) -> str:
 
 def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
     """Every step in order up to the first failure, the screen marked, the
-    evidence saved and the row logged, whatever happened, Ctrl+C included."""
+    evidence saved and the row logged, whatever happened, Ctrl+C included.
+    A C64 in the wrong video standard ends the board RESTARTED instead: no
+    marking, no chords, no row, since nothing about the board was judged."""
     record = c.record
     t0 = time.monotonic()
     failure: tuple[str, StepFailed] | None = None
+    wrong: WrongStandard | None = None
     try:
         for number, step in enumerate(STEPS, 1):
             s0 = time.monotonic()
             c.console.step_start(number, step)
             try:
                 detail = STEP_FUNCS[step](c)
+            except WrongStandard as e:
+                wrong = e
             except StepFailed as e:
                 failure = (step, e)
             except (TreadmillError, OSError) as e:
@@ -1457,17 +1505,24 @@ def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
                 failure = (step, StepFailed(first_line(e), markable=not ended))
             result = record.steps[step]
             result.seconds = round(time.monotonic() - s0, 1)
+            if wrong:
+                result.status, result.detail = RESTARTED, wrong.reason
+                c.console.step(number, step, RESTARTED, wrong.reason)
+                break
             if failure:
                 result.status, result.detail = FAIL, failure[1].reason
                 c.console.step(number, step, FAIL, failure[1].reason)
                 break
             result.status, result.detail = PASS, detail
             c.console.step(number, step, PASS, detail)
-        record.result = FAIL if failure else PASS
-        if failure:
-            record.failed_step, record.reason = failure[0], failure[1].reason
-        with c.timed("finish"):
-            record.c64_marked = finish_screen(c, failure)
+        if wrong:
+            record.result, record.reason = RESTARTED, wrong.reason
+        else:
+            record.result = FAIL if failure else PASS
+            if failure:
+                record.failed_step, record.reason = failure[0], failure[1].reason
+            with c.timed("finish"):
+                record.c64_marked = finish_screen(c, failure)
     except KeyboardInterrupt:
         record.result, record.reason = ABORTED, "stopped by the operator"
         raise
@@ -1476,7 +1531,8 @@ def check_board(c: Ctx, board_log: BoardLog) -> BoardRecord:
         try:
             save_evidence(c)
         finally:
-            board_log.append(record)
+            if record.result != RESTARTED:
+                board_log.append(record)
             if c.board is not None:
                 c.board.close()
     return record
@@ -1491,11 +1547,14 @@ def board_station(template: Station, uid: str, port: str) -> Station:
 
 def run_session(template: Station, profile: MfgProfile, bench: Bench, console: Console, video: VideoKit,
                 run_dir: RunDir, *, boards: int | None = None, reset: ExternalReset | None = None,
-                log: Callable[[str], None] = print) -> dict:
-    """Board after board until Ctrl+C, or ``boards`` of them."""
+                standard: StandardSwitch | None = None, log: Callable[[str], None] = print) -> dict:
+    """Board after board until Ctrl+C, or ``boards`` of them. A board whose
+    C64 runs the other video standard starts over, under the same number,
+    once ``standard`` has set the C64 to the station's."""
     expected = expected_firmware(profile)
     board_log = BoardLog(profile.log, run_dir.stamp, console)
     reset = reset or OperatorReset(bench)
+    standard = standard or OperatorSwitch(bench)
     records: list[BoardRecord] = []
     console.heading(f"TR+ manufacturing test: {expected.version}, built {expected.stamp}")
     console.say(f"Log: {board_log.path}")
@@ -1509,19 +1568,27 @@ def run_session(template: Station, profile: MfgProfile, bench: Bench, console: C
             bench.do(CONNECT)
             if records:
                 pc_offset = pc_clock_offset(profile.ntp_server, console, quiet=True)
-            console.say("Waiting for a TeensyROM on USB (Ctrl+C ends the session) ...")
-            port, uid = bench.wait_for_board()
-            console.say(f"Chip id {uid} on {port}")
-            folder = run_dir.path / "boards" / f"{n:03d}-{uid}"
-            folder.mkdir(parents=True, exist_ok=True)
-            record = BoardRecord(n, port, uid, datetime.now(), evidence=str(folder))
-            c = Ctx(record, board_station(template, uid, port), profile, expected, bench, reset, console, video,
-                    folder, log, pc_offset_s=pc_offset)
-            try:
-                check_board(c, board_log)
-            finally:
-                records.append(record)
-                console.verdict(record)
+            restarts: list[str] = []
+            while True:
+                console.say("Waiting for a TeensyROM on USB (Ctrl+C ends the session) ...")
+                port, uid = bench.wait_for_board()
+                console.say(f"Chip id {uid} on {port}")
+                folder = run_dir.path / "boards" / f"{n:03d}-{uid}"
+                folder.mkdir(parents=True, exist_ok=True)
+                record = BoardRecord(n, port, uid, datetime.now(), evidence=str(folder), restarts=list(restarts))
+                c = Ctx(record, board_station(template, uid, port), profile, expected, bench, reset, console,
+                        video, folder, log, pc_offset_s=pc_offset)
+                try:
+                    check_board(c, board_log)
+                finally:
+                    if record.result != RESTARTED:
+                        records.append(record)
+                        console.verdict(record)
+                if record.result != RESTARTED:
+                    break
+                restarts.append(record.reason)
+                console.warn(f"{record.reason[0].upper()}{record.reason[1:]}.\a")
+                standard.apply(template.machine.region, port)
             bench.do(POWER_OFF)
             seen = getattr(video.source, "no_signal_frames", None)
             while not bench.gone(port):

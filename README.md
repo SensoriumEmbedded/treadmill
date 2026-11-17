@@ -220,7 +220,16 @@ run in order, launching the two built-in tests through the menu by keys, as
 an operator does (a remote launch changes how the firmware lays out RAM2,
 and with it the REU's size):
 
-1. Power-up: the main image boots to the menu.
+1. Power-up: the main image boots to the menu, and the board's banner shows
+   the C64 in the station's video standard (`region`). The rig's
+   calibration, glyph bank and SID clock are for that standard, so a C64 in
+   the other one, a Kawari left switched by other work on the bench, would
+   misread every video check. It is not the board's fault: the console asks
+   the operator to power off, set the Kawari and power on, and the same
+   board starts over under its number. No CSV row is written for the
+   attempt; the board's `result.json` lists it under `restarts`. The switch
+   goes through `StandardSwitch`, so the keyboard board's `V` command can
+   take over from the operator.
 2. Firmware: the version and build stamp equal the factory hex's, with no
    tag and no `*`.
 3. External Ports: the built-in test passes after the operator presses MENU

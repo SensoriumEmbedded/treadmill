@@ -10,7 +10,9 @@ from selftest.fake_board import BANNER, FakeBoard, start_fake_board
 from selftest.synth import calibrated, fake_frame_source, harvested_bank
 from treadmill.board import Board
 from treadmill.link import Link
-from treadmill.mfg import BUTTONS, CONNECT, INSTRUCTIONS, LEDS, POWER_OFF, RESET_BUTTON, Console, VideoKit
+from treadmill.mfg import (
+    BUTTONS, CONNECT, INSTRUCTIONS, LEDS, POWER_OFF, RESET_BUTTON, SET_STANDARD, Console, VideoKit,
+)
 
 FIRST_UID = 19300000
 SD_ROOT = [{"type": "dir", "name": "APPS"}, {"type": "dir", "name": "VMS"},
@@ -60,6 +62,10 @@ class FakeBench:
             self.fake.external_reset()
         elif action == POWER_OFF:
             self.fake.power_off()
+        elif action == SET_STANDARD:
+            # Off, the Kawari switched, on again: the next plan is the same board in the new standard.
+            self.fake.power_off()
+            self._power_on()
 
     def _power_on(self) -> None:
         faults = dict(self.plans.pop(0)) if self.plans else {}
@@ -82,7 +88,7 @@ class FakeBench:
         return Board.open(station, link_factory=lambda: Link(stream))
 
     def gone(self, port: str) -> bool:
-        return self.fake is None or not self.fake.powered
+        return self.fake is None or not self.fake.powered or port != self.port
 
     def video_kit(self) -> VideoKit:
         cal = calibrated()

@@ -17,6 +17,7 @@ import pytest
 import numpy as np
 
 from selftest.fake_bench import SD_ROOT, FakeBench
+from selftest.fake_board import BANNER as FAKE_BANNER
 from selftest.fake_programs import DARK_GREY, GREEN, LIGHT_GREEN, YELLOW, ExpPort, ExtPorts, checker_screen
 from selftest.fake_programs import RED as REU_RED
 from selftest.synth import calibrated, frame_of
@@ -31,8 +32,8 @@ from treadmill.link.banner import parse_banner
 from treadmill.link.transport import ByteStream
 from treadmill.link.trlink import DRAIN_S, Link
 from treadmill.mfg import (
-    CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, SID, BoardLog, BoardRecord,
-    Console, Ctx, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
+    CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, INSTRUCTIONS, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, SET_STANDARD,
+    SID, BoardLog, BoardRecord, Console, Ctx, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
     _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
     xpt_reason, xpt_serial,
@@ -595,3 +596,29 @@ def test_a_lost_frame_while_a_pass_shows_its_prompt_is_waited_out(lab: Path, mon
     finally:
         video.close()
     assert lost and summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
+
+
+def test_a_c64_in_the_other_standard_is_set_right_and_its_board_starts_over(lab: Path):  # noqa: F811
+    """The station tests in NTSC. A Kawari C64 left in PAL by other work on
+    the bench made every video check misread, and its REU checker fail a good
+    board. The board is not failed or logged: the operator sets the C64, and
+    the same board starts over under its number, here after a second PAL
+    power-on."""
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
+    bench = FakeBench(console, boards=[{"banner": pal}, {"banner": pal}, {}])
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    assert [r["result"] for r in rows] == [PASS] and summary["counts"] == {PASS: 1, FAIL: 0, "ABORTED": 0}
+    wrong = "the C64 runs PAL, and this station tests in NTSC"
+    result = json.loads((Path(rows[0]["evidence"]) / "result.json").read_text(encoding="utf-8"))
+    assert result["n"] == 1 and result["restarts"] == [wrong, wrong]
+    text = out.getvalue()
+    assert text.count("The C64 runs PAL, and this station tests in NTSC.") == 2
+    assert text.count(INSTRUCTIONS[SET_STANDARD]) == 2 and "Board 1 PASSED" in text and "FAIL" not in text

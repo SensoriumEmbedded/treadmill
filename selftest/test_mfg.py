@@ -774,3 +774,26 @@ def test_a_pass_screen_with_a_bit_wrong_fails_and_says_which_way(lab: Path):  # 
         head + ": a second DMA read shows the test's text, so the TR+'s first DMA read of the screen had data "
                "bit 1 low"]
     assert (Path(rows[1]["evidence"]) / "expansion_port_2.again.screen.txt").is_file()
+
+
+def test_the_external_ports_test_waits_for_the_usb_drive(lab: Path, monkeypatch):  # noqa: F811
+    """The External Ports test gives the USB thumb drive 1.5 s from when it
+    reaches it; started 5 s after power-on it failed a good board twice on
+    the bench, with a stick not yet up. A stick that mounts a moment later
+    now passes; one that never does fails before the test, saying so."""
+    monkeypatch.setattr(mfg, "USB_READY_S", 3.0)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{"usb_ready_after_s": 1.5}, {"usb_ready_after_s": None}])
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=2, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    assert [r["result"] for r in rows] == [PASS, FAIL]
+    assert rows[1]["failed_step"] == "External Ports" and rows[1]["reason"] == (
+        "the USB drive did not come up within 3 s (the TR+'s listing of it: 'Directory not found. (Error 5)')")
+    waits = json.loads((Path(rows[0]["evidence"]) / "result.json").read_text(encoding="utf-8"))["waits"]
+    assert waits["usb_ready"] > 0.5

@@ -59,7 +59,9 @@ from treadmill.c64.screen import (
 )
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.firmware.hexinfo import HexError, HexInfo, inspect_hex
-from treadmill.link import LinkError, NoReply, NotFound, TransportError, list_teensyrom_ports, teensyrom_uid
+from treadmill.link import (
+    LinkError, NoReply, NotFound, Refused, TransportError, list_teensyrom_ports, teensyrom_uid,
+)
 from treadmill.link.banner import TR_PLUS, Banner
 from treadmill.observe.calibrate import Calibration, border_of, calibration_path
 from treadmill.observe.capture import FrameSource, save_strip
@@ -161,6 +163,11 @@ EPC_VERDICT_S = 8.0       # the Hello line to the verdict: ExtPortCheck's last m
 # The External Ports test's launch to its button prompt or its fail line: 7.5 s at most, but the slowest
 # fail path (two 15 s DHCP timeouts, the 2.5 s NTP wait, two SD starts, the 1.5 s USB wait) is 40 s.
 EPC_PROMPT_S = 45.0
+# The USB thumb drive mounted before the External Ports test starts. Not measured yet (result.json's
+# usb_ready will say): the bench's stick missed the test's own 1.5 s twice when it started 5 s after
+# power-on, never when it started 14 s after.
+USB_READY_S = 10.0
+USB_POLL_S = 0.5
 RESET_FOLLOW_S = 5.0      # 'Button detected' to 'Resetting C64': the same serial chunk every time
 RESET_SENSE_S = 2.0       # the C64's screen gone after a reset to 'Button detected': the same moment
 SCREEN_CHANGE_READS = 3
@@ -1121,6 +1128,25 @@ def launch_from_menu(c: Ctx, path: str) -> None:
         raise StepFailed(f"could not launch {name} from the menu: {e}") from e
 
 
+def wait_usb_drive(c: Ctx) -> None:
+    """Until the TR+ has the USB thumb drive mounted: its root lists, where a
+    drive not up yet is refused ("Directory not found"). The External Ports
+    test gives the drive 1.5 s (USBFileSystemWait) from when it reaches it,
+    so a test started before the stick has come up after power-on fails a
+    good board; one that never comes up fails here, saying so."""
+    deadline = time.monotonic() + USB_READY_S
+    while True:
+        try:
+            c.link.list_directory("/", "usb", take=1)
+            return
+        except Refused as e:
+            said = e.text or "refused"
+        if time.monotonic() >= deadline:
+            raise StepFailed(f"the USB drive did not come up within {USB_READY_S:g} s (the TR+'s listing of it: "
+                             f"{said!r})")
+        time.sleep(USB_POLL_S)
+
+
 def step_external_ports(c: Ctx) -> str:
     """The board answers nothing while it waits for the buttons, so the wait
     sends nothing: it watches serial for the line sent after the buttons and
@@ -1131,6 +1157,8 @@ def step_external_ports(c: Ctx) -> str:
     not fail a board. The operator's epc_timeout_s starts at the prompt.
     The LED questions go on the C64's bottom row once the test waits for
     its key."""
+    with c.timed("usb_ready"):
+        wait_usb_drive(c)
     mark = c.mark()
     with c.timed("epc_launch"):
         launch_from_menu(c, EPC_PATH)

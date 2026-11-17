@@ -21,7 +21,7 @@ from treadmill.c64.screen import (
 from treadmill.link.banner import parse_banner
 from treadmill.mfg import IGETIN, JIFFY_CLOCK, LED_ROW
 from treadmill.link.protocol import (
-    ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, FAIL, FW_CHECK,
+    ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, DRIVE_USB, FAIL, FW_CHECK,
     FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, GOOD_SID, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
     READ_C64_MEM, RESET_C64, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
 )
@@ -100,6 +100,7 @@ class FakeBoard:
     heartbeat: bool = False              # a launched hello.a is ticking its bottom-right cell
     flooding: bool = False               # a line printed in a loop (flood())
     dma_bit_once: tuple = ()             # screen cells the next DMA read of the screen returns with bit 1 low
+    born: float = field(default_factory=time.monotonic)     # power-on, for faults timed from it
     menu_draws_by_item: bool = False     # FakeMenu.draw_by_item from the first redraw on
     menu: object = field(default=None, repr=False)
     # The bus timing model: the firmware samples the select lines at max(nS_PLAprop, nS_RWnReady),
@@ -582,7 +583,11 @@ class FakeBoard:
             end.write("".join(json.dumps(e) + "\r\n" for e in self._teensy_listing()).encode("latin-1"))
             self._reply(end, DIR_END)
             return
-        if path not in self.directories:
+        # faults["usb_ready_after_s"]: the thumb drive mounts that long after power-on, None never; until then
+        # its volume does not open, as GetDirectoryCommand finds it.
+        usb_after = self.faults.get("usb_ready_after_s", 0.0)
+        usb_down = drive == DRIVE_USB and (usb_after is None or time.monotonic() - self.born < usb_after)
+        if usb_down or path not in self.directories:
             self._refuse(end, "Directory not found. (Error 5)")
             return
         self._reply(end, ACK)

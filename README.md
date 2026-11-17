@@ -232,7 +232,10 @@ and with it the REU's size):
    take over from the operator.
 2. Firmware: the version and build stamp equal the factory hex's, with no
    tag and no `*`.
-3. External Ports: the built-in test passes after the operator presses MENU
+3. External Ports: first the TR+ must have the USB thumb drive mounted
+   (its root lists), within 10 s: the test itself gives the drive 1.5 s,
+   which a stick still coming up after power-on misses. Then the built-in
+   test passes after the operator presses MENU
    and ALT. Its `Hello from TR at:` line agrees on serial and on screen, and
    is within `time_tolerance_s` (5 s) of UTC when it arrived (a new board's
    timezone setting is UTC). UTC is this PC's clock corrected by its offset

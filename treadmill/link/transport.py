@@ -325,6 +325,7 @@ class PipeEnd:
     def __init__(self, inbox: queue.Queue, outbox: queue.Queue):
         self._in, self._out = inbox, outbox
         self._pending = bytearray()
+        self.closed = False          # the host closed its end: a port closing, DTR dropping
 
     def read(self, count: int, timeout: float) -> bytes:
         deadline = time.monotonic() + timeout
@@ -337,6 +338,7 @@ class PipeEnd:
             except queue.Empty:
                 break
             if item is None:
+                self.closed = True
                 break
             self._pending += item
         out = bytes(self._pending[:count])
@@ -354,6 +356,7 @@ class PipeEnd:
             except queue.Empty:
                 break
             if item is None:
+                self.closed = True
                 break
             self._pending += item
         at = self._pending.find(marker)

@@ -27,6 +27,14 @@ class Found:
     by: str   # "serial-string" | "banner"
 
 
+def _unnamed(serial_string: str | None) -> bool:
+    """A PJRC device whose serial string doesn't say what it is: none at all,
+    or PJRC's default number, as a TeensyROM firmware too old to name itself
+    reports. Only those are opened and asked for a banner. A named device,
+    another TeensyROM or a keyboard board, is never sent TeensyROM tokens."""
+    return not serial_string or serial_string.isdigit()
+
+
 def _matches(serial_string: str | None, uid: str) -> bool:
     return bool(serial_string) and serial_string.upper().endswith(uid.upper())
 
@@ -60,7 +68,7 @@ def find_port(uid: str, port_hint: str | None = None, timeout: float = 0.0) -> F
     """The serial port of the board whose chip id is ``uid``.
 
     Looks at the device serial strings first; only when none names the uid are
-    the PJRC ports opened and their banners read, the hinted port first. With a
+    the unnamed PJRC ports opened and their banners read, the hinted port first. With a
     ``timeout`` the search repeats until a board appears, for reconnecting after
     a flash or a reboot.
     """
@@ -70,7 +78,7 @@ def find_port(uid: str, port_hint: str | None = None, timeout: float = 0.0) -> F
         for port, serial_string in ports:
             if _matches(serial_string, uid):
                 return Found(port, uid, "serial-string")
-        candidates = [p for p, _ in ports]
+        candidates = [p for p, s in ports if _unnamed(s)]
         if port_hint and port_hint in candidates:
             candidates.remove(port_hint)
             candidates.insert(0, port_hint)

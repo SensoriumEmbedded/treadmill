@@ -4,5 +4,6 @@ events and any frames."""
 
 from treadmill.report.artifacts import (  # noqa: F401
     RunDir, describe_board, describe_station, host_record, safe_name, suite_commit, write_board_artifacts,
+    write_kbd_log,
 )
 from treadmill.report.html import render_report  # noqa: F401

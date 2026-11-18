@@ -29,9 +29,11 @@ CAPS = frozenset({
     "keys_hw",        # the keyboard board drives the matrix: any program, any TR
     "nmi",            # RESTORE through the keyboard board
     "tr_button",      # the keyboard board pulses the TeensyROM button
+    "tr_alt",         # the keyboard board pulses the TeensyROM's second button
     "tod_select",     # the keyboard board drives the 50/60 Hz TOD line
+    "ext_reset",      # the keyboard board drives the C64's /RESET, with no help from the TR
     "power",          # the rig can cut and restore the machine's mains
-    "region_switch",  # the machine's video standard can be switched (Kawari or U64)
+    "region_switch",  # the machine's video standard can be switched (a Kawari by the keyboard board, or a U64)
     "c128",           # the machine is a C128
     "c64u",           # the machine is a C64 Ultimate
     "u64_api",        # the Ultimate REST API is reachable
@@ -43,6 +45,10 @@ CAPS = frozenset({
 
 # Attributes a test can match with needs("kernal:JiffyDOS") and the like.
 PREFIXED_CAPS = ("kernal:", "fw:", "asset:")
+
+# What the keyboard board can give a station; a skip for one of these says why the board isn't there.
+KEYBOARD_CAPS = frozenset({"keys_hw", "keys_kernal", "nmi", "tr_button", "tr_alt", "tod_select", "ext_reset",
+                           "region_switch"})
 
 
 @dataclass(frozen=True)
@@ -74,9 +80,12 @@ class PowerSpec:
 
 
 @dataclass(frozen=True)
-class KeysSpec:
-    backend: str = "none"           # none | usbkeyboard
-    port: str | None = None         # the C64-USBKeyboard board's host serial port
+class KeyboardSpec:
+    """The C64-USBKeyboard board in the station's machine. Its capabilities
+    come from the outputs its own ``?`` says are fitted, once it is open."""
+    chip: str                        # its chip id: the USB serial string is C64USBKeyboard_<chip>
+    kawari_open: str | None = None   # PAL | NTSC: the standard a Kawari gives with its switch header J1 open
+    tod: str | int = "standard"      # standard | 50 | 60 | off: the station's TOD rate
 
 
 @dataclass(frozen=True)
@@ -84,8 +93,7 @@ class Rig:
     id: str
     capture: CaptureSpec | None = None
     power: PowerSpec | None = None
-    keys: KeysSpec | None = None
-    region_switch: str | None = None   # kawari | u64
+    region_switch: str | None = None   # u64: the Ultimate switches its own standard (a Kawari's is the keyboard board's)
     scope: bool = False
     u64_url: str | None = None         # the Ultimate's REST base URL, when the machine is one
     firmware_checkout: str | None = None   # the TeensyROM checkout whose tools build and flash
@@ -132,6 +140,8 @@ class Station:
     allow_eeprom_reset: bool = False
     settings_baseline: Mapping[str, object] = field(default_factory=dict)
     margins: Mapping[str, int] = field(default_factory=dict)   # knob name -> value a sweep must find clean
+    keyboard: KeyboardSpec | None = None
+    kbd_fitted: frozenset[str] | None = None   # the keyboard board's fitted outputs; None until it answers
     caps: frozenset[str] = frozenset()
 
     def with_probe(self, kind: str, listener_on: bool = False,
@@ -140,6 +150,13 @@ class Station:
         tr = replace(self.tr, kind=kind)
         st = replace(self, tr=tr)
         return replace(st, caps=capabilities(st, listener_on=listener_on, fw_defines=fw_defines))
+
+    def with_keyboard(self, fitted: frozenset[str]) -> "Station":
+        """The station once its keyboard board answered: what it has fitted
+        decides the keyboard caps; the probe's caps stay as they were."""
+        st = replace(self, kbd_fitted=frozenset(fitted))
+        defines = tuple(c[len("fw:"):] for c in self.caps if c.startswith("fw:"))
+        return replace(st, caps=capabilities(st, listener_on="tcp" in self.caps, fw_defines=defines))
 
     def masked(self, removed: set[str]) -> "Station":
         """A station with capabilities taken away (--caps-mask), to prove the
@@ -159,11 +176,18 @@ def capabilities(station: Station, *, listener_on: bool = False,
         caps |= {"video", "screen"}
     if tr.kind == TR_PLUS:
         caps |= {"dma", "screen_dma", "screen", "reset_sense", "keys_kernal"}
-    if rig.keys is not None and rig.keys.backend != "none":
-        caps |= {"keys_hw", "keys_kernal", "nmi", "tr_button", "tod_select"}
+    fitted = station.kbd_fitted
+    if fitted is not None:
+        caps |= {"keys_hw", "keys_kernal", "nmi"}
+        for output, cap in (("tod", "tod_select"), ("menu", "tr_button"), ("alt", "tr_alt"), ("reset", "ext_reset")):
+            if output in fitted:
+                caps.add(cap)
+        # V holds the C64 in reset while the FPGA reloads, and only the station knows which standard J1 open gives.
+        if {"kawari", "reset"} <= fitted and machine.has_kawari and station.keyboard and station.keyboard.kawari_open:
+            caps.add("region_switch")
     if rig.power is not None and rig.power.backend != "none":
         caps.add("power")
-    if rig.region_switch and machine.region.lower() == "switchable":
+    if rig.region_switch == "u64" and machine.region.lower() == "switchable":
         caps.add("region_switch")
     if tr.tcp_host and listener_on:
         caps.add("tcp")

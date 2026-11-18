@@ -231,6 +231,7 @@ class KeyboardBoard:
         self.identity: dict[str, str] = {}
         self.events: list[tuple[float, str]] = []
         self.lines: list[tuple[float, str]] = []
+        self.sent: list[tuple[float, str]] = []
         self.stray: list[Reply] = []            # replies no pending command claimed
         self._pending: list[Pending] = []
         self._cv = threading.Condition()
@@ -345,6 +346,7 @@ class KeyboardBoard:
                 self.stream.write(data)
             except TransportError as e:
                 raise KbdError(str(e)) from None
+            self.sent.append((time.monotonic(), data.decode("ascii", "replace")))
 
     def start(self, line: str, timeout: float | None = None) -> Pending:
         """Send one command line and return at once; ``wait()`` on the result
@@ -390,6 +392,21 @@ class KeyboardBoard:
         time.sleep(seconds)
         with self._cv:
             return [text for _, text in self.lines[start:]]
+
+    def transcript(self, since: float = 0.0) -> list[str]:
+        """Both directions since the host time ``since``, oldest first, each
+        line stamped in seconds from ``since``: ``>`` sent, ``<`` received."""
+        with self._cv:
+            rows = [(t, ">", text) for t, text in self.sent if t >= since]
+            rows += [(t, "<", text) for t, text in self.lines if t >= since]
+        rows.sort(key=lambda r: r[0])
+        out = []
+        for t, way, text in rows:
+            if way == ">":
+                # A whole line is shown as text; raw bytes with no LF (write_raw) are shown quoted.
+                text = text[:-1] if text.endswith("\n") else repr(text)
+            out.append(f"{t - since:10.3f} {way} {text}")
+        return out
 
     def wait_event(self, pattern: str, timeout: float, since: float | None = None) -> tuple[float, str] | None:
         """The first ``EV`` line matching the regex ``pattern`` that arrived at

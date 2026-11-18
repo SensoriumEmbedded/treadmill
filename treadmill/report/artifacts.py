@@ -3,8 +3,9 @@
 ``reports/<YYYYmmdd-HHMMSS>/`` holds ``run.json`` (what ran against what,
 and how every test came out), ``report.html`` rendered from it, and one
 folder per test with ``serial.log`` (the board's raw output during the
-test), ``events.json`` and whatever frames or screens the test attached. A
-script run by ``treadmill exec`` leaves the same folder.
+test), ``events.json``, ``kbd.log`` when the station has a keyboard board,
+and whatever frames or screens the test attached. A script run by
+``treadmill exec`` leaves the same folder.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from treadmill import __version__
 if TYPE_CHECKING:
     from treadmill.board import Board
     from treadmill.link.unsolicited import Event
+    from treadmill.session import LinklessSession
+    from treadmill.station.kbd import KeyboardBoard
 
 SETTLE_S = 0.3           # the link's idle time: what the board said last has arrived by then
 
@@ -113,11 +116,24 @@ class RunDir:
         self.meta["summary"] = summary
 
 
-def describe_station(board: "Board") -> dict[str, Any]:
-    """The ``station`` entry of run.json, from the station as probed."""
+def describe_station(board: "Board | LinklessSession") -> dict[str, Any]:
+    """The ``station`` entry of run.json, from the station as probed, with
+    its keyboard board when it names one."""
     st = board.station
     return {"id": st.id, "rig": st.rig.id, "machine": st.machine.id, "model": st.machine.model,
-            "region": st.machine.region, "caps": sorted(st.caps), "tr_uid": st.tr.uid, "tr_kind": st.tr.kind}
+            "region": st.machine.region, "caps": sorted(st.caps), "tr_uid": st.tr.uid, "tr_kind": st.tr.kind,
+            "keyboard": describe_keyboard(board)}
+
+
+def describe_keyboard(board: "Board | LinklessSession") -> dict[str, Any] | None:
+    spec, kbd = board.station.keyboard, board.kbd
+    if spec is None:
+        return None
+    if kbd is None:
+        return {"chip": spec.chip, "open": False, "problem": board.kbd_problem}
+    ident = kbd.identity
+    return {"chip": kbd.chip, "open": True, "port": kbd.port, "mcu": ident.get("mcu"), "fw": ident.get("fw"),
+            "proto": ident.get("proto"), "fitted": sorted(kbd.fitted)}
 
 
 def describe_board(board: "Board") -> dict[str, Any]:
@@ -131,7 +147,8 @@ def describe_board(board: "Board") -> dict[str, Any]:
 def write_board_artifacts(folder: Path, board: "Board", since: float, mark: int) -> "list[Event]":
     """What the board said from ``mark`` (a tap index taken at the start)
     on, as ``serial.log``, and the events classified from it since ``since``
-    as ``events.json``; lines nothing has read yet are taken in first."""
+    as ``events.json``; lines nothing has read yet are taken in first. With
+    a keyboard board open, its traffic since ``since`` as ``kbd.log``."""
     stale = board.link.stream.drain(SETTLE_S)
     if stale:
         board.events.feed(stale)
@@ -140,4 +157,13 @@ def write_board_artifacts(folder: Path, board: "Board", since: float, mark: int)
     (folder / "serial.log").write_bytes(raw)
     (folder / "events.json").write_text(json.dumps([asdict(e) for e in events], indent=2, default=_jsonable),
                                         encoding="utf-8")
+    if board.kbd is not None:
+        write_kbd_log(folder, board.kbd, since)
     return events
+
+
+def write_kbd_log(folder: Path, kbd: "KeyboardBoard", since: float) -> Path:
+    """The keyboard board's lines both ways since ``since``, as ``kbd.log``."""
+    path = folder / "kbd.log"
+    path.write_text("".join(f"{row}\n" for row in kbd.transcript(since)), encoding="utf-8")
+    return path

@@ -60,7 +60,8 @@ def cmd_stations(args: argparse.Namespace) -> int:
             st = load_station(sid)
             rows.append({"id": sid, "rig": st.rig.id, "machine": st.machine.id,
                          "model": st.machine.model, "region": st.machine.region,
-                         "tr_uid": st.tr.uid, "tier": tier(st), "caps": sorted(st.caps), "error": None})
+                         "tr_uid": st.tr.uid, "keyboard_chip": st.keyboard.chip if st.keyboard else None,
+                         "tier": tier(st), "caps": sorted(st.caps), "error": None})
         except ConfigError as e:
             rows.append({"id": sid, "error": str(e)})
     if args.station:
@@ -73,8 +74,9 @@ def cmd_stations(args: argparse.Namespace) -> int:
         if r.get("error"):
             lines.append(f"{r['id']}: ERROR {r['error']}")
         else:
-            lines.append(f"{r['id']}: {r['model']} {r['region']} on {r['rig']}, TR uid {r['tr_uid']}, "
-                         f"tier {r['tier']}, caps {', '.join(r['caps'])}")
+            kbd = f", keyboard board chip {r['keyboard_chip']}" if r["keyboard_chip"] else ""
+            lines.append(f"{r['id']}: {r['model']} {r['region']} on {r['rig']}, TR uid {r['tr_uid']}{kbd}, "
+                         f"tier {r['tier']} before opening, caps {', '.join(r['caps'])}")
     _emit({"stations": rows}, args.json, "\n".join(lines) if lines else "no stations in data/stations")
     return EXIT_FAILED if any(r.get("error") for r in rows) else EXIT_OK
 
@@ -120,7 +122,7 @@ def _harness_options(args: argparse.Namespace):
 
     return HarnessOptions(station=args.station, reports=args.reports, attended=args.attended,
                           no_video=args.no_video, caps_mask=args.caps_mask, to_menu=not args.as_is,
-                          firmware=_firmware_options(args))
+                          no_link=getattr(args, "no_link", False), firmware=_firmware_options(args))
 
 
 def cmd_exec(args: argparse.Namespace) -> int:
@@ -544,6 +546,12 @@ def _harness_args(s: argparse.ArgumentParser) -> None:
     _firmware_args(s)
 
 
+def _no_link_arg(s: argparse.ArgumentParser) -> None:
+    s.add_argument("--no-link", action="store_true",
+                   help="open the rig, the capture and the keyboard board but not the TeensyROM: board, link, "
+                        "menu and dbg are None, and the screen reads video from the stored calibration")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="treadmill", description="TeensyROM hardware-in-the-loop validation")
     p.add_argument("--version", action="version", version=f"treadmill {__version__}")
@@ -573,20 +581,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("exec", help="run a script on an open station, with a test's logging and artifacts",
                        description="The script runs as __main__ with the station's objects as globals: "
-                                   "session, station, board, link, screen, menu, keys, dbg, video, firmware, "
+                                   "session, station, board, link, screen, menu, keys, dbg, kbd, video, firmware, "
                                    "artifacts, run_dir, log. A `result` it leaves is reported (--json). "
                                    "Everything after -- is the script's own argv.")
     _station_args(s)
     _harness_args(s)
+    _no_link_arg(s)
     s.add_argument("script", help="the Python file to run")
     s.add_argument("script_args", nargs="*", help="after --: arguments for the script")
     s.set_defaults(func=cmd_exec)
 
     s = sub.add_parser("shell", help="a Python REPL on an open station",
                        description="The same names a script gets, at a prompt: link.ping(), screen.read(), "
-                                   "menu.open('/Games'), keys.press(F1), dbg.letter('t').")
+                                   "menu.open('/Games'), keys.press(F1), dbg.letter('t'), kbd.status().")
     _station_args(s, json_flag=False)
     _harness_args(s)
+    _no_link_arg(s)
     s.set_defaults(func=cmd_shell, json=False)
 
     s = sub.add_parser("sweep", help="find a timing knob's margin: raise it until the probe fails, bisect, restore",

@@ -32,12 +32,13 @@ from treadmill.programs.build import AssembleError, assemble
 from treadmill.report import (
     RunDir, describe_board, describe_station, host_record, render_report, write_board_artifacts,
 )
-from treadmill.session import (
-    FAKE_ENV, dbg_for, fake_requested, keys_for, load_bank, load_or_calibrate, menu_for, open_video,  # noqa: F401
+from treadmill.session import (  # noqa: F401
+    FAKE_ENV, dbg_for, fake_keyboard, fake_requested, keyboard_line, keys_for, load_bank, load_or_calibrate,
+    menu_for, open_video,
 )
 from treadmill.station import ConfigError, load_station
 from treadmill.station.lock import RigBusy, RigLock
-from treadmill.station.model import unknown_caps
+from treadmill.station.model import KEYBOARD_CAPS, unknown_caps
 
 RUN_ATTR = "_treadmill_run"          # the RunDir on the pytest config, for hooks and fixtures alike
 FAKE_ATTR = "_treadmill_fake"
@@ -256,18 +257,22 @@ def firmware(request: pytest.FixtureRequest, station, run_dir: RunDir) -> Firmwa
 def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: FirmwareRun) -> Board:
     """The station's board: rig locked, port open, probed, capabilities final,
     the recovery ladder's rungs attached."""
-    factory = None
+    factory = kbd_factory = None
     if fake_requested():
         from selftest.fake_board import start_fake_board
         fake, stream = start_fake_board(debug_defines=set(firmware.defines))   # the build the run claims
         factory = lambda: Link(stream)  # noqa: E731
+        kbd_factory = fake_keyboard(station)
         setattr(request.config, FAKE_ATTR, fake)
     mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
     try:
         b = Board.open(station, attended=request.config.getoption("--attended"), link_factory=factory,
-                       fw_defines=firmware.defines, caps_mask=mask, firmware=firmware)
+                       fw_defines=firmware.defines, caps_mask=mask, firmware=firmware, kbd_factory=kbd_factory)
     except Exception as e:
         pytest.exit(f"station {station.id}: {e}", returncode=4)
+    line = keyboard_line(b.kbd, b.kbd_problem)
+    if line:
+        _log(line)
     run_dir.meta["station"] = describe_station(b)
     run_dir.meta["board"] = describe_board(b)
     yield b
@@ -516,10 +521,14 @@ def _capability_gate(request: pytest.FixtureRequest):
     tolerant_only = item.get_closest_marker("timing_sensitive") is not None
     if not (needs or needs_fw or tolerant_only):
         return
-    st = request.getfixturevalue("board").station
+    board = request.getfixturevalue("board")
+    st = board.station
     missing = [c for c in needs if c not in st.caps]
     if missing:
-        pytest.skip(f"station {st.id} lacks {', '.join(missing)}")
+        why = ""
+        if board.kbd_problem and KEYBOARD_CAPS.intersection(missing):
+            why = f" (keyboard board: {board.kbd_problem})"
+        pytest.skip(f"station {st.id} lacks {', '.join(missing)}{why}")
     fw_missing = [d for d in needs_fw if f"fw:{d}" not in st.caps]
     if fw_missing:
         pytest.skip(f"firmware lacks {', '.join(fw_missing)}; run with "

@@ -17,14 +17,15 @@ def lab(tmp_path: Path) -> Path:
     (tmp_path / "rigs").mkdir()
     (tmp_path / "stations").mkdir()
     (tmp_path / "rigs" / "rigA.toml").write_text(
-        'id = "rigA"\nregion_switch = "kawari"\nscope = true\n'
+        'id = "rigA"\nscope = true\n'
         '[capture]\nbackend = "opencv"\ndevice = 0\nsource = "svideo"\nconverter = "acme"\n'
         '[power]\nbackend = "none"\n'
-        '[keys]\nbackend = "usbkeyboard"\nport = "COM8"\n', encoding="utf-8")
+        '[keys]\nbackend = "none"\n', encoding="utf-8")
     (tmp_path / "stations" / "rigA-sys1-trplus.toml").write_text(
         'id = "rigA-sys1-trplus"\nrig = "rigA"\nmachine_id = "1"\n'
-        '[overrides]\nkernal = "JiffyDOS"\nregion = "switchable"\n'
-        '[tr]\nuid = "12345678"\nport_hint = "COM91"\n', encoding="utf-8")
+        '[overrides]\nkernal = "JiffyDOS"\n'
+        '[tr]\nuid = "12345678"\nport_hint = "COM91"\n'
+        '[keyboard]\nchip = 14470230\nkawari_open = "ntsc"\n', encoding="utf-8")
     (tmp_path / "registry.toml").write_text(
         f'systems_csv = "{(FIXTURES / "systems.csv").as_posix()}"\n', encoding="utf-8")
     return tmp_path
@@ -57,10 +58,15 @@ def test_station_loads_with_registry_and_overrides(lab: Path):
     assert st.rig.capture.capture_class == "svideo-acme"
     assert st.machine.nickname == "bench-a" and st.machine.kernal == "JiffyDOS"
     assert st.tr.uid == "12345678" and st.tr.kind is None
-    # Before the probe: video, keys from the board, region switch, scope; no DMA yet.
-    assert st.has("serial", "video", "screen", "keys_hw", "keys_kernal", "region_switch", "scope")
-    assert not st.has("dma")
+    assert st.keyboard.chip == "14470230" and st.keyboard.kawari_open == "NTSC" and st.keyboard.tod == "standard"
+    # Before the probe and before the keyboard board answers: video and scope; no DMA, no keys yet.
+    assert st.has("serial", "video", "screen", "scope")
+    assert not st.has("dma") and not st.has("keys_hw") and st.kbd_fitted is None
     assert "kernal:JiffyDOS" in st.caps
+    assert tier(st) == "0"
+    st = st.with_keyboard(frozenset({"tod", "reset", "kawari"}))
+    assert st.has("keys_hw", "keys_kernal", "nmi", "tod_select", "ext_reset", "region_switch")
+    assert not st.has("tr_button") and not st.has("tr_alt")
     assert tier(st) == "0/1/3"
 
 
@@ -78,12 +84,67 @@ def test_a_station_reads_with_its_own_bank_before_its_capture_class_s(lab: Path)
 
 
 def test_probe_adds_dma_caps_and_mask_removes_them(lab: Path):
-    st = load_station("rigA-sys1-trplus", lab).with_probe(TR_PLUS, fw_defines=("Dbg_SerDMA",))
-    assert st.has("dma", "screen_dma", "reset_sense", "fw:Dbg_SerDMA")
+    st = load_station("rigA-sys1-trplus", lab).with_keyboard(frozenset({"reset", "kawari"}))
+    st = st.with_probe(TR_PLUS, fw_defines=("Dbg_SerDMA",))
+    assert st.has("dma", "screen_dma", "reset_sense", "fw:Dbg_SerDMA", "keys_hw", "region_switch")
     assert tier(st) == "0+/1/3"
     masked = st.masked({"dma", "screen_dma", "reset_sense", "keys_kernal", "keys_hw"})
     assert not masked.has("dma") and masked.has("video")
     assert tier(masked) == "0/3"
+
+
+def test_the_keyboard_board_keeps_the_probe_s_caps(lab: Path):
+    st = load_station("rigA-sys1-trplus", lab).with_probe(TR_PLUS, fw_defines=("Dbg_SerDMA",))
+    st = st.with_keyboard(frozenset())
+    assert st.has("dma", "fw:Dbg_SerDMA", "keys_hw", "keys_kernal", "nmi")
+    assert not st.has("ext_reset") and not st.has("region_switch") and not st.has("tod_select")
+
+
+@pytest.mark.parametrize("fitted, has_kawari, kawari_open, granted, refused", [
+    (set(), True, "NTSC", {"keys_hw", "keys_kernal", "nmi"},
+     {"tod_select", "tr_button", "tr_alt", "ext_reset", "region_switch"}),
+    ({"tod"}, True, "NTSC", {"tod_select"}, {"ext_reset"}),
+    ({"menu"}, True, "NTSC", {"tr_button"}, {"tr_alt"}),
+    ({"alt"}, True, "NTSC", {"tr_alt"}, {"tr_button"}),
+    ({"reset"}, True, "NTSC", {"ext_reset"}, {"region_switch"}),
+    ({"kawari"}, True, "NTSC", set(), {"region_switch"}),                 # V holds reset: it needs both
+    ({"kawari", "reset"}, False, "NTSC", {"ext_reset"}, {"region_switch"}),  # no Kawari in this machine
+    ({"kawari", "reset"}, True, None, {"ext_reset"}, {"region_switch"}),     # J1 open's standard unknown
+    ({"kawari", "reset"}, True, "PAL", {"ext_reset", "region_switch"}, set()),
+])
+def test_keyboard_caps_follow_what_is_fitted(lab: Path, fitted, has_kawari, kawari_open, granted, refused):
+    from dataclasses import replace
+
+    st = load_station("rigA-sys1-trplus", lab)
+    st = replace(st, machine=replace(st.machine, has_kawari=has_kawari),
+                 keyboard=replace(st.keyboard, kawari_open=kawari_open)).with_keyboard(frozenset(fitted))
+    assert granted <= st.caps and not (refused & st.caps)
+
+
+@pytest.mark.parametrize("rig, match", [
+    ('id = "r"\nregion_switch = "kawari"\n', "keyboard board switches a Kawari"),
+    ('id = "r"\nregion_switch = "relay"\n', "the one value"),
+    ('id = "r"\n[keys]\nbackend = "usbkeyboard"\nport = "COM8"\n', "station file now"),
+])
+def test_old_rig_keyboard_settings_say_where_they_went(tmp_path: Path, rig, match):
+    (tmp_path / "rigs").mkdir()
+    (tmp_path / "rigs" / "r.toml").write_text(rig, encoding="utf-8")
+    with pytest.raises(ConfigError, match=match):
+        load_rig("r", tmp_path)
+
+
+@pytest.mark.parametrize("table, match", [
+    ('kawari_open = "PAL"\n', "needs chip"),
+    ('chip = "C64USBKeyboard_1"\n', "not a chip id"),
+    ('chip = "1"\nkawari_open = "SECAM"\n', "PAL or NTSC"),
+    ('chip = "1"\ntod = 55\n', "one of standard, 50, 60, off"),
+    ('chip = "1"\nport = "COM5"\n', "unknown key"),
+])
+def test_a_bad_keyboard_table_fails_loudly(lab: Path, table, match):
+    (lab / "stations" / "kb.toml").write_text(
+        f'id = "kb"\nrig = "rigA"\nmachine_id = "1"\n[tr]\nuid = "1"\n[keyboard]\n{table}', encoding="utf-8")
+    with pytest.raises(ConfigError, match=match):
+        load_station("kb", lab)
 
 
 def test_list_stations_skips_examples(lab: Path):

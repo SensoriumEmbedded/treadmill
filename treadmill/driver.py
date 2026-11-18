@@ -6,8 +6,10 @@ the plugin left (``run.json``) and answers with the suite's exit codes.
 ``Harness`` opens a station the way a test session does, the firmware under
 test prepared and the rig held, and gives a script or a shell the same
 objects a test gets (``board``, ``link``, ``screen``, ``menu``, ``keys``,
-``dbg``, ``video``, ``artifacts``); what the board said meanwhile lands in a
-folder of the run like any test's. Nothing here imports pytest.
+``dbg``, ``kbd``, ``video``, ``artifacts``); what the board said meanwhile
+lands in a folder of the run like any test's. With ``no_link`` it opens the
+station without its TeensyROM: the TR's names are None. Nothing here
+imports pytest.
 """
 
 from __future__ import annotations
@@ -24,13 +26,13 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE
+from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE, TreadmillError
 from treadmill.firmware.prepare import FirmwareRun, prepare_firmware, primary_checkout
 from treadmill.firmware.spec import FirmwareSpec, parse_spec
 from treadmill.report import (
-    RunDir, describe_board, describe_station, host_record, render_report, write_board_artifacts,
+    RunDir, describe_board, describe_station, host_record, render_report, write_board_artifacts, write_kbd_log,
 )
-from treadmill.session import Session, fake_requested, open_station
+from treadmill.session import LinklessSession, Session, fake_requested, open_linkless, open_station
 from treadmill.station import load_station
 from treadmill.station.config import repo_root
 from treadmill.station.lock import RigLock
@@ -204,7 +206,12 @@ class HarnessOptions:
     no_video: bool = False
     caps_mask: str = ""
     to_menu: bool = True                       # bring the board to the menu before handing it over
+    no_link: bool = False                      # open the rig, the capture and the keyboard board, never the TR
     firmware: FirmwareOptions = field(default_factory=FirmwareOptions)
+
+
+class HarnessUsage(TreadmillError):
+    code = EXIT_USAGE
 
 
 class Harness:
@@ -219,6 +226,7 @@ class Harness:
         self.log = log
         self.run_dir: RunDir | None = None
         self.session: Session | None = None
+        self.linkless: LinklessSession | None = None
         self.firmware: FirmwareRun | None = None
         self.namespace: dict = {}
         self.outcome: dict = {"nodeid": name, "outcome": "passed", "message": None}
@@ -235,10 +243,17 @@ class Harness:
         opts = self.opts
         station = load_station(opts.station)
         spec = opts.firmware.spec()
+        asked = opts.firmware
+        if opts.no_link and (asked.fw != "none" or asked.defines or asked.tag or asked.fw_defines):
+            raise HarnessUsage("--no-link opens no TeensyROM, so it takes no firmware: leave out --fw, --define, "
+                               "--tag and --fw-defines")
         self.run_dir = RunDir(Path(opts.reports).resolve())
         self.run_dir.meta.update({"command": self.name, **host_record(["treadmill", *sys.argv[1:]])})
         self._lock = RigLock(station.rig.id, wait=5.0).acquire()
         try:
+            if opts.no_link:
+                self._open_linkless()
+                return self
             declared = tuple(opts.firmware.fw_defines)
             if fake_requested():
                 fw = FirmwareRun(spec, defines=declared, primary=primary_checkout(station))
@@ -261,6 +276,8 @@ class Harness:
             self.run_dir.write_run()
             if self.session is not None:
                 self.session.close()
+            if self.linkless is not None:
+                self.linkless.close()
             self._lock.release()
             raise
         self.run_dir.meta["station"] = describe_station(board)
@@ -271,25 +288,47 @@ class Harness:
         self.namespace = {
             "session": self.session, "station": board.station, "board": board, "link": board.link,
             "screen": screen, "video": self.session.video, "keys": self.session.keys(),
-            "menu": self.session.menu(screen), "dbg": self.session.dbg(), "firmware": fw,
+            "menu": self.session.menu(screen), "dbg": self.session.dbg(), "kbd": board.kbd, "firmware": fw,
             "artifacts": self.folder, "run_dir": self.run_dir.path, "log": self.log,
         }
         return self
 
+    def _open_linkless(self) -> None:
+        """``no_link``: the rig held, the capture and the keyboard board open, no TR."""
+        mask = {c for c in self.opts.caps_mask.split(",") if c}
+        self.linkless = ls = open_linkless(self.opts.station, video=not self.opts.no_video, caps_mask=mask,
+                                           log=self.log)
+        self.run_dir.meta["firmware"] = {"spec": "none", "no_link": True}
+        self.run_dir.meta["station"] = describe_station(ls)
+        self.run_dir.meta["board"] = None
+        self._t0 = time.monotonic()
+        self.namespace = {
+            "session": ls, "station": ls.station, "board": None, "link": None, "screen": ls.screen_channel(),
+            "video": ls.video, "keys": None, "menu": None, "dbg": None, "kbd": ls.kbd, "firmware": None,
+            "artifacts": self.folder, "run_dir": self.run_dir.path, "log": self.log,
+        }
+
     def __exit__(self, exc_type, exc, tb) -> None:
-        assert self.run_dir is not None and self.session is not None and self._lock is not None
-        board = self.session.board
+        assert self.run_dir is not None and self._lock is not None
+        opened = self.session or self.linkless
+        assert opened is not None
         try:
-            write_board_artifacts(self.folder, board, self._t0, self._mark)
-            self.run_dir.meta["recoveries"] = list(board.recoveries)
+            if self.session is not None:
+                board = self.session.board
+                write_board_artifacts(self.folder, board, self._t0, self._mark)
+                self.run_dir.meta["recoveries"] = list(board.recoveries)
+            elif opened.kbd is not None:
+                write_kbd_log(self.folder, opened.kbd, self._t0)
             self.outcome["duration"] = time.monotonic() - self._t0
             self.run_dir.tests[self.name] = self.outcome
             self.run_dir.finish(EXIT_OK if self.outcome["outcome"] == "passed" else EXIT_FAILED)
             self.run_dir.write_run()
             render_report(self.run_dir.path)
         finally:
-            self.session.close()
-            self._lock.release()
+            try:
+                opened.close()
+            finally:
+                self._lock.release()
 
 
 @dataclass
@@ -330,15 +369,18 @@ def exec_script(harness: Harness, script: Path, argv: tuple[str, ...] = (), *, q
         sys.argv = saved_argv
 
 
-SHELL_NAMES = ("session", "station", "board", "link", "screen", "menu", "keys", "dbg", "video", "firmware",
+SHELL_NAMES = ("session", "station", "board", "link", "screen", "menu", "keys", "dbg", "kbd", "video", "firmware",
                "artifacts", "run_dir", "log")
 
 
 def shell(harness: Harness) -> int:
     """A REPL with the harness namespace; ``quit()`` or end of input leaves it."""
     board = harness.namespace["board"]
+    if board is None:
+        what = "no TR link"
+    else:
+        what = board.banner.version if board.banner else board.image
     names = ", ".join(n for n in SHELL_NAMES if harness.namespace.get(n) is not None)
-    banner = (f"treadmill shell: {board.station.id}, {board.banner.version if board.banner else board.image}; "
-              f"names: {names}")
+    banner = f"treadmill shell: {harness.namespace['station'].id}, {what}; names: {names}"
     code.interact(banner=banner, local=harness.namespace, exitmsg="")
     return EXIT_OK

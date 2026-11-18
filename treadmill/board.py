@@ -1,8 +1,9 @@
 """``Board``: a station's TeensyROM, open for a whole run.
 
-It owns the rig lock, the serial link, the event log and the recovery
-ladder, and it is what the pytest fixtures and the driver's ``exec`` and
-``shell`` hand out. The ladder, run before every test, climbs only as far as
+It owns the rig lock, the serial link, the event log, the recovery ladder,
+and the keyboard board when the station's machine has one, and it is what
+the pytest fixtures and the driver's ``exec`` and ``shell`` hand out. The
+ladder, run before every test, climbs only as far as
 it must: a reset; then the 134-baud USB reboot with a loader relaunch of the
 firmware already on the board, when the run knows which hex that is; then a
 mains cycle when the rig has power control; else the station is marked wedged
@@ -21,6 +22,7 @@ from treadmill.link import Link, LinkError, NotFound, Refused, TransportError, f
 from treadmill.link.banner import Banner
 from treadmill.link.state import MENU_READY, State, derive_state
 from treadmill.link.unsolicited import EventLog
+from treadmill.station.kbd import KbdError, KeyboardBoard
 from treadmill.station.lock import RigLock
 from treadmill.station.model import Station
 from treadmill.station.power import Power, PowerUnavailable, make_power
@@ -39,6 +41,23 @@ SERIAL_DEAF_HANDLERS = frozenset({"TR_BASIC"})
 
 class Wedged(TreadmillError):
     """The board stopped answering and nothing the station has could bring it back."""
+
+
+def open_keyboard(station: Station, factory: Callable[[], KeyboardBoard] | None = None, *,
+                  discover: bool = True) -> tuple[KeyboardBoard | None, str | None]:
+    """The station's keyboard board, or None and why not. A board the station
+    names that is not on USB, or will not answer, leaves the station without
+    its capabilities instead of failing the open: the tests that need it skip
+    with the reason. ``factory`` replaces discovery (a fake board); without
+    one, ``discover=False`` opens nothing."""
+    if station.keyboard is None:
+        return None, None
+    if factory is None and not discover:
+        return None, "not opened: the TR is a fake and no fake keyboard board was given"
+    try:
+        return (factory() if factory else KeyboardBoard.open(station.keyboard.chip)), None
+    except KbdError as e:
+        return None, str(e)
 
 
 @dataclass
@@ -62,6 +81,8 @@ class Board:
     fw_defines: tuple[str, ...] = ()
     caps_mask: frozenset[str] = frozenset()
     probe_pending: bool = False          # a reconnect happened; whatever answers next is probed when the menu is up
+    kbd: KeyboardBoard | None = None
+    kbd_problem: str | None = None       # why the station's keyboard board isn't open
 
     # -- opening ----------------------------------------------------------
 
@@ -69,14 +90,17 @@ class Board:
     def open(cls, station: Station, *, lock_wait: float = 5.0, attended: bool = False,
              link_factory: Callable[[], Link] | None = None, fw_defines: tuple[str, ...] = (),
              caps_mask: set[str] | frozenset[str] = frozenset(),
-             firmware: "FirmwareRun | None" = None) -> "Board":
+             firmware: "FirmwareRun | None" = None,
+             kbd_factory: Callable[[], KeyboardBoard] | None = None) -> "Board":
         """Lock the rig, find the board by chip id, open it and probe it, with
         the recovery ladder's upper rungs attached: a reconnect by chip id,
         and, when ``firmware`` knows the hex on the board and the checkout
-        whose flasher put it there, the USB reboot that relaunches it.
-        ``link_factory`` replaces discovery and the serial port (the self-tests
-        hand in a link to a fake board) and gets no rung past a reset. Nothing
-        stays held when this fails: the lock and the port are released before
+        whose flasher put it there, the USB reboot that relaunches it. Then
+        the keyboard board the station names, whose fitted outputs join the
+        capabilities. ``link_factory`` replaces discovery and the serial port
+        (the self-tests hand in a link to a fake board) and gets no rung past
+        a reset; with it, only ``kbd_factory`` opens a keyboard board. Nothing
+        stays held when this fails: the lock and the ports are released before
         the error leaves."""
         lock = RigLock(station.rig.id, wait=lock_wait).acquire()
         events = EventLog()
@@ -96,6 +120,9 @@ class Board:
         if link_factory is None:
             board.attach_recovery(firmware)
         try:
+            board.kbd, board.kbd_problem = open_keyboard(station, kbd_factory, discover=link_factory is None)
+            if board.kbd is not None:
+                board.station = board.station.with_keyboard(board.kbd.fitted).masked(board.caps_mask)
             board.probe()
         except BaseException:
             board.close()
@@ -136,8 +163,12 @@ class Board:
         try:
             self.link.close()
         finally:
-            if self.lock:
-                self.lock.release()
+            try:
+                if self.kbd is not None:
+                    self.kbd.close()
+            finally:
+                if self.lock:
+                    self.lock.release()
 
     # -- DMA policy ----------------------------------------------------------
 

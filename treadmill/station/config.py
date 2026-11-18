@@ -17,7 +17,7 @@ from typing import Any
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.station.model import (
     CaptureSpec,
-    KeysSpec,
+    KeyboardSpec,
     Machine,
     PowerSpec,
     Rig,
@@ -70,18 +70,38 @@ def _optional(cls, table: dict[str, Any] | None, where: str):
     return None if getattr(spec, "backend", "x") == "none" else spec
 
 
+def _region_switch(t: dict[str, Any], path: Path) -> str | None:
+    value = t.get("region_switch")
+    if value == "kawari":
+        raise ConfigError(f"{path}: region_switch = \"kawari\" is gone: the keyboard board switches a Kawari's "
+                          "standard now. Give the machine has_kawari = true and the station a [keyboard] table "
+                          "with kawari_open")
+    if value not in (None, "u64"):
+        raise ConfigError(f"{path}: region_switch {value!r}; the one value is \"u64\"")
+    return value
+
+
+def _keys_table(t: dict[str, Any], path: Path) -> None:
+    """A rig's old [keys] table: the keyboard board lives in one machine, so
+    it moved to the station file."""
+    keys = t.get("keys")
+    if keys is not None and keys.get("backend", "none") != "none":
+        raise ConfigError(f"{path} [keys]: the keyboard board is set in the station file now, as a [keyboard] "
+                          "table with its chip id; drop the rig's [keys] table or leave backend = \"none\"")
+
+
 def load_rig(rig_id: str, base: Path | None = None) -> Rig:
     base = base or data_dir()
     path = base / "rigs" / f"{rig_id}.toml"
     t = _read_toml(path)
     if t.get("id", rig_id) != rig_id:
         raise ConfigError(f"{path}: id {t.get('id')!r} does not match the file name")
+    _keys_table(t, path)
     return Rig(
         id=rig_id,
         capture=_build(CaptureSpec, t["capture"], f"{path} [capture]") if "capture" in t else None,
         power=_optional(PowerSpec, t.get("power"), f"{path} [power]"),
-        keys=_optional(KeysSpec, t.get("keys"), f"{path} [keys]"),
-        region_switch=t.get("region_switch"),
+        region_switch=_region_switch(t, path),
         scope=bool(t.get("scope", False)),
         u64_url=t.get("u64_url"),
         firmware_checkout=t.get("firmware_checkout"),
@@ -127,6 +147,28 @@ def _machine(t: dict[str, Any], path: Path, base: Path) -> Machine:
     return replace(m, **overrides)
 
 
+TOD_RATES = ("standard", 50, 60, "off")
+
+
+def _keyboard(table: dict[str, Any] | None, path: Path) -> KeyboardSpec | None:
+    if table is None:
+        return None
+    where = f"{path} [keyboard]"
+    if "chip" not in table:
+        raise ConfigError(f"{where}: needs chip, the board's chip id (its USB serial string is "
+                          "C64USBKeyboard_<chip>)")
+    spec = _build(KeyboardSpec, {**table, "chip": str(table["chip"])}, where)
+    if not spec.chip.isdigit():
+        raise ConfigError(f"{where}: chip {spec.chip!r} is not a chip id")
+    if spec.kawari_open is not None:
+        if str(spec.kawari_open).upper() not in ("PAL", "NTSC"):
+            raise ConfigError(f"{where}: kawari_open {spec.kawari_open!r}; PAL or NTSC")
+        spec = replace(spec, kawari_open=str(spec.kawari_open).upper())
+    if spec.tod not in TOD_RATES:
+        raise ConfigError(f"{where}: tod {spec.tod!r}; one of {', '.join(map(str, TOD_RATES))}")
+    return spec
+
+
 def load_station(station_id: str, base: Path | None = None) -> Station:
     base = base or data_dir()
     path = base / "stations" / f"{station_id}.toml"
@@ -148,6 +190,7 @@ def load_station(station_id: str, base: Path | None = None) -> Station:
         allow_eeprom_reset=bool(t.get("allow_eeprom_reset", False)),
         settings_baseline=dict(t.get("settings_baseline") or {}),
         margins={str(k): int(v) for k, v in (t.get("margins") or {}).items()},
+        keyboard=_keyboard(t.get("keyboard"), path),
     )
     return replace(st, caps=capabilities(st))
 

@@ -8,6 +8,8 @@ policy of section 2.2. The pytest fixtures build the same objects through
 the same helpers, so a test and a script see one behavior. With
 ``TREADMILL_FAKE_BOARD`` set, the station is the self-tests' fake board and
 its rendered screen, so every way in works with no hardware.
+``open_linkless()`` opens a station without its TeensyROM (``--no-link``):
+the rig lock, the capture and the keyboard board.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from treadmill.board import Board
+from treadmill.board import Board, open_keyboard
 from treadmill.c64.keys import KernalKeys, Keys
 from treadmill.c64.menu import MenuDriver
 from treadmill.link import DebugCommands
@@ -29,6 +31,8 @@ from treadmill.observe.channels import ScreenChannel, XCheck, from_dump
 from treadmill.observe.glyphs import GlyphBank, GlyphError, bootstrap_bank, load_chargen
 from treadmill.station import Station, load_station
 from treadmill.station.config import data_dir
+from treadmill.station.kbd import KeyboardBoard
+from treadmill.station.lock import RigLock
 
 if TYPE_CHECKING:
     from treadmill.firmware.prepare import FirmwareRun
@@ -92,6 +96,25 @@ def load_bank(station: Station, chargen: str | None = None, root: Path | None = 
     return None
 
 
+def stored_calibration(station: Station, video: FrameSource, *, root: Path | None = None,
+                       log=print) -> Calibration | None:
+    """The saved calibration for (capture class, machine) when it fits the
+    frames the capture delivers now, else None."""
+    path = calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id)
+    if not path.is_file():
+        return None
+    frame = video.wait_stable(agree=2, timeout=15.0)
+    cal = Calibration.load(path)
+    if not cal.fits(frame.image):
+        log(f"[video] calibration {path.name} is for {cal.frame_w}x{cal.frame_h}, frames are "
+            f"{frame.size[0]}x{frame.size[1]}")
+        return None
+    if cal.bleed is None:                      # saved before the border's bleed was part of one
+        cal = with_bleed(frame.image, cal)
+    log(f"[video] calibration {path.name}: cell {cal.cell_w:.1f}x{cal.cell_h:.1f} px, {cal.method}")
+    return cal
+
+
 def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, *, root: Path | None = None,
                       force: bool = False, save: bool = True, log=print) -> Calibration:
     """The stored calibration for (capture class, machine) when it fits the
@@ -99,16 +122,10 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
     when the board allows it, and saved."""
     station = board.station
     path = calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id)
-    frame = video.wait_stable(agree=2, timeout=15.0)
-    if path.is_file() and not force:
-        cal = Calibration.load(path)
-        if cal.fits(frame.image):
-            if cal.bleed is None:                      # saved before the border's bleed was part of one
-                cal = with_bleed(frame.image, cal)
-            log(f"[video] calibration {path.name}: cell {cal.cell_w:.1f}x{cal.cell_h:.1f} px, {cal.method}")
+    if not force:
+        cal = stored_calibration(station, video, root=root, log=log)
+        if cal is not None:
             return cal
-        log(f"[video] calibration {path.name} is for {cal.frame_w}x{cal.frame_h}, frames are "
-            f"{frame.size[0]}x{frame.size[1]}; recalibrating")
     board.ensure_menu()
     frame = video.wait_stable(agree=2, timeout=15.0)
     cal = find_text_area(frame.image, LAYOUT_MENU)
@@ -125,6 +142,29 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
 
 
 # -- the station's hands and tools, for fixtures and scripts alike ---------------
+
+def fake_keyboard(station: Station):
+    """For the self-tests: a factory for a fake keyboard board with the chip
+    id the station names, or None when the station names none."""
+    if station.keyboard is None:
+        return None
+    from selftest.fake_kbd import FakeKeyboard
+
+    chip = station.keyboard.chip
+    return lambda: KeyboardBoard.attach(FakeKeyboard(chip=chip).connect(), port="fake-keyboard")
+
+
+def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:
+    """One log line on the station's keyboard board, or None when it names none."""
+    if kbd is not None:
+        ident = kbd.identity
+        fitted = ",".join(sorted(kbd.fitted)) or "nothing"
+        return (f"[kbd] keyboard board chip {kbd.chip} on {kbd.port}: {ident.get('mcu', '?')} "
+                f"fw {ident.get('fw', '?')}, fitted {fitted}")
+    if problem:
+        return f"[kbd] {problem}; the keyboard board's capabilities are off"
+    return None
+
 
 def keys_for(board: Board) -> Keys | None:
     """A way to press keys on the station, or None when it has none: the
@@ -159,6 +199,10 @@ class Session:
     @property
     def link(self):
         return self.board.link
+
+    @property
+    def kbd(self) -> KeyboardBoard | None:
+        return self.board.kbd
 
     @property
     def has_video(self) -> bool:
@@ -200,7 +244,7 @@ def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...],
 
     fake, stream = start_fake_board(debug_defines=set(fw_defines))
     board = Board.open(station, attended=attended, link_factory=lambda: Link(stream),
-                       fw_defines=fw_defines, caps_mask=caps_mask)
+                       fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station))
     if not video:
         board.mask({"video"})
         return Session(board, None, None, None)
@@ -221,6 +265,9 @@ def open_station(station_id: str, *, attended: bool = False, video: bool = True,
     if fake_requested():
         return _open_fake(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, video=video)
     board = Board.open(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, firmware=firmware)
+    line = keyboard_line(board.kbd, board.kbd_problem)
+    if line:
+        log(line)
     src = bank = cal = None
     try:
         src = open_video(board.station, log) if video else None
@@ -243,3 +290,88 @@ def open_station(station_id: str, *, attended: bool = False, video: bool = True,
         board.close()
         raise
     return Session(board, src, cal, bank)
+
+
+# -- a station without its TeensyROM ----------------------------------------------
+
+@dataclass
+class LinklessSession:
+    """A station opened without its TeensyROM (``--no-link``): the rig held,
+    the capture and the keyboard board open, for a script about the machine
+    or the keyboard board itself. The screen reads video only, from the
+    stored calibration, since making one needs the TR's menu."""
+    station: Station
+    lock: RigLock
+    kbd: KeyboardBoard | None
+    kbd_problem: str | None
+    video: FrameSource | None
+    calibration: Calibration | None
+    bank: GlyphBank | None
+
+    @property
+    def has_video(self) -> bool:
+        return self.video is not None and self.calibration is not None and self.bank is not None
+
+    def screen_channel(self) -> ScreenChannel:
+        return ScreenChannel(None, self.video if self.has_video else None, self.calibration, self.bank)
+
+    def close(self) -> None:
+        try:
+            if self.video is not None:
+                self.video.close()
+        finally:
+            try:
+                if self.kbd is not None:
+                    self.kbd.close()
+            finally:
+                self.lock.release()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def open_linkless(station_id: str, *, video: bool = True, chargen: str | None = None,
+                  caps_mask: set[str] | frozenset[str] = frozenset(), log=print) -> LinklessSession:
+    """Lock the rig and open the station's keyboard board and capture, never
+    its TeensyROM. The capabilities are the rig's and the keyboard board's:
+    no ``serial``, and no ``video`` or ``screen`` unless a stored calibration
+    fits the frames."""
+    station = load_station(station_id)
+    lock = RigLock(station.rig.id, wait=5.0).acquire()
+    kbd = src = None
+    try:
+        fake = fake_requested()
+        kbd, problem = open_keyboard(station, fake_keyboard(station) if fake else None, discover=not fake)
+        if kbd is not None:
+            station = station.with_keyboard(kbd.fitted)
+        line = keyboard_line(kbd, problem)
+        if line:
+            log(line)
+        cal = bank = None
+        if video and not fake:
+            src = open_video(station, log)
+            if src is not None:
+                try:
+                    bank = load_bank(station, chargen, log=log)
+                    cal = stored_calibration(station, src, log=log)
+                    if cal is None:
+                        log(f"[video] no stored calibration fits; video is off (treadmill calibrate --station "
+                            f"{station.id} makes one from the TR's menu)")
+                except (CalibrationError, CaptureError, GlyphError) as e:
+                    log(f"[video] {e}")
+        session = LinklessSession(station, lock, kbd, problem, src, cal, bank)
+        removed = set(caps_mask) | {"serial"}
+        if not session.has_video:
+            removed |= {"video", "screen"}
+        session.station = station.masked(removed)
+        return session
+    except BaseException:
+        if src is not None:
+            src.close()
+        if kbd is not None:
+            kbd.close()
+        lock.release()
+        raise

@@ -24,6 +24,15 @@ uid = "00000000"         # the chip id from the version banner ("UID: ...")
 # port_hint = "COM91"    # tried first; discovery goes by uid
 # tcp_host = "192.0.2.20:2112"
 
+# The C64-USBKeyboard board in this machine, when it has one. Its capabilities come from
+# the outputs its own '?' reports fitted: keys, RESTORE and the rest always; tod_select,
+# tr_button, tr_alt, ext_reset per output; region_switch with kawari and reset fitted on a
+# machine with has_kawari, once kawari_open is set.
+# [keyboard]
+# chip = "00000000"      # its chip id: the USB serial string is C64USBKeyboard_<chip>
+# kawari_open = "NTSC"   # PAL | NTSC: the standard the Kawari gives with its switch header J1 open
+# tod = "standard"       # the station's TOD rate: standard (50 Hz on PAL, 60 on NTSC) | 50 | 60 | off
+
 [settings_baseline]      # what the tests expect the board's settings to be
 tcp_listener = false
 reset_detect = true

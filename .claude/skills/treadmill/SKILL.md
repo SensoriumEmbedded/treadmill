@@ -1,6 +1,6 @@
 ---
 name: treadmill
-description: Drive TReadmill, the hardware-in-the-loop validation suite for TeensyROM firmware, from a Claude Code session. Covers which `treadmill` command fits which ask (run the hardware tests against a station, test a branch or a debug build, prove the plain-TR tier, sweep a bus timing knob for its margin, run or draft an investigation script, poke a board from a shell, read a screen, calibrate or harvest a rig), how to read run.json and report.html, the --json and exit-code contract, and the go-ahead a board needs before it is flashed or driven. Use whenever the user wants to run hardware tests, validate firmware on a real C64 or C128, measure a timing margin, reproduce a bug on the bench, or asks about TReadmill, a station, a rig or a run.
+description: Drive TReadmill, the hardware-in-the-loop validation suite for TeensyROM firmware, from a Claude Code session. Covers which `treadmill` command fits which ask (run the hardware tests against a station, test a branch or a debug build, prove the plain-TR tier, sweep a bus timing knob for its margin, run or draft an investigation script, poke a board from a shell, read a screen, calibrate or harvest a rig, run a Kawari station in PAL or NTSC, check the C64 USB keyboard board or drive a C64 through it without the TR), how to read run.json and report.html, the --json and exit-code contract, and the go-ahead a board needs before it is flashed or driven. Use whenever the user wants to run hardware tests, validate firmware on a real C64 or C128, measure a timing margin, reproduce a bug on the bench, or asks about TReadmill, a station, a rig or a run.
 ---
 
 # TReadmill from a session
@@ -14,8 +14,10 @@ station could not be had.
 ## Before touching a board
 
 Flashing or driving a board needs the person's go-ahead in the session: say
-which station gets which image (`--fw ...`) and what will run, and wait. The
-self-tests and anything with `TREADMILL_FAKE_BOARD=1` need no go-ahead.
+which station gets which image (`--fw ...`) and what will run, and wait.
+The keyboard board counts: a key, a reset or a standard switch drives the
+machine. The self-tests and anything with `TREADMILL_FAKE_BOARD=1` need no
+go-ahead.
 Never write a port name, host, IP address or chip id into a committed file.
 
 ## Which command
@@ -28,13 +30,16 @@ Never write a port name, host, IP address or chip id into a committed file.
 | Test a worktree with one-off edits | `--fw path=<dir> --allow-dirty` (the build carries the dirty `*`) |
 | Test a prebuilt hex | `--fw hex=<file>` |
 | A debug build (any `Dbg_*` define) | `--fw ref=main --define Dbg_SerTimChg [--define ...]`; the banner gets the define's mark (`v0.9-tim`) |
-| Prove the plain-TR tier on a TR+ station | `--caps-mask dma,screen_dma,reset_sense,keys_kernal` |
+| Prove the plain-TR tier on a TR+ station | `--caps-mask dma,screen_dma,reset_sense,keys_kernal`; with a keyboard board, leave out `keys_kernal` and the keys go through it, as on a plain TR |
+| Run in one video standard, or both, on a Kawari station | `--region PAL\|NTSC\|both` (needs `region_switch`: the keyboard board's `V`); `both` is two runs, folders ending `-pal` and `-ntsc`, JSON `{"exit_code", "runs": [...]}` |
 | Some tests only | `--tests tests/smoke` (repeatable) or, after `--`, pytest's own `-k EXPR`, `-x`, `-v` |
 | How long a selection takes | `--estimate` (runs nothing) |
 | A timing knob's margin (how far `nS_PLAprop` can rise, or fall, before reads fail) | `treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --json` (`--probe idread` on a TR+, counting ROM and IO2 reads apart; `--probe menu` on any TR; `--to` below the value walks down, no lower than `nS_RWnReady` for `p`; `--step`, `--fine`, `--repeat`, `--dwell`); the defaults are restored on exit; `sweep.json` in the run folder |
-| The manufacturing test of new TR+ boards | `treadmill mfg --station <id>` at the operator's terminal: it prompts for the cables, the buttons, the LEDs, the reset and the power-off, and loops board after board (`--boards N` to stop); `--snapshot-sd <folder>` writes the SD golden; the log is `data/mfg/boards.csv`, the evidence `reports/<run>/boards/` (README, "Manufacturing test") |
+| The manufacturing test of new TR+ boards | `treadmill mfg --station <id>` at the operator's terminal: it prompts for the cables, the buttons, the LEDs and the power-off (and for the reset and a standard switch when the station's keyboard board cannot do them), and loops board after board (`--boards N` to stop); `--snapshot-sd <folder>` writes the SD golden; the log is `data/mfg/boards.csv`, the evidence `reports/<run>/boards/` (README, "Manufacturing test") |
 | An investigation script under the harness | `treadmill exec --station <id> script.py [-- args] --json`; a `result` the script sets comes back |
-| Poke the board interactively | `treadmill shell --station <id>` (`link.ping()`, `screen.read().rows()`, `menu.open("/Games")`, `keys.press(F1)`, `dbg.letter("t")`) |
+| A machine whose TR does not answer on USB (an extension host), or no TR at all | `exec` or `shell` with `--no-link`: video and the keyboard board only; `board`, `link`, `menu`, `dbg` are None; no `--fw` |
+| Check the keyboard board's own features | `treadmill exec --no-link --station <id> scripts/2026-11-19-keyboard-board-features.py --json` (about six minutes; restarts the C64 many times; `-- --skip tod,kawari` to leave outputs out) |
+| Poke the board interactively | `treadmill shell --station <id>` (`link.ping()`, `screen.read().rows()`, `menu.open("/Games")`, `keys.press(F1)`, `dbg.letter("t")`, `kbd.reset()`) |
 | What is on the screen now | `treadmill screen --station <id> --json` (`--exact` prefers DMA, `--xcheck` compares both) |
 | A rig's first setup | `treadmill calibrate --station <id>`, then `treadmill harvest --station <id>` |
 
@@ -45,14 +50,18 @@ pytest output goes to stderr and stdout holds `run_dir`, `report`, `summary`,
 
 ## Reading a run
 
-`reports/<timestamp>/run.json` is the record: `station` (id, model, region,
-caps, tr_kind), `board` (version, built, machine_line), `firmware` (spec,
+`reports/<timestamp>/run.json` is the record: `station` (id, model, region
+from the registry, standard from the banner, caps, tr_kind, keyboard: open,
+fitted, or the problem that kept it closed), `board` (version, built,
+machine_line), `firmware` (spec,
 commit, describe, dirty, defines, tag, version, stamp, flashed, cached,
 build_log), `video` and `calibration`, `tests`, `summary`, `exit_status`,
 `aborted` (why a run ended before its tests: a station or firmware problem),
-`recoveries` (the ladder rungs the run needed). `report.html` renders it for
+`recoveries` (the ladder rungs the run needed: `reset`, `ext-reset`,
+`usb-reboot`, `power-cycle`). `report.html` renders it for
 a person. Each test's folder holds `serial.log` (the board's raw output
-during the test), `events.json`, the screens a golden check read
+during the test), `events.json`, `kbd.log` (the keyboard board's lines both
+ways), the screens a golden check read
 (`<name>.screen.txt`) with `<name>.diff.txt` when they differed, `frames.png`
 (the last frames before a failure) and `xcheck.json`.
 
@@ -64,8 +73,10 @@ recalibrate or reharvest before blaming the firmware.
 ## Writing a script for exec
 
 Globals: `session`, `station`, `board`, `link`, `screen`, `menu`, `keys`,
-`dbg`, `video`, `firmware`, `artifacts` (a folder to write into), `run_dir`,
-`log`. The board is at the menu when the script starts (not with `--as-is`).
+`kbd`, `dbg`, `video`, `firmware`, `artifacts` (a folder to write into),
+`run_dir`, `log`. The board is at the menu when the script starts (not with
+`--as-is`); under `--no-link` the TR's names are None and the script checks
+`kbd` before it relies on it.
 Set `result` to what the caller should get back. `scripts/example.py` is the
 pattern. Name a one-off script `scripts/YYYY-MM-DD-<topic>.py`, the day it
 first ran on a bench, with the same date in its docstring's first paragraph;
@@ -75,7 +86,7 @@ putting things back, when a script becomes a test).
 ## Self-tests and the fake board
 
 `TREADMILL_FW_REPO=<checkout> python -m pytest -q -p no:anyio selftest` runs
-everything with no hardware (about six minutes); `selftest/test_hw_tests_offline.py`
+everything with no hardware (about ten minutes); `selftest/test_hw_tests_offline.py`
 runs the real `tests/` tree against the fake board. With `TREADMILL_FAKE_BOARD=1`
 every command above runs against the fake, so a new test or script can be
 tried before it meets a board.

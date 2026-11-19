@@ -44,15 +44,16 @@ cost or a wart with a known, small fix.
    have tried it. Its text replies still end on the idle: about a dozen a
    board (banner, ping, reset), about 3 s, where the banner reply could end
    on its `Boot:` line and the ping reply on its `ready!` line.
-13. **medium, with the keyboard board** No way to drive a board whose
+13. **closed 2026-11-19, with the link-less open and the keyboard board's
+   keys.** No way to drive a board whose
    firmware has no USB, such as a TR+ running an extension host (SIDHost).
-   `Harness.__enter__` in `treadmill/driver.py` always goes through
-   `Board.open`, which opens the serial link, so `exec --as-is` fails with
-   "<port>: Cannot configure port" before the script runs; and `keys_for()` in
-   `treadmill/session.py` has only `KernalKeys`, DMA through that same link.
-   Pressing X to leave the host, or reading the screen by video, needs a
-   link-less open (video and keys only) and the C64-USBKeyboard backend
-   (`keys_hw`).
+   `Harness.__enter__` in `treadmill/driver.py` always went through
+   `Board.open`, which opens the serial link, so `exec --as-is` failed with
+   "<port>: Cannot configure port" before the script ran; and `keys_for()` in
+   `treadmill/session.py` had only `KernalKeys`, DMA through that same link.
+   `exec` and `shell` now take `--no-link` (video and the keyboard board,
+   no TR), and `keys_for()` falls back to `HwKeys` on the keyboard board's
+   matrix.
 14. **closed 2026-11-11, with the key-buffer and underscore fixes.** Keys
    went to the wrong buffer on a C128 at the TR menu. `Link` picked the
    C128-mode buffer and count ($034A/$D0) from the banner's machine, but
@@ -69,12 +70,13 @@ cost or a wart with a known, small fix.
    matched a name such as an HVSC tune's. $64 now reads as '_' in either
    ROM set, and `codes_for_text()` writes '_' as $64; the MCP server's
    table (`tools/mcp/lib/screen.mjs`, PR #86) still reads it as '.'.
-16. **low, with the keyboard board** The manufacturing test's external reset
-   needs the operator. `OperatorReset` in `treadmill/mfg.py` asks for the
-   C64's reset button, because the keyboard board's planned protocol has no
-   plain reset pulse: its `V` command resets the C64 only inside a Kawari
-   standard switch. Fix: an `R <ms>` command on the same /RESET stage `V`
-   uses, and an `ExternalReset` that sends it.
+16. **closed 2026-11-19, with the keyboard board's reset.** The
+   manufacturing test's external reset needed the operator. `OperatorReset`
+   in `treadmill/mfg.py` asked for the C64's reset button, because the
+   keyboard board's planned protocol had no plain reset pulse. Protocol 1
+   has `R`, and `KeyboardReset` sends it through the keyboard board the
+   board under test opened, falling back to the operator, with the reason,
+   when that board is missing or has no reset fitted.
 17. **low** A run does not record what the registry knows about its
    machine. `Machine` (`treadmill/station/model.py`) reads the systems.csv
    row's `notes`, but the station block of `run.json`
@@ -125,13 +127,15 @@ cost or a wart with a known, small fix.
    name's first character is screen code $E4 (reversed $64), which video
    read as $A0 on one capture and as a space on the next. No golden holds
    one yet.
-10. **medium, with the region switch** Banks and calibrations are keyed by
-   machine, not by video standard. `bank_path()` in `treadmill/session.py`
-   and `calibration_path()` in `treadmill/observe/calibrate.py` name a file
-   per (capture class, machine), so the Kawari station switched to NTSC
-   would read with its PAL bank and grid (cells 24.8x25.2 px against
-   25.7x21.0). Key both by the board's video line as well when test 18
-   switches standards.
+10. **closed 2026-11-19, with the region switch.** Banks and calibrations
+   were keyed by machine, not by video standard. `bank_path()` in
+   `treadmill/session.py` and `calibration_path()` in
+   `treadmill/observe/calibrate.py` named a file per (capture class,
+   machine), so the Kawari station switched to NTSC would have read with
+   its PAL bank and grid (cells 24.8x25.2 px against 25.7x21.0). Both now
+   add the standard from the board's banner
+   (`<class>__<machine>__<PAL|NTSC>`), with the machine's file as the
+   fallback.
 18. **medium, with item 20** The screen-noise probe has no baseline per
    capture. The probe (pixels inside the text area that change by more
    than 48 of 255 between frames, while a DMA probe runs) lives only in
@@ -251,3 +255,19 @@ cost or a wart with a known, small fix.
    exists: `tests/sweep/test_dma_setup_margin.py`, the defaults clean on
    the `z` and REU probes and a per-station `[margins]` floor, on every
    TR+ machine class (factory NTSC C128s drift the most, item 20).
+30. **medium** A skip in setup after `screen` is reported as an error.
+   The `screen` fixture's teardown (`treadmill/pytest_plugin.py`, `if
+   has_video and request.node.rep_failed`) reads an attribute that
+   `pytest_runtest_makereport` sets only for the call phase.
+   `test_card_type_set` (`tests/menu/test_item_types.py`) sets up `menu`
+   and `screen` before `sd_fixtures`, whose `sd_card` skips on a station
+   with no SD card; there is no call phase, so the teardown raises
+   AttributeError and the run fails on a skip. Fix:
+   `getattr(request.node, "rep_failed", False)`.
+31. **low** The TR BASIC test needs a person. `tests/handlers/test_tr_basic.py`
+   skips without `--attended`, because someone types SYS 49152 at READY
+   and later presses the TeensyROM menu button. On a station with `keys_hw`
+   the keyboard board can type the SYS (`kbd.type`), and with `tr_button`
+   (its `menu` output; the Kawari C64's board has none fitted) it can press
+   the button (`kbd.button`). Fix: use each when the station has it, and keep
+   `--attended` for what is left.

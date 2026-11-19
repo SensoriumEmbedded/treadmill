@@ -30,13 +30,15 @@ reports/              one folder per run: run.json, report.html, one folder per 
 ```
 pip install -e .
 treadmill stations                                   # the stations data/stations/*.toml describes
-TREADMILL_FW_REPO=<TeensyROM checkout> pytest        # the self-tests, no hardware (about six minutes)
+TREADMILL_FW_REPO=<TeensyROM checkout> pytest        # the self-tests, no hardware (about ten minutes)
 treadmill run --station <id>                         # the hardware tests against the firmware on the board
 treadmill run --station <id> --fw ref=main           # build main for the board, flash it, verify it, then test
 treadmill run --station <id> --caps-mask dma,reset_sense,keys_kernal   # the plain-TR tier on a TR+ station
 treadmill run --station <id> --fw ref=main --define Dbg_SerTimChg --tests tests/debug
 treadmill run --station <id> -- -k "identity or reset" -x            # after --, pytest's own arguments
+treadmill run --station <id> --region both           # a Kawari station: the tests in PAL, then in NTSC
 treadmill exec --station <id> scripts/example.py     # a script with the station's objects as globals
+treadmill exec --no-link --station <id> <script>     # the same without opening the TeensyROM
 treadmill shell --station <id>                       # the same names at a Python prompt
 ```
 
@@ -55,11 +57,12 @@ the registry plus a TeensyROM board. To add one:
 1. Copy `data/rigs/rigA.example.toml` to `data/rigs/<rig>.toml`: the capture
    device and mode (`treadmill frame --station ... --raw` shows what it
    delivers), `firmware_checkout` for the TeensyROM checkout whose tools
-   build and flash, and the power or keyboard backends when the rig has them.
+   build and flash, and the power backend when the rig has one.
 2. Copy `data/stations/example.example.toml` to `data/stations/<id>.toml`:
    the rig, the machine (a registry id from the validation tracker's
    `systems.csv`, named in `data/registry.toml`, or an inline `[machine]`
-   table) and the board's chip id as its version banner prints it. Name
+   table) and the board's chip id as its version banner prints it, plus a
+   `[keyboard]` table when the machine has a keyboard board (below). Name
    stations descriptively (`rigA-sys29-trplus`); `treadmill stations` shows
    the capabilities each one has.
 3. `treadmill calibrate --station <id>` finds the text area in the picture
@@ -67,27 +70,107 @@ the registry plus a TeensyROM board. To add one:
    the station's glyph bank from the suite's own program (a station without
    one reads with `data/glyphs/<capture class>.npz` when that exists).
    `treadmill screen --station <id> --xcheck` then shows how far the video
-   read is from the DMA read.
+   read is from the DMA read. Both files are kept per video standard, as
+   the board's banner gives it (`<capture class>__<machine>__PAL`), so a
+   station that switches standards calibrates and harvests once in each. A
+   file named without the standard is read when the standard's own is
+   missing.
 
 Files that name your own boards and machines stay out of git.
+
+### The keyboard board
+
+The C64-USBKeyboard board sits in a C64's keyboard connector and speaks
+its own protocol (protocol 1, the C64-USBKeyboard repository's
+`Docs/Host_Protocol.md`) on its own USB serial port. It lives in one
+machine, so the station names it, in a `[keyboard]` table:
+
+- `chip`: its chip id. It enumerates as `C64USBKeyboard_<chip>`, which is
+  how it is found. The TeensyROM's discovery never sends TR commands to it:
+  when a board's chip id finds no port, the probe opens only ports whose
+  serial string is empty or all digits.
+- `kawari_open`: `PAL` or `NTSC`, the standard a Kawari gives with its
+  switch header J1 open (it gives the other one closed). Only a machine
+  with a Kawari needs it.
+- `tod`: the station's TOD rate, `standard` (50 Hz on PAL, 60 on NTSC, the
+  default), `50`, `60` or `off`.
+
+It opens after the TeensyROM (or alone, under `--no-link`), under the same
+rig lock, and its `?` reply says which outputs are fitted. The station's capabilities come from that
+reply:
+
+| When | Capabilities |
+|---|---|
+| it answers | `keys_hw`, `keys_kernal`, `nmi` |
+| `tod` is fitted | `tod_select` |
+| `menu` is fitted | `tr_button` |
+| `alt` is fitted | `tr_alt` |
+| `reset` is fitted | `ext_reset` |
+| `kawari` and `reset` are fitted, on a machine with a Kawari, with `kawari_open` set | `region_switch` |
+
+It takes its power from the C64, so it is on USB only while the machine is
+on. A station whose keyboard board does not answer opens without these
+capabilities, and the tests that need them skip, saying why.
+
+What the suite does with it:
+
+- **Keys.** The `keys` fixture presses keys by DMA on a TR+ and through the
+  keyboard board's matrix elsewhere, so the menu tests run on a plain TR;
+  `--caps-mask dma` sends a TR+'s keys through the keyboard board too.
+  The `kbd` fixture is the board itself, for real keys on any TR: holds by
+  matrix position (`Matrix.RUN_STOP` and the rest in
+  `treadmill/c64/keys.py`) and RESTORE. After the test it lets go of
+  anything still held and sets the TOD rate back.
+- **Reset.** `board.ext_reset()` pulls the C64's /RESET without the TR.
+  When a TR+ can sense the reset, the recovery ladder tries it after the
+  TR's own reset and before a USB reboot, so a TR+ in a handler that
+  ignores the port, such as TR BASIC, comes back without one. A plain TR
+  cannot sense the reset.
+- **Video standard.** With `region_switch`, its `V` command switches the
+  Kawari's standard with the C64 held in reset and no power cycle. `run
+  --region PAL|NTSC|both` sets the standard before the tests, checks it on
+  the TR's banner and reads the picture with that standard's calibration
+  and glyph bank. When a Kawari's saved model has changed, J1 open no
+  longer gives what `kawari_open` says; the switch then flips J1 once and
+  names the value to set.
+- **TOD.** When a station opens with its TeensyROM, the TOD line is set to
+  the station's rate. `exec --no-link` leaves it as it is.
+- **Manufacturing test.** It resets the C64 and switches the standard in
+  place of the operator (steps 1 and 4 below).
+
+The board's own features (every protocol command and every fitted output)
+are checked by a script, not by the suite: `treadmill exec
+--no-link --station <id> scripts/2026-11-19-keyboard-board-features.py`
+(about six minutes; it restarts the C64 many times).
 
 ## The hardware tests
 
 `tests/` holds one concern per file: identity and reset (`smoke/`), files to
 the card and back (`transfer/`), a launched program (`launch/`), the menu's
 item-type marks and navigation (`menu/`), a debug build's timing knobs
-(`debug/`), a timing knob's margin (`sweep/`), and IO handlers the host
+(`debug/`), a timing knob's margin (`sweep/`), IO handlers the host
 drives over USB (`handlers/`: TR BASIC's
-TPUT and TGET, which needs `--attended` until the keyboard board can type a
-SYS, and an ASID stream the C64's reads are logged against, which needs
-`pip install -e .[midi]`). A test names what it needs
+TPUT and TGET, which needs `--attended` until the test types its SYS
+through the keyboard board, and an ASID stream the C64's reads are logged
+against, which needs `pip install -e .[midi]`), and what the suite relies
+on the keyboard board for (`keyboard/`: real keys, an external reset, the
+region switch). A test names what it needs
 (`@pytest.mark.needs("keys_kernal")`, `needs_fw("Dbg_SerTimChg")`) and skips with the reason when the station or the
 build lacks it; `--caps-mask dma,keys_kernal` takes capabilities away to prove
 the plain-TR tier on a richer station, and `--fw-defines` names the defines a
 build flashed by other means carries. Screen goldens live in `tests/golden/`
 (`--golden-dir` for another set); the SD fixtures a test needs are put under
-`/treadmill` on the card by the run itself. These seven folders are the
+`/treadmill` on the card by the run itself. These eight folders are the
 areas; a new one gets a line here when its first test lands.
+
+A station runs in whatever video standard its machine is in, and
+`run.json` records it (`station.standard`, from the TR's banner). On a
+station with `region_switch`, `--region PAL` or `NTSC` switches it first,
+and `--region both` is two runs, PAL then NTSC, each with its own folder
+(`<timestamp>-pal`, `<timestamp>-ntsc`), the second whatever the first
+did; the exit code is the worse of the two, and under `--json` each run's
+record is in `runs`. A station that cannot switch stops with exit 2 unless
+it is already in that standard.
 
 ### Which tests run where
 
@@ -97,7 +180,10 @@ the ASID test, and the skips cover what a station lacks. Reset, launch,
 menu, sweep and handler tests matter on each machine class (C64 and C128,
 PAL and NTSC), since detection and timing differ between them; the transfer
 tests and the debug listing need one station per TR kind. There is no
-plain-TR station yet, so the plain-TR tier is proven with `--caps-mask`.
+plain-TR station yet, so the plain-TR tier is proven with `--caps-mask`;
+on a TR+ station with a keyboard board, `--caps-mask
+dma,screen_dma,reset_sense` leaves the keys, pressed through the keyboard
+board as on a plain TR.
 
 ### Adding a test or a script
 
@@ -116,7 +202,10 @@ needs: `at_menu` (the board, at the menu before and after; the invariants
 after it: no crash report, no boot banner, no unknown command), `link` (the
 remote protocol), `screen` (the screen through the channel policy: video
 unless `exact=True` and DMA is allowed; every read is cross-checked against
-DMA where both exist), `menu` (the main menu driver), `keys`, `dbg` (the
+DMA where both exist), `screen_now` (for a test that switches the video
+standard: a function that returns a screen channel for the standard the
+board runs now), `menu` (the main menu driver), `keys` (DMA on a TR+, else
+the keyboard board), `kbd` (the keyboard board itself), `dbg` (the
 debug letters, gated on the build's defines), `programs("hello")` (an
 assembled C64 program, or a raw payload a test writes in by DMA), `sd_card`
 and `sd_fixtures` (the generated type set, on the card), `goldens` (`goldens.check(read, "menu/root")`), `artifacts` (the
@@ -128,7 +217,7 @@ tree offline (`selftest/test_hw_tests_offline.py`), so a new test passes or
 skips there before it meets a board, and stays quick there: one that is slow
 on the fake (`pytest --durations`) gets a shorter fake path or skips with
 `fake_requested()`, as the ASID and TR BASIC tests do, so the self-tests stay
-near six minutes. What the fake cannot show (timing, a real card, the
+near ten minutes. What the fake cannot show (timing, a real card, the
 picture) is the bench's to confirm, and a test has run on a bench before it
 is committed.
 
@@ -224,12 +313,16 @@ and with it the REU's size):
    the C64 in the station's video standard (`region`). The rig's
    calibration, glyph bank and SID clock are for that standard, so a C64 in
    the other one, a Kawari left switched by other work on the bench, would
-   misread every video check. It is not the board's fault: the console asks
-   the operator to power off, set the Kawari and power on, and the same
-   board starts over under its number. No CSV row is written for the
-   attempt; the board's `result.json` lists it under `restarts`. The switch
-   goes through `StandardSwitch`, so the keyboard board's `V` command can
-   take over from the operator.
+   misread every video check. It is not the board's fault: the C64 is set
+   to the station's standard, and the same board starts over under its
+   number. No CSV row is written for the attempt; the board's `result.json`
+   lists it under `restarts`. When the station's keyboard board can switch
+   the Kawari (`[keyboard] kawari_open` set, `kawari` and `reset` fitted),
+   its `V` command does it with the C64 held in reset, and the board never
+   leaves USB; otherwise, or when the keyboard board does not answer (with
+   a warning saying why), the console asks the operator to power off, set
+   the Kawari and power on. A `V` setting does not outlast a power cycle:
+   the keyboard board powers down with the C64, and J1 goes back to open.
 2. Firmware: the version and build stamp equal the factory hex's, with no
    tag and no `*`.
 3. External Ports: first the TR+ must have the USB thumb drive mounted
@@ -261,10 +354,13 @@ and with it the REU's size):
    every frame lost, `epc_timeout_s` is added. `epc_timeout_s` (180 s)
    starts when video shows the prompt. A C64 whose jiffy clock stands
    still for 1 s under the LED questions fails then.
-4. External reset: the operator presses the C64's reset button, and the TR+
-   must log `Button detected` and bring the menu back. The C64 resets
-   whether the TR+ senses it or not: its screen changing with no `Button
-   detected` 2 s later fails the step then, not at `reset_timeout_s`.
+4. External reset: the station's keyboard board pulses the C64's /RESET
+   when its reset output is fitted; otherwise, or when it does not answer
+   (with a warning saying why), the operator presses the C64's reset
+   button. The TR+ must log `Button detected` and bring the menu back. The
+   C64 resets whether the TR+ senses it or not: its screen changing with
+   no `Button detected` 2 s later fails the step then, not at
+   `reset_timeout_s`.
 5. Expansion Port: the built-in test passes `xpt_passes` times. A pass that
    stops at its address tests, which report on screen only, fails on the
    screen's reason as soon as its prompt shows. A C64 that stops mid-test
@@ -319,6 +415,9 @@ Setting it up, once:
    `factory_hex` at the factory hex.
 2. Run `treadmill mfg --snapshot-sd <master image folder>`, which writes
    `sd_root.json` beside the profile.
+3. If the test machine has a keyboard board, name it in the station's
+   `[keyboard]` table ("The keyboard board" above); without one the
+   operator presses reset and sets the standard.
 
 ## Scripting
 
@@ -326,25 +425,37 @@ Setting it up, once:
 a test session does (the firmware under test prepared, the rig held, the
 board at the menu unless `--as-is`) and runs the script as `__main__` with
 these names as globals: `session`, `station`, `board`, `link`, `screen`,
-`menu`, `keys`, `dbg`, `video`, `firmware`, `artifacts` (a folder of the run
-to write into), `run_dir`, `log`. A `result` the script leaves is reported
-(`--json` returns it), and what the board said meanwhile lands in the run's
-folder like a test's. `treadmill shell --station <id>` gives the same names at
-a prompt. `scripts/example.py` is a ten-line example.
+`menu`, `keys`, `kbd` (the keyboard board, or None), `dbg`, `video`,
+`firmware`, `artifacts` (a folder of the run to write into), `run_dir`,
+`log`. A `result` the script leaves is reported (`--json` returns it), and
+what the board and the keyboard board said meanwhile lands in the run's
+folder like a test's. `treadmill shell --station <id>` gives the same names
+at a prompt. `scripts/example.py` is a ten-line example.
+
+`--no-link` (on `exec` and `shell`) opens the station without its
+TeensyROM: the rig held, the capture and the keyboard board open. `board`,
+`link`, `menu`, `dbg` and `firmware` are None, `screen` reads video with
+the stored calibration, and `keys` presses through the keyboard board. It
+takes no firmware options. It is for a machine whose TeensyROM does not
+answer on USB, such as a TR+ running an extension host, and for the
+keyboard board's own script.
 
 From Python, `treadmill.session.open_station("<id>")` returns the same
-session (`board`, `link`, `screen_channel()`, `menu()`, `keys()`, `dbg()`),
-and `treadmill.driver.run_tests(RunOptions(...))` is what `treadmill run` does.
+session (`board`, `link`, `screen_channel()`, `menu()`, `keys()`, `dbg()`,
+`kbd`), `open_linkless("<id>")` the one `--no-link` opens, and
+`treadmill.driver.run_tests(RunOptions(...))` is what `treadmill run` does.
 
 ## Reports
 
-Every run leaves `reports/<timestamp>/`: `run.json` (station, board, the
+Every run leaves `reports/<timestamp>/`: `run.json` (station with its
+video standard and keyboard board, board, the
 firmware spec with its commit, dirty hash, defines, tag, hex and stamp,
 capabilities, capture mode, calibration residual, the suite's own commit, the
 options, every test's outcome, duration and message, the summary and exit
 status), `report.html` rendered from it with each failure's serial tail,
 golden diff and frame strip, and one folder per test with `serial.log`,
-`events.json`, every screen a golden check read and the diff when it
+`events.json`, `kbd.log` (the keyboard board's lines both ways) when the
+station has one open, every screen a golden check read and the diff when it
 differed, and `xcheck.json` when video was cross-checked against DMA.
 
 ## Conventions
@@ -352,5 +463,5 @@ differed, and `xcheck.json` when video was cross-checked against DMA.
 - Every command but the shell takes `--json`, and every one exits non-zero on failure; the codes are above.
 - Every run writes `reports/<timestamp>/run.json` and `report.html`; `data/results.sqlite` comes with the nightly runs.
 - The suite refuses to start when another program holds the station's rig or serial port.
-- DMA commands are never sent to a plain TR; debug letters are never sent to a build without their define.
+- DMA commands are never sent to a plain TR; debug letters are never sent to a build without their define; the port search sends TR commands only to the board it looks for or to an unnamed port, never to the keyboard board.
 - Nothing is flashed or driven without the person's go-ahead; the station files that name boards stay private.

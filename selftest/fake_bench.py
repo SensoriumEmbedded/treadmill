@@ -9,7 +9,6 @@ in. A station that names no keyboard board never opens it."""
 
 from __future__ import annotations
 
-import re
 import threading
 
 from selftest.fake_board import BANNER, FakeBoard, start_fake_board
@@ -17,13 +16,13 @@ from selftest.fake_kbd import FakeKeyboard
 from selftest.synth import calibrated, fake_frame_source, harvested_bank
 from treadmill.board import Board
 from treadmill.link import Link
+from treadmill.link.banner import parse_banner
 from treadmill.link.transport import open_pipe
 from treadmill.mfg import (
     BUTTONS, CONNECT, INSTRUCTIONS, LEDS, POWER_OFF, RESET_BUTTON, SET_STANDARD, Console, VideoKit,
 )
+from treadmill.station.kawari import OTHER
 from treadmill.station.kbd import KeyboardBoard
-
-VIDEO_LINES = {"PAL": "PAL Vid  50 Hz", "NTSC": "NTSC Vid  60 Hz"}
 
 FIRST_UID = 19300000
 SD_ROOT = [{"type": "dir", "name": "APPS"}, {"type": "dir", "name": "VMS"},
@@ -91,16 +90,14 @@ class FakeBench:
         self.fake, self.stream = start_fake_board(banner=banner, faults=faults, listing=list(listing),
                                                   menu_draws_by_item=by_item)
         self.port = f"FAKE{self.count}"
-        self.saved = "PAL" if VIDEO_LINES["PAL"] in banner else "NTSC"
+        self.saved = parse_banner(banner).video or "NTSC"
         self.kbd = FakeKeyboard(fitted=set(self.kbd_fitted), on_reset=self.fake.external_reset,
                                 on_video=self._video)
 
     def _video(self, setting: str) -> None:
         """The Kawari reconfigured with J1 ``setting``: the TR+ measures the
         new standard once the C64's reset is released."""
-        other = {"PAL": "NTSC", "NTSC": "PAL"}
-        standard = self.saved if setting == "open" else other[self.saved]
-        self.fake.banner = re.sub(r"(PAL|NTSC) Vid  \d\d Hz", VIDEO_LINES[standard], self.fake.banner)
+        self.fake.set_video(self.saved if setting == "open" else OTHER[self.saved])
 
     def wait_for_board(self) -> tuple[str, str]:
         if self.fake is None or not self.fake.powered:

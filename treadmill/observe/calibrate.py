@@ -98,8 +98,12 @@ class Calibration:
             raise CalibrationError(f"cannot load calibration {path}: {e}") from e
 
 
-def calibration_path(data_dir: Path, capture_class: str, machine_id: str) -> Path:
-    return Path(data_dir) / "calib" / f"{capture_class}__{machine_id}.json"
+def calibration_path(data_dir: Path, capture_class: str, machine_id: str, standard: str | None = None) -> Path:
+    """Per standard as well when it is known: the capture chain squashes a
+    PAL picture vertically (cells 25.7x21.0 px against NTSC's 24.8x25.2 on
+    one Kawari C64), so one machine switched between standards needs two."""
+    name = f"{capture_class}__{machine_id}" + (f"__{standard}" if standard else "")
+    return Path(data_dir) / "calib" / f"{name}.json"
 
 
 def _edge(profile: np.ndarray, level: float) -> tuple[float, float]:

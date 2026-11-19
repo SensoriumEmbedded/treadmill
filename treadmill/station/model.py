@@ -142,13 +142,16 @@ class Station:
     margins: Mapping[str, int] = field(default_factory=dict)   # knob name -> value a sweep must find clean
     keyboard: KeyboardSpec | None = None
     kbd_fitted: frozenset[str] | None = None   # the keyboard board's fitted outputs; None until it answers
+    standard: str | None = None      # PAL | NTSC as the TR's banner last reported it; None until then
     caps: frozenset[str] = frozenset()
 
     def with_probe(self, kind: str, listener_on: bool = False,
-                   fw_defines: tuple[str, ...] = ()) -> "Station":
-        """The station once the board answered: its kind decides the DMA caps."""
+                   fw_defines: tuple[str, ...] = (), standard: str | None = None) -> "Station":
+        """The station once the board answered: its kind decides the DMA caps,
+        and the video standard its banner reports, when it reports one, which
+        calibration and glyph bank read the picture."""
         tr = replace(self.tr, kind=kind)
-        st = replace(self, tr=tr)
+        st = replace(self, tr=tr, standard=standard or self.standard)
         return replace(st, caps=capabilities(st, listener_on=listener_on, fw_defines=fw_defines))
 
     def with_keyboard(self, fitted: frozenset[str]) -> "Station":

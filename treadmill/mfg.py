@@ -65,7 +65,7 @@ from treadmill.link import (
     LinkError, NoReply, NotFound, Refused, TransportError, list_teensyrom_ports, teensyrom_uid,
 )
 from treadmill.link.banner import TR_PLUS, Banner
-from treadmill.observe.calibrate import Calibration, border_of, calibration_path
+from treadmill.observe.calibrate import Calibration, border_of
 from treadmill.observe.capture import FrameSource, save_strip
 from treadmill.observe.channels import ScreenChannel, ScreenRead
 from treadmill.observe.glyphs import GlyphBank
@@ -646,18 +646,20 @@ class VideoKit:
 
 
 def open_video_kit(station: Station, log=print) -> VideoKit:
-    """The capture, bank and stored calibration of the station's rig. The
-    REU checker's verdict is only on video, so a session without them does
-    not start."""
-    from treadmill.session import load_bank, open_video
+    """The capture, bank and stored calibration of the station's rig, for
+    the standard every board is tested in. The REU checker's verdict is
+    only on video, so a session without them does not start."""
+    from treadmill.session import find_calibration, load_bank, open_video
     source = open_video(station, log)
     if source is None:
         raise MfgError(f"the manufacturing test needs the capture of rig {station.rig.id}, and it did not open")
+    if station.machine.region in ("PAL", "NTSC"):
+        station = replace(station, standard=station.machine.region)
     bank = load_bank(station, log=log)
     if bank is None:
         source.close()
         raise MfgError(f"no glyph bank for station {station.id}; run treadmill harvest --station {station.id}")
-    path = calibration_path(data_dir(), station.rig.capture.capture_class, station.machine.id)
+    path = find_calibration(station)
     calibration = Calibration.load(path) if path.is_file() else None
     return VideoKit(source, calibration, bank)
 

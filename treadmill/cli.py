@@ -93,19 +93,32 @@ def _firmware_options(args: argparse.Namespace):
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Build, flash and verify the firmware under test, run the hardware
-    tests, leave the run's folder with run.json and report.html."""
-    from treadmill.driver import RunOptions, run_tests
+    tests, leave the run's folder with run.json and report.html. With
+    ``--region both``, two runs, PAL then NTSC: the record is ``runs``, one
+    entry each, and the exit code is the higher of the two."""
+    from treadmill.driver import RunOptions, run_regions
 
     opts = RunOptions(
         station=args.station, tests=tuple(args.tests or ()), reports=args.reports, caps_mask=args.caps_mask,
+        region=args.region,
         soak=args.soak, estimate=args.estimate, include_tolerant=args.include_tolerant, attended=args.attended,
         no_video=args.no_video, no_xcheck=args.no_xcheck, golden_dir=args.golden_dir,
         firmware=_firmware_options(args), pytest_args=tuple(args.pytest_args),
     )
     # pytest's own output is the diagnostics stream: stderr under --json, so stdout stays the record.
-    result = run_tests(opts, sink=sys.stderr if args.json else sys.stdout, log=_log_for(args))
+    results = run_regions(opts, sink=sys.stderr if args.json else sys.stdout, log=_log_for(args))
+    if len(results) == 1:
+        _emit(_run_payload(results[0]), args.json, results[0].describe())
+        return results[0].code
+    code = max(r.code for r in results)
+    _emit({"exit_code": code, "runs": [_run_payload(r) for r in results]}, args.json,
+          "\n".join(r.describe() for r in results))
+    return code
+
+
+def _run_payload(result) -> dict:
     meta = result.meta or {}
-    payload = {
+    return {
         "run_dir": str(result.run_dir), "report": str(result.report) if result.report else None,
         "exit_code": result.code, "pytest_status": result.pytest_status, "summary": result.summary,
         "aborted": meta.get("aborted"), "station": meta.get("station"), "board": meta.get("board"),
@@ -113,8 +126,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         "tests": [{k: t.get(k) for k in ("nodeid", "outcome", "duration", "message", "folder")}
                   for t in meta.get("tests") or []],
     }
-    _emit(payload, args.json, result.describe())
-    return result.code
 
 
 def _harness_options(args: argparse.Namespace):
@@ -254,9 +265,8 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     and machine."""
     import cv2
 
-    from treadmill.observe.calibrate import Calibration, CalibrationError, calibration_path, find_text_area
-    from treadmill.session import load_or_calibrate, open_station
-    from treadmill.station.config import data_dir
+    from treadmill.observe.calibrate import Calibration, CalibrationError, find_text_area
+    from treadmill.session import load_or_calibrate, open_station, station_calibration_path
 
     log = _log_for(args)
     try:
@@ -270,7 +280,7 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
                 st = load_station(args.station)
                 cal = Calibration(**{**cal.__dict__, "capture_class": st.rig.capture.capture_class,
                                      "machine_id": st.machine.id})
-                saved = cal.save(calibration_path(data_dir(), st.rig.capture.capture_class, st.machine.id))
+                saved = cal.save(station_calibration_path(st))
         else:
             if not args.station:
                 raise CommandError("--station or --frame is needed", EXIT_USAGE)
@@ -278,8 +288,7 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
                 if s.video is None:
                     raise CommandError("the station has no capture, or it did not open", EXIT_NO_STATION)
                 cal = load_or_calibrate(s.board, s.video, s.bank, force=True, save=not args.no_save, log=log)
-                saved = None if args.no_save else calibration_path(
-                    data_dir(), s.station.rig.capture.capture_class, s.station.machine.id)
+                saved = None if args.no_save else station_calibration_path(s.station)
     except CalibrationError as e:
         raise CommandError(str(e)) from e
     payload = {"calibration": _calibration_payload(cal), "saved": str(saved) if saved else None}
@@ -428,12 +437,11 @@ def cmd_score(args: argparse.Namespace) -> int:
     import numpy as np
 
     from treadmill.c64.screen import SCREEN_BYTES
-    from treadmill.observe.calibrate import Calibration, calibration_path, find_text_area, refine, with_bleed
+    from treadmill.observe.calibrate import Calibration, find_text_area, refine, with_bleed
     from treadmill.observe.capture import Frame
     from treadmill.observe.channels import SOURCE_DMA, ScreenRead, read_video, xcheck
     from treadmill.observe.glyphs import GlyphBank
-    from treadmill.session import find_bank
-    from treadmill.station.config import data_dir
+    from treadmill.session import find_bank, find_calibration
 
     image = cv2.imread(str(args.frame), cv2.IMREAD_COLOR)
     if image is None:
@@ -445,7 +453,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     if args.station:
         st = load_station(args.station)
         bank_file = bank_file or find_bank(st)
-        calib_file = calib_file or calibration_path(data_dir(), st.rig.capture.capture_class, st.machine.id)
+        calib_file = calib_file or find_calibration(st)
     if not bank_file:
         raise CommandError("--station or --bank is needed", EXIT_USAGE)
     bank = GlyphBank.load(bank_file)
@@ -568,6 +576,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reports", default="reports", help="where run folders go (default: reports/)")
     s.add_argument("--caps-mask", default="", metavar="A,B",
                    help="capabilities to take away, to prove a lower tier on a richer rig")
+    s.add_argument("--region", type=str.upper, choices=("PAL", "NTSC", "BOTH"),
+                   help="the video standard to run in, switched first when the station has region_switch; "
+                        "both = a PAL run, then an NTSC run; default: whatever the C64 runs now")
     s.add_argument("--soak", type=int, default=0, metavar="N", help="run soak tests with N iterations")
     s.add_argument("--estimate", action="store_true", help="print the expected duration and run nothing")
     s.add_argument("--include-tolerant", action="store_true",

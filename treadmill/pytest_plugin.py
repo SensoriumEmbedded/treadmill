@@ -18,11 +18,13 @@ import pytest
 
 from treadmill.board import Board, Wedged
 from treadmill.c64.keys import Keys
+from treadmill.errors import EXIT_NO_STATION, EXIT_USAGE
 from treadmill.c64.menu import MenuDriver
 from treadmill.firmware.prepare import FirmwareError, FirmwareRun, prepare_firmware, primary_checkout
 from treadmill.firmware.spec import SpecError, parse_spec
 from treadmill.fixtures.sdcard import FIXTURE_ROOT, FixtureError, provision, type_set
 from treadmill.link import DebugCommands, Link, LinkError, TransportError
+from treadmill.link.trlink import NotAllowed
 from treadmill.observe.calibrate import Calibration, CalibrationError
 from treadmill.observe.capture import CaptureError, FrameSource, save_strip
 from treadmill.observe.channels import XCHECK_LIMIT, ScreenChannel, ScreenRead, XCheck
@@ -37,7 +39,8 @@ from treadmill.session import (  # noqa: F401
     menu_for, open_video,
 )
 from treadmill.station import ConfigError, load_station
-from treadmill.station.kbd import KeyboardBoard
+from treadmill.station.kawari import KawariError, set_standard
+from treadmill.station.kbd import KbdError, KeyboardBoard
 from treadmill.station.lock import RigBusy, RigLock
 from treadmill.station.model import KEYBOARD_CAPS, unknown_caps
 
@@ -55,6 +58,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="the station id (data/stations/<id>.toml) the hardware tests run against")
     g.addoption("--caps-mask", action="store", default="",
                 help="comma-separated capabilities to take away, to prove a lower tier on a richer rig")
+    g.addoption("--region", action="store", default=None, type=str.upper, choices=("PAL", "NTSC"),
+                help="the video standard to run in; a station that runs the other one switches when it has "
+                     "region_switch, else the run stops")
     g.addoption("--include-tolerant", action="store_true", default=False,
                 help="run timing_sensitive tests on timing-tolerant machines too")
     g.addoption("--soak", action="store", type=int, default=0,
@@ -257,7 +263,8 @@ def firmware(request: pytest.FixtureRequest, station, run_dir: RunDir) -> Firmwa
 @pytest.fixture(scope="session")
 def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: FirmwareRun) -> Board:
     """The station's board: rig locked, port open, probed, capabilities final,
-    the recovery ladder's rungs attached."""
+    the recovery ladder's rungs attached, and the C64 in the --region
+    standard when one was given."""
     factory = kbd_factory = None
     if fake_requested():
         from selftest.fake_board import start_fake_board
@@ -274,6 +281,15 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
     line = keyboard_line(b.kbd, b.kbd_problem)
     if line:
         _log(line)
+    region = request.config.getoption("--region")
+    if region:
+        try:
+            if set_standard(b, region, log=_log):
+                _log(f"[kawari] the C64 runs {region} now")
+        except (NotAllowed, KawariError, KbdError, LinkError, TransportError) as e:
+            b.close()
+            pytest.exit(f"station {station.id}: --region {region}: {e}",
+                        returncode=EXIT_USAGE if isinstance(e, NotAllowed) else EXIT_NO_STATION)
     run_dir.meta["station"] = describe_station(b)
     run_dir.meta["board"] = describe_board(b)
     yield b
@@ -428,11 +444,13 @@ def keys(at_menu: Board) -> Keys:
 def kbd(at_menu: Board) -> KeyboardBoard:
     """The station's keyboard board, for real matrix keys, holds, RESTORE and
     its other outputs on any TR. After the test, ``A`` lets go of whatever
-    it still holds before the menu is checked."""
+    it still holds before the menu is checked, and the TOD line goes back to
+    the station's rate."""
     if not at_menu.station.has("keys_hw"):
         pytest.skip(_lacks(at_menu, ["keys_hw"]))
     yield at_menu.kbd
     at_menu.kbd.abort()
+    at_menu.apply_tod()
 
 
 @pytest.fixture

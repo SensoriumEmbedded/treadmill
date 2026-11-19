@@ -127,6 +127,7 @@ class Board:
             if board.kbd is not None:
                 board.station = board.station.with_keyboard(board.kbd.fitted).masked(board.caps_mask)
             board.probe()
+            board.apply_tod()
         except BaseException:
             board.close()
             raise
@@ -154,7 +155,23 @@ class Board:
         self.probe_pending = False
         kind = probe.banner.kind if probe.banner else None
         if kind:
-            self.station = self.station.with_probe(kind, fw_defines=self.fw_defines).masked(self.caps_mask)
+            self.station = self.station.with_probe(kind, fw_defines=self.fw_defines,
+                                                   standard=probe.banner.video).masked(self.caps_mask)
+
+    def apply_tod(self) -> None:
+        """The station's TOD rate on the keyboard board's TOD line, when it
+        drives one: ``standard`` is 50 Hz on PAL and 60 Hz on NTSC, by the
+        banner, and is left alone while the banner has not said which. Only
+        a station opened with its TR does this; ``--no-link`` leaves the
+        line as it found it."""
+        if self.kbd is None or not self.station.has("tod_select"):
+            return
+        rate = self.station.keyboard.tod
+        if rate == "standard":
+            if self.station.standard not in ("PAL", "NTSC"):
+                return
+            rate = 50 if self.station.standard == "PAL" else 60
+        self.kbd.tod(rate)
 
     def mask(self, caps: set[str] | frozenset[str]) -> None:
         """Take capabilities away for the rest of the run (--caps-mask, a

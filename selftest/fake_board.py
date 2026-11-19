@@ -8,6 +8,7 @@ command."""
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -253,6 +254,12 @@ class FakeBoard:
                 self.program.buttons()
             else:
                 self.buttons_pending = True
+
+    def set_video(self, standard: str) -> None:
+        """The C64 now runs ``standard`` (a Kawari reloaded): the banner's
+        video line says so from the next version reply on."""
+        line = {"PAL": "PAL Vid  50 Hz", "NTSC": "NTSC Vid  60 Hz"}[standard]
+        self.banner = re.sub(r"(PAL|NTSC) Vid  \d\d Hz", line, self.banner)
 
     def external_reset(self) -> None:
         """A reset the board did not make: sensed unless the fault says not.

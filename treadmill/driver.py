@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE, TreadmillError
@@ -84,6 +84,7 @@ class RunOptions:
     tests: tuple[str, ...] = ()                # paths or node ids; the whole tests/ tree when empty
     reports: str = "reports"
     caps_mask: str = ""
+    region: str | None = None                  # PAL | NTSC | BOTH; None runs in whatever standard the C64 is in
     soak: int = 0
     estimate: bool = False
     include_tolerant: bool = False
@@ -139,6 +140,8 @@ def pytest_command(opts: RunOptions, run_dir: Path) -> list[str]:
            "--station", opts.station, "--run-dir", str(run_dir), *opts.firmware.pytest_args()]
     if opts.caps_mask:
         cmd += ["--caps-mask", opts.caps_mask]
+    if opts.region:
+        cmd += ["--region", opts.region]
     if opts.soak:
         cmd += ["--soak", str(opts.soak)]
     if opts.golden_dir:
@@ -157,7 +160,9 @@ def run_tests(opts: RunOptions, *, sink=None, log=print) -> RunResult:
     first, so a typo fails before anything is built."""
     load_station(opts.station)
     opts.firmware.spec()
-    rd = RunDir(Path(opts.reports).resolve())
+    # A standard's run is named for it: --region both starts two runs, perhaps within one second.
+    stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{opts.region.lower()}" if opts.region else None
+    rd = RunDir(Path(opts.reports).resolve(), stamp)
     cmd = pytest_command(opts, rd.path)
     log("running: " + " ".join(cmd))
     sink = sink or sys.stdout
@@ -194,6 +199,15 @@ def run_tests(opts: RunOptions, *, sink=None, log=print) -> RunResult:
     if rewrite:
         rd.write_run()
     return RunResult(rd.path, status, code, meta)
+
+
+def run_regions(opts: RunOptions, *, sink=None, log=print) -> list[RunResult]:
+    """``run_tests``, once per standard for ``region="BOTH"`` (PAL, then
+    NTSC: two pytest sessions, each with its own folder and run.json, the
+    second one whatever the first did); once otherwise."""
+    if (opts.region or "").upper() != "BOTH":
+        return [run_tests(opts, sink=sink, log=log)]
+    return [run_tests(replace(opts, region=r), sink=sink, log=log) for r in ("PAL", "NTSC")]
 
 
 # -- scripts and the shell ------------------------------------------------------

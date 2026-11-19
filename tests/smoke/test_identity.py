@@ -1,8 +1,9 @@
 """Test 1: the board is the one the run says it is, running the build the
-run flashed, in the machine the registry describes."""
+run flashed, in the machine the registry describes. A machine whose standard
+the station switches runs the one --region asked for, or either."""
 
 
-def test_identity(at_menu, firmware, station):
+def test_identity(request, at_menu, firmware, station):
     board = at_menu
     assert board.link.fw_check() == "main"
     banner = board.link.banner()
@@ -18,6 +19,8 @@ def test_identity(at_menu, firmware, station):
     expected = "C128" if station.machine.is_c128 else "C64"
     assert banner.machine == expected, f"the board sees a {banner.machine}; the registry says {station.machine.model}"
     region = station.machine.region.upper()
+    if board.station.has("region_switch"):
+        region = request.config.getoption("--region") or ""
     if region in ("PAL", "NTSC"):
         assert banner.video == region, f"the board sees {banner.video}; the registry says {region}"
     assert banner.hz in (50, 60), banner.raw

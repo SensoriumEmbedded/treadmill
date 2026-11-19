@@ -118,11 +118,13 @@ class RunDir:
 
 def describe_station(board: "Board | LinklessSession") -> dict[str, Any]:
     """The ``station`` entry of run.json, from the station as probed, with
-    its keyboard board when it names one."""
+    its keyboard board when it names one. ``standard`` is what the TR's
+    banner reported, after any ``--region`` switch; ``region`` is what the
+    machine's registry row says."""
     st = board.station
     return {"id": st.id, "rig": st.rig.id, "machine": st.machine.id, "model": st.machine.model,
-            "region": st.machine.region, "caps": sorted(st.caps), "tr_uid": st.tr.uid, "tr_kind": st.tr.kind,
-            "keyboard": describe_keyboard(board)}
+            "region": st.machine.region, "standard": st.standard, "caps": sorted(st.caps), "tr_uid": st.tr.uid,
+            "tr_kind": st.tr.kind, "keyboard": describe_keyboard(board)}
 
 
 def describe_keyboard(board: "Board | LinklessSession") -> dict[str, Any] | None:

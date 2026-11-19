@@ -15,7 +15,7 @@ the rig lock, the capture and the keyboard board.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -49,15 +49,36 @@ def bank_path(station: Station, root: Path | None = None) -> Path:
     """The station's own bank, keyed like its calibration: a bank learns one
     picture's blur and spill, and the PAL Kawari menu reads with no unsure
     cell on its own bank against three to five a frame on the C128's."""
-    return Path(root or data_dir()) / "glyphs" / f"{station.rig.capture.capture_class}__{station.machine.id}.npz"
+    std = f"__{station.standard}" if station.standard else ""
+    return (Path(root or data_dir()) / "glyphs"
+            / f"{station.rig.capture.capture_class}__{station.machine.id}{std}.npz")
 
 
 def find_bank(station: Station, root: Path | None = None) -> Path:
-    """The bank a station reads with: its own when one was harvested on its
-    picture, else the one for the rig's capture class."""
+    """The bank a station reads with: its own for the standard it runs when
+    one was harvested; else the one harvested on its machine before banks
+    were kept per standard; else the one for the rig's capture class. With
+    none of them, where its own goes."""
     own = bank_path(station, root)
+    machine = bank_path(replace(station, standard=None), root)
     shared = own.with_name(f"{station.rig.capture.capture_class}.npz")
-    return own if own.is_file() or not shared.is_file() else shared
+    return next((p for p in (own, machine, shared) if p.is_file()), own)
+
+
+def station_calibration_path(station: Station, root: Path | None = None) -> Path:
+    """Where the station's calibration is saved: per capture class, machine
+    and the standard its board reports."""
+    return calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id,
+                            station.standard)
+
+
+def find_calibration(station: Station, root: Path | None = None) -> Path:
+    """The calibration a station reads with: its own for the standard it
+    runs, else the one saved for its machine before calibrations were kept
+    per standard."""
+    own = station_calibration_path(station, root)
+    machine = calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id)
+    return own if own.is_file() or not machine.is_file() else machine
 
 
 def open_video(station: Station, log=print) -> FrameSource | None:
@@ -98,9 +119,9 @@ def load_bank(station: Station, chargen: str | None = None, root: Path | None = 
 
 def stored_calibration(station: Station, video: FrameSource, *, root: Path | None = None,
                        log=print) -> Calibration | None:
-    """The saved calibration for (capture class, machine) when it fits the
-    frames the capture delivers now, else None."""
-    path = calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id)
+    """The saved calibration (``find_calibration``) when it fits the frames
+    the capture delivers now, else None."""
+    path = find_calibration(station, root)
     if not path.is_file():
         return None
     frame = video.wait_stable(agree=2, timeout=15.0)
@@ -117,11 +138,11 @@ def stored_calibration(station: Station, video: FrameSource, *, root: Path | Non
 
 def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, *, root: Path | None = None,
                       force: bool = False, save: bool = True, log=print) -> Calibration:
-    """The stored calibration for (capture class, machine) when it fits the
-    frames; otherwise a fresh one from the menu, refined against a DMA read
-    when the board allows it, and saved."""
+    """The stored calibration when it fits the frames; otherwise a fresh one
+    from the menu, refined against a DMA read when the board allows it, and
+    saved for the standard the board reports."""
     station = board.station
-    path = calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id)
+    path = station_calibration_path(station, root)
     if not force:
         cal = stored_calibration(station, video, root=root, log=log)
         if cal is not None:
@@ -146,17 +167,24 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
 def fake_keyboard(station: Station, tr=None):
     """For the self-tests: a factory for a fake keyboard board with the chip
     id the station names, or None when the station names none. Given the
-    fake TeensyROM, what it types reaches that fake's C64, and its resets
-    are that fake's external resets."""
+    fake TeensyROM, what it types reaches that fake's C64, its resets are
+    that fake's external resets, and its ``V`` switches that fake's
+    standard as the station's ``kawari_open`` says."""
     if station.keyboard is None:
         return None
     from selftest.fake_kbd import FakeKeyboard, getin_codes
+    from treadmill.station.kawari import OTHER
 
-    chip = station.keyboard.chip
-    on_type = (lambda text: tr.press_keys(getin_codes(text))) if tr is not None else None
-    on_reset = tr.external_reset if tr is not None else None
-    return lambda: KeyboardBoard.attach(FakeKeyboard(chip=chip, on_type=on_type, on_reset=on_reset).connect(),
-                                        port="fake-keyboard")
+    chip, opens = station.keyboard.chip, station.keyboard.kawari_open
+    on_type = on_reset = on_video = None
+    if tr is not None:
+        on_type = lambda text: tr.press_keys(getin_codes(text))  # noqa: E731
+        on_reset = tr.external_reset
+        if opens:
+            on_video = lambda j1: tr.set_video(opens if j1 == "open" else OTHER[opens])  # noqa: E731
+    return lambda: KeyboardBoard.attach(
+        FakeKeyboard(chip=chip, on_type=on_type, on_reset=on_reset, on_video=on_video).connect(),
+        port="fake-keyboard")
 
 
 def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:

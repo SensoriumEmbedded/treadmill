@@ -399,6 +399,27 @@ def calibration(board: Board, video: FrameSource | None, glyph_bank: GlyphBank |
 
 
 @pytest.fixture
+def screen_now(request: pytest.FixtureRequest, at_menu: Board, video: FrameSource | None):
+    """For a test that switches the video standard, where the session's
+    calibration and glyph bank stop fitting: a function that returns a screen
+    channel read with the bank and calibration for the standard the board
+    runs at the call (stored ones when they fit, else a calibration made
+    from the menu and saved). Without video, the channel reads by DMA alone."""
+    def make() -> ScreenChannel:
+        bank = cal = None
+        if video is not None and fake_requested():
+            from selftest.synth import calibrated, harvested_bank
+            cal = calibrated()
+            bank = harvested_bank(cal)
+        elif video is not None:
+            bank = load_bank(at_menu.station, request.config.getoption("--chargen"), log=_log)
+            cal = load_or_calibrate(at_menu, video, bank, log=_log) if bank is not None else None
+        live = video if cal is not None and bank is not None else None
+        return ScreenChannel(at_menu.link, live, cal, bank, dma_allowed=at_menu.dma_allowed)
+    return make
+
+
+@pytest.fixture
 def screen(request: pytest.FixtureRequest, at_menu: Board, video: FrameSource | None,
            calibration: Calibration | None, glyph_bank: GlyphBank | None, run_dir: RunDir) -> ScreenChannel:
     """The screen through the channel policy; after the test, the video-vs-DMA

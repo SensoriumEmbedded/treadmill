@@ -34,6 +34,7 @@ STATS_TRAILER = bytes([1, 0, 0, 0, 0x00, 0x2C, 0xA3, 0x30])
 BANNER = ("\n  FW: TeensyROM+ v0.9\r\n      Oct 30 2026, 10:00:00\r\n"
           "  Teensy: 816MHz  55.0C  UID: 19277260\r\n  C64  NTSC Vid  60 Hz\n  Boot: complete\n")
 BANNER_TR = BANNER.replace("TeensyROM+", "TeensyROM")
+TR_BASIC_ITEM = "BASIC TR Command IO access only"      # the menu item that leaves BASIC under the TR BASIC handler
 READY_LINE = "TeensyROM+ v0.9 ready!\n"
 # Commands the firmware answers whatever else it is doing (ProcessCommand's first switch).
 ALWAYS = {FW_CHECK, VERSION_INFO, RESET_C64, LAUNCH_FILE, C64_PAUSE_ON, C64_PAUSE_OFF,
@@ -87,6 +88,7 @@ class FakeBoard:
     banner: str = BANNER
     busy: bool = False                   # a launched program's handler is active
     silent: bool = False                 # an extension image: answers nothing
+    deaf: bool = False                   # TR BASIC's handler: the port's bytes go to the C64 program until a reset
     dma: bool = True                     # a TR+; a plain TR has no DMA commands at all
     memory: bytearray = field(default_factory=lambda: bytearray(b"\x20" * 0x10000))
     files: dict[str, bytes] = field(default_factory=dict)
@@ -141,6 +143,9 @@ class FakeBoard:
         and starts its heartbeat; anything else leaves the screen as the menu
         left it. Either way the board is busy until a reset."""
         self.busy = True
+        if path.rpartition("/")[2] == TR_BASIC_ITEM:
+            self.deaf = True
+            return
         program = PROGRAMS.get(path.rpartition("/")[2])
         if program is not None:
             self.program = program(self)
@@ -230,6 +235,7 @@ class FakeBoard:
         with self.lock:                  # a program drawing from its own thread stops before the menu shows
             self.program = None
             self.busy = False
+            self.deaf = False
             self.heartbeat = False
             self.idread = None
             self.booting_for = self.boot_polls
@@ -298,7 +304,7 @@ class FakeBoard:
             first = end.read(1, 60.0)
             if len(first) < 1:
                 break
-            if self.silent:
+            if self.silent or self.deaf:
                 continue
             if first != b"d":                       # 0x64: a token follows; anything else is a letter
                 self._letter(end, first.decode("latin-1"))
@@ -503,8 +509,9 @@ class FakeBoard:
         self._reply(end, ACK)
         folder, _, name = path.rpartition("/")
         end.write(f"Remote Launch:\nP: {folder or '/'}\nF: {name}\n".encode("latin-1"))
-        if self.chatter_on_launch:
-            end.write(self.chatter_on_launch.encode("latin-1"))
+        chatter = "Loading IO handler: TR_BASIC\n" if name == TR_BASIC_ITEM else self.chatter_on_launch
+        if chatter:
+            end.write(chatter.encode("latin-1"))
         self.run(path)
 
     def _delete(self, end: PipeEnd) -> None:

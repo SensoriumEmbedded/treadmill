@@ -118,6 +118,17 @@ def test_run_region_both_is_two_runs_one_per_standard(kb_lab: Path, capsys):  # 
     assert all(r["summary"] == {"passed": 1} for r in runs), runs
 
 
+def test_the_keyboard_hardware_tests_pass_against_the_fakes(kb_lab: Path, capsys):  # noqa: F811
+    """tests/keyboard on the fake TR+ and keyboard board: real keys move the
+    menu, an external reset brings it back from the menu and from TR BASIC,
+    and the Kawari goes to PAL and back to NTSC."""
+    code = main(["run", "--station", "kb", "--tests", "tests/keyboard", "--reports", str(kb_lab / "reports"),
+                 "--json", "--", *QUIET])
+    out, err = capsys.readouterr()
+    run = json.loads(out)
+    assert code == EXIT_OK and run["summary"] == {"passed": 4}, run["tests"]
+
+
 def test_run_region_stops_a_station_that_cannot_switch(lab: Path, capsys):  # noqa: F811
     code = main(["run", "--station", "s1", "--region", "PAL", "--reports", str(lab / "reports"), "--json",
                  "--", "-k", "test_identity", *QUIET])

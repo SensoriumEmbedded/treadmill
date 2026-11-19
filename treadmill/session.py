@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from treadmill.board import Board, open_keyboard
-from treadmill.c64.keys import KernalKeys, Keys
+from treadmill.c64.keys import HwKeys, KernalKeys, Keys
 from treadmill.c64.menu import MenuDriver
 from treadmill.link import DebugCommands
 from treadmill.observe.calibrate import (
@@ -143,15 +143,17 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
 
 # -- the station's hands and tools, for fixtures and scripts alike ---------------
 
-def fake_keyboard(station: Station):
+def fake_keyboard(station: Station, tr=None):
     """For the self-tests: a factory for a fake keyboard board with the chip
-    id the station names, or None when the station names none."""
+    id the station names, or None when the station names none. Given the
+    fake TeensyROM, what it types reaches that fake's C64."""
     if station.keyboard is None:
         return None
-    from selftest.fake_kbd import FakeKeyboard
+    from selftest.fake_kbd import FakeKeyboard, getin_codes
 
     chip = station.keyboard.chip
-    return lambda: KeyboardBoard.attach(FakeKeyboard(chip=chip).connect(), port="fake-keyboard")
+    on_type = (lambda text: tr.press_keys(getin_codes(text))) if tr is not None else None
+    return lambda: KeyboardBoard.attach(FakeKeyboard(chip=chip, on_type=on_type).connect(), port="fake-keyboard")
 
 
 def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:
@@ -166,10 +168,19 @@ def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:
     return None
 
 
-def keys_for(board: Board) -> Keys | None:
-    """A way to press keys on the station, or None when it has none: the
-    KERNAL buffer by DMA on a TR+ (a rig's keyboard board comes with Phase 2)."""
-    return KernalKeys(board) if board.station.has("keys_kernal") else None
+def keys_for(board: Board | LinklessSession) -> Keys | None:
+    """A way to press keys that reach GETIN, or None when the station has
+    none: the KERNAL buffer by DMA when the TR+ can write it, else the
+    keyboard board's matrix. ``--caps-mask dma`` sends a TR+'s keys through
+    the keyboard board, ``keys_hw`` through DMA, ``keys_kernal`` nowhere."""
+    st = board.station
+    if not st.has("keys_kernal"):
+        return None
+    if st.has("dma"):
+        return KernalKeys(board)
+    if st.has("keys_hw"):
+        return HwKeys(board.kbd)
+    return None
 
 
 def menu_for(board: Board, screen: ScreenChannel) -> MenuDriver:
@@ -244,7 +255,7 @@ def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...],
 
     fake, stream = start_fake_board(debug_defines=set(fw_defines))
     board = Board.open(station, attended=attended, link_factory=lambda: Link(stream),
-                       fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station))
+                       fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station, fake))
     if not video:
         board.mask({"video"})
         return Session(board, None, None, None)
@@ -314,6 +325,9 @@ class LinklessSession:
 
     def screen_channel(self) -> ScreenChannel:
         return ScreenChannel(None, self.video if self.has_video else None, self.calibration, self.bank)
+
+    def keys(self) -> Keys | None:
+        return keys_for(self)
 
     def close(self) -> None:
         try:

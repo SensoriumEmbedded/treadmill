@@ -65,6 +65,30 @@ def text_keys(text: str) -> list[str]:
     return keys
 
 
+# What the KERNAL's decode tables ($EB81 plain, $EBC2 with SHIFT) give GETIN
+# for each name; RESTORE and the CTRL and C= forms give none here.
+NAME_CODES = {"return": 0x0D, "shift-return": 0x8D, "home": 0x13, "clr": 0x93, "del": 0x14, "inst": 0x94,
+              "down": 0x11, "up": 0x91, "right": 0x1D, "left": 0x9D, "stop": 0x03, "run": 0x83,
+              "f1": 0x85, "f3": 0x86, "f5": 0x87, "f7": 0x88, "f2": 0x89, "f4": 0x8A, "f6": 0x8B, "f8": 0x8C}
+CHAR_CODES = {"\\": 0x5C, "^": 0x5E, "_": 0x5F}
+
+
+def getin_codes(text: str) -> bytes:
+    """What a program's GETIN reads once ``S`` has typed ``text``: a plain
+    letter is $41-$5A and a shifted one $C1-$DA in the C64's default set."""
+    out = bytearray()
+    for key in text_keys(text):
+        if key.startswith("{"):
+            code = NAME_CODES.get(key[1:-1])
+            if code is not None:
+                out.append(code)
+        elif key.isalpha():
+            out.append(ord(key.upper()) + (0x80 if key.isupper() else 0))
+        else:
+            out.append(CHAR_CODES.get(key, ord(key)))
+    return bytes(out)
+
+
 def valid_keys(text: str) -> list[str]:
     keys = text.split("+")
     if not 1 <= len(keys) <= 16 or any(len(k) != 2 or not k.isdigit() or k[0] > "7" or k[1] > "7" for k in keys):

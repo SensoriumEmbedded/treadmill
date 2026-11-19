@@ -199,10 +199,15 @@ class FakeBoard:
         return bytes(self.memory[IGETIN:IGETIN + 2]) == KERNAL_GETIN
 
     def type_keys(self, text: str) -> None:
-        """Keys pressed on the C64's keyboard: the IRQ's scan queues each one
-        (ten at most), and a GETIN loop takes it at once."""
+        """Keys the operator presses, as the letters on them."""
+        self.press_keys(text.upper().encode("latin-1"))
+
+    def press_keys(self, codes: bytes) -> None:
+        """Keys pressed on the C64's keyboard, as the GETIN codes they give:
+        the IRQ's scan queues each one (ten at most), and a GETIN loop takes
+        it at once."""
         with self.lock:
-            for code in text.upper().encode("latin-1"):
+            for code in codes:
                 if self.getin_live() and (self.program is not None or not self.busy):
                     (self.program or self.menu).key(code)
                 elif self.memory[KEYCOUNT] < KEYBUF_SIZE:

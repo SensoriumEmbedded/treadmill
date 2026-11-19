@@ -304,7 +304,7 @@ class Harness:
         self._t0 = time.monotonic()
         self.namespace = {
             "session": ls, "station": ls.station, "board": None, "link": None, "screen": ls.screen_channel(),
-            "video": ls.video, "keys": None, "menu": None, "dbg": None, "kbd": ls.kbd, "firmware": None,
+            "video": ls.video, "keys": ls.keys(), "menu": None, "dbg": None, "kbd": ls.kbd, "firmware": None,
             "artifacts": self.folder, "run_dir": self.run_dir.path, "log": self.log,
         }
 

@@ -95,19 +95,23 @@ def test_exec_no_link_opens_the_keyboard_board_and_not_the_tr(kb_lab: Path, tmp_
     script = tmp_path / "kb.py"
     script.write_text(textwrap.dedent("""
         result = {"none": [n for n in ("board", "link", "menu", "dbg", "keys", "firmware") if globals()[n] is None],
-                  "proto": kbd.status()["proto"], "caps": sorted(station.caps), "screen": type(screen).__name__}
+                  "proto": kbd.status()["proto"], "caps": sorted(station.caps), "screen": type(screen).__name__,
+                  "keys": type(keys).__name__}
+        keys.press(b"RUN")
     """), encoding="utf-8")
     code = main(["exec", "--station", "kb", "--no-link", "--reports", str(kb_lab / "reports"), "--json", str(script)])
     out, err = capsys.readouterr()
     assert code == EXIT_OK, err
     payload = json.loads(out)
     result = payload["result"]
-    assert result["none"] == ["board", "link", "menu", "dbg", "keys", "firmware"] and result["proto"] == "1"
+    assert result["none"] == ["board", "link", "menu", "dbg", "firmware"] and result["proto"] == "1"
+    assert result["keys"] == "HwKeys"
     assert {"keys_hw", "ext_reset", "region_switch"} <= set(result["caps"])
     assert not {"serial", "video", "screen", "dma"} & set(result["caps"]) and result["screen"] == "ScreenChannel"
     assert "[kbd] keyboard board chip 14470230" in err
     folder = Path(payload["folder"])
-    assert "> ?" in (folder / "kbd.log").read_text(encoding="utf-8") and not (folder / "serial.log").exists()
+    log = (folder / "kbd.log").read_text(encoding="utf-8")
+    assert "> ?" in log and "> S run" in log and not (folder / "serial.log").exists()
     meta = json.loads((Path(payload["run_dir"]) / "run.json").read_text(encoding="utf-8"))
     assert meta["firmware"] == {"spec": "none", "no_link": True} and meta["board"] is None
     assert meta["station"]["keyboard"]["open"] and meta["summary"] == {"passed": 1}

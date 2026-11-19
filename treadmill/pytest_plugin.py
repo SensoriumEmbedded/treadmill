@@ -37,6 +37,7 @@ from treadmill.session import (  # noqa: F401
     menu_for, open_video,
 )
 from treadmill.station import ConfigError, load_station
+from treadmill.station.kbd import KeyboardBoard
 from treadmill.station.lock import RigBusy, RigLock
 from treadmill.station.model import KEYBOARD_CAPS, unknown_caps
 
@@ -262,7 +263,7 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
         from selftest.fake_board import start_fake_board
         fake, stream = start_fake_board(debug_defines=set(firmware.defines))   # the build the run claims
         factory = lambda: Link(stream)  # noqa: E731
-        kbd_factory = fake_keyboard(station)
+        kbd_factory = fake_keyboard(station, fake)
         setattr(request.config, FAKE_ATTR, fake)
     mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
     try:
@@ -415,12 +416,23 @@ def artifacts(request: pytest.FixtureRequest, run_dir: RunDir) -> Path:
 
 @pytest.fixture
 def keys(at_menu: Board) -> Keys:
-    """A way to press keys on the station: the KERNAL buffer by DMA on a TR+
-    (the keyboard board of a rig that has one comes with Phase 2)."""
+    """A way to press keys that reach GETIN: the KERNAL buffer by DMA when
+    the TR+ can write it, else the keyboard board's matrix."""
     press = keys_for(at_menu)
     if press is None:
-        pytest.skip(f"station {at_menu.station.id} lacks keys_kernal")
+        pytest.skip(_lacks(at_menu, ["dma", "keys_hw"] if at_menu.station.has("keys_kernal") else ["keys_kernal"]))
     return press
+
+
+@pytest.fixture
+def kbd(at_menu: Board) -> KeyboardBoard:
+    """The station's keyboard board, for real matrix keys, holds, RESTORE and
+    its other outputs on any TR. After the test, ``A`` lets go of whatever
+    it still holds before the menu is checked."""
+    if not at_menu.station.has("keys_hw"):
+        pytest.skip(_lacks(at_menu, ["keys_hw"]))
+    yield at_menu.kbd
+    at_menu.kbd.abort()
 
 
 @pytest.fixture
@@ -513,6 +525,15 @@ def pytest_runtest_makereport(item: pytest.Item, call):
         item.rep_failed = rep.failed  # type: ignore[attr-defined]
 
 
+def _lacks(board: Board, missing: list[str]) -> str:
+    """The skip reason for capabilities the station lacks, with why the
+    keyboard board's are off when it did not open."""
+    why = ""
+    if board.kbd_problem and KEYBOARD_CAPS.intersection(missing):
+        why = f" (keyboard board: {board.kbd_problem})"
+    return f"station {board.station.id} lacks {', '.join(missing)}{why}"
+
+
 @pytest.fixture(autouse=True)
 def _capability_gate(request: pytest.FixtureRequest):
     item = request.node
@@ -525,10 +546,7 @@ def _capability_gate(request: pytest.FixtureRequest):
     st = board.station
     missing = [c for c in needs if c not in st.caps]
     if missing:
-        why = ""
-        if board.kbd_problem and KEYBOARD_CAPS.intersection(missing):
-            why = f" (keyboard board: {board.kbd_problem})"
-        pytest.skip(f"station {st.id} lacks {', '.join(missing)}{why}")
+        pytest.skip(_lacks(board, missing))
     fw_missing = [d for d in needs_fw if f"fw:{d}" not in st.caps]
     if fw_missing:
         pytest.skip(f"firmware lacks {', '.join(fw_missing)}; run with "

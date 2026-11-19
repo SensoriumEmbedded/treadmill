@@ -5,14 +5,16 @@ takes its power from the machine, so a board on USB is a machine switched on)
 and runs the checks a board gets before it ships, in order:
 
 1. power-up: the main image boots to the menu, and the C64 runs the station's
-   video standard (a C64 in the other one is set by the operator, and the
-   board starts over: not its fault, so not logged);
+   video standard (a C64 in the other one is switched by the keyboard board,
+   or else the operator, and the board starts over: not its fault, so not
+   logged);
 2. firmware: version and build stamp equal the factory hex's, no tag, not dirty;
 3. External Ports: the built-in test passes, its clock line on serial and on
    screen agree and are within a tolerance of UTC (which proves the time
    fetch over Ethernet and the RTC), and the operator answers Y on the C64's
    keyboard for each of its two LEDs;
-4. external reset: the TR+ senses a reset it did not make and returns to the menu;
+4. external reset: the TR+ senses a reset it did not make (the keyboard
+   board's, or else the operator's) and returns to the menu;
 5. Expansion Port: the built-in test passes three times;
 6. SD root: the card's root matches a snapshot of the master image;
 7. REU: hot key 2 launches the REU checker with a 512K REU and it passes.
@@ -70,6 +72,7 @@ from treadmill.observe.glyphs import GlyphBank
 from treadmill.observe.golden import Golden, Mismatch, compare, save_golden
 from treadmill.report.artifacts import RunDir, write_board_artifacts
 from treadmill.station.config import ConfigError, data_dir, repo_root
+from treadmill.station.kbd import KbdError, KeyboardBoard
 from treadmill.station.model import Station
 
 T = TypeVar("T")
@@ -460,6 +463,7 @@ class Bench(Protocol):
     def do(self, action: str) -> None: ...
     def wait_for_board(self) -> tuple[str, str]: ...
     def open_board(self, station: Station, timeout: float) -> Board: ...
+    def open_keyboard(self, station: Station) -> KeyboardBoard: ...
     def gone(self, port: str) -> bool: ...
 
 
@@ -505,23 +509,51 @@ class RealBench:
                                      markable=False) from None
                 time.sleep(1.0)
 
+    def open_keyboard(self, station: Station) -> KeyboardBoard:
+        return KeyboardBoard.open(station.keyboard.chip)
+
     def gone(self, port: str) -> bool:
         return port not in {p for p, _ in list_teensyrom_ports()}
 
 
 class ExternalReset(Protocol):
-    def apply(self) -> None: ...
+    def apply(self, board: Board) -> None: ...
 
 
 class OperatorReset:
-    """The external reset until the keyboard board has a reset command: the
-    operator presses the C64's reset button."""
+    """The operator presses the C64's reset button."""
 
     def __init__(self, bench: Bench):
         self.bench = bench
 
-    def apply(self) -> None:
+    def apply(self, board: Board) -> None:
         self.bench.do(RESET_BUTTON)
+
+
+class KeyboardReset:
+    """A pulse on the C64's /RESET line from the keyboard board the board
+    under test opened. The keyboard board is powered by the C64, so it comes
+    and goes with each board: one that is missing, has no reset fitted, or
+    stops answering leaves the reset to ``fallback``, with the reason on the
+    console. A station that names no keyboard board goes to ``fallback``
+    without a word."""
+
+    def __init__(self, fallback: ExternalReset, console: Console):
+        self.fallback = fallback
+        self.console = console
+
+    def apply(self, board: Board) -> None:
+        if board.station.has("ext_reset"):
+            try:
+                board.ext_reset()
+                return
+            except KbdError as e:
+                why = str(e)
+        else:
+            why = board.kbd_problem or "it has no reset output fitted"
+        if board.station.keyboard is not None:
+            self.console.warn(f"The keyboard board did not reset the C64: {why}.")
+        self.fallback.apply(board)
 
 
 class StandardSwitch(Protocol):
@@ -529,10 +561,9 @@ class StandardSwitch(Protocol):
 
 
 class OperatorSwitch:
-    """The C64's video standard set until the keyboard board's V command can
-    switch the Kawari: the operator does it. The Kawari reads its standard
-    only when its FPGA configures, so the C64 is powered off and on, and the
-    board leaves USB; this returns once it has."""
+    """The operator sets the C64's video standard. The Kawari reads its
+    standard only when its FPGA configures, so the C64 is powered off and
+    on, and the board leaves USB; this returns once it has."""
 
     def __init__(self, bench: Bench):
         self.bench = bench
@@ -541,6 +572,45 @@ class OperatorSwitch:
         self.bench.do(SET_STANDARD)
         while not self.bench.gone(port):
             time.sleep(BOARD_POLL_S)
+
+
+class KeyboardSwitch:
+    """The keyboard board's ``V``: the Kawari reconfigures in the standard
+    asked for while the C64 is held in reset, and the board under test never
+    leaves USB, so it starts over at once. ``V open`` gives the standard the
+    station's ``kawari_open`` names. It does not outlast a power cycle: the
+    keyboard board powers down with the C64, and J1 floats back to open. A
+    keyboard board that is missing, cannot switch, or stops answering leaves
+    the switch to ``fallback``."""
+
+    def __init__(self, station: Station, bench: Bench, fallback: StandardSwitch, console: Console):
+        self.station = station
+        self.bench = bench
+        self.fallback = fallback
+        self.console = console
+
+    def apply(self, standard: str, port: str) -> None:
+        try:
+            with self.bench.open_keyboard(self.station) as kbd:
+                if not self.station.with_keyboard(kbd.fitted).has("region_switch"):
+                    raise KbdError(f"it has {','.join(sorted(kbd.fitted)) or 'nothing'} fitted, and the "
+                                   "switch needs kawari and reset")
+                setting = "open" if standard == self.station.keyboard.kawari_open else "closed"
+                self.console.say(f"The keyboard board switches the C64 to {standard} (V {setting}) ...")
+                kbd.video(setting)
+        except KbdError as e:
+            self.console.warn(f"The keyboard board did not switch the C64: {e}.")
+            self.fallback.apply(standard, port)
+
+
+def standard_switch(station: Station, bench: Bench, console: Console) -> StandardSwitch:
+    """The keyboard board's switch when the station says what its Kawari's
+    J1 open gives, else the operator's."""
+    operator = OperatorSwitch(bench)
+    kb, machine = station.keyboard, station.machine
+    if kb is not None and kb.kawari_open and machine.has_kawari:
+        return KeyboardSwitch(station, bench, operator, console)
+    return operator
 
 
 # -- video ---------------------------------------------------------------------------------------------
@@ -1311,7 +1381,7 @@ def settled_video_text(c: Ctx, tries: int = 5) -> str | None:
 
 
 def wait_reset_sensed(c: Ctx, mark: int, before: str | None) -> None:
-    """Until the TR+ logs 'Button detected' after the operator's reset. The
+    """Until the TR+ logs 'Button detected' after the external reset. The
     C64 resets whether the TR+ senses it or not, and its screen shows it: the
     External Ports result (``before``) goes. Most rows changing on
     SCREEN_CHANGE_READS video reads in a row with no 'Button detected'
@@ -1343,7 +1413,7 @@ def wait_reset_sensed(c: Ctx, mark: int, before: str | None) -> None:
 def step_external_reset(c: Ctx) -> str:
     mark = c.mark()
     before = settled_video_text(c) if c.video.ok else None      # before the operator is asked
-    c.reset.apply()
+    c.reset.apply(c.board)
     with c.timed("reset_press"):
         wait_reset_sensed(c, mark, before)
     with c.timed("reset_follow"):
@@ -1835,8 +1905,8 @@ def run_session(template: Station, profile: MfgProfile, bench: Bench, console: C
     once ``standard`` has set the C64 to the station's."""
     expected = expected_firmware(profile)
     board_log = BoardLog(profile.log, run_dir.stamp, console)
-    reset = reset or OperatorReset(bench)
-    standard = standard or OperatorSwitch(bench)
+    reset = reset or KeyboardReset(OperatorReset(bench), console)
+    standard = standard or standard_switch(template, bench, console)
     records: list[BoardRecord] = []
     console.heading(f"TR+ manufacturing test: {expected.version}, built {expected.stamp}")
     console.say(f"Log: {board_log.path}")

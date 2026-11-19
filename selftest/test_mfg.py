@@ -32,7 +32,8 @@ from treadmill.link.banner import parse_banner
 from treadmill.link.transport import ByteStream
 from treadmill.link.trlink import DRAIN_S, Link
 from treadmill.mfg import (
-    CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, INSTRUCTIONS, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, SET_STANDARD,
+    CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, INSTRUCTIONS, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, RESET_BUTTON,
+    SET_STANDARD,
     SID, BoardLog, BoardRecord, Console, Ctx, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
     _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
@@ -628,6 +629,57 @@ def test_a_c64_in_the_other_standard_is_set_right_and_its_board_starts_over(lab:
     text = out.getvalue()
     assert text.count("The C64 runs PAL, and this station tests in NTSC.") == 2
     assert text.count(INSTRUCTIONS[SET_STANDARD]) == 2 and "Board 1 PASSED" in text and "FAIL" not in text
+
+
+def _keyboard_station(lab: Path) -> None:
+    """s1 with a Kawari whose J1 open gives PAL and a keyboard board to switch it."""
+    (lab / "data" / "stations" / "kbm.toml").write_text(
+        'id = "kbm"\nrig = "rigA"\n[machine]\nid = "bench"\nmodel = "C64"\nhas_kawari = true\n'
+        '[tr]\nuid = "19277260"\n[keyboard]\nchip = "14470230"\nkawari_open = "PAL"\n', encoding="utf-8")
+
+
+def test_the_keyboard_board_switches_the_standard_and_resets_the_c64(lab: Path):  # noqa: F811
+    """Backlog 16: the external reset is the keyboard board's R, with nobody
+    at the bench. A C64 powered on in PAL is switched by V, and the board
+    starts over without leaving USB: one power-on."""
+    _keyboard_station(lab)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
+    bench = FakeBench(console, boards=[{"banner": pal}])
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
+    assert summary["boards"][0]["restarts"] == ["the C64 runs PAL, and this station tests in NTSC"]
+    assert bench.count == 1 and bench.kbd.switches == ["closed"] and bench.kbd.resets == [50000]
+    text = out.getvalue()
+    assert "The keyboard board switches the C64 to NTSC (V closed)" in text
+    assert INSTRUCTIONS[SET_STANDARD] not in text and INSTRUCTIONS[RESET_BUTTON] not in text
+
+
+def test_a_keyboard_board_that_cannot_reset_or_switch_leaves_both_to_the_operator(lab: Path):  # noqa: F811
+    _keyboard_station(lab)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
+    bench = FakeBench(console, boards=[{"banner": pal}, {}], kbd_fitted={"tod"})
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
+    text = out.getvalue()
+    assert ("The keyboard board did not switch the C64: it has tod fitted, and the switch needs kawari and "
+            "reset.") in text
+    assert "The keyboard board did not reset the C64: it has no reset output fitted." in text
+    assert INSTRUCTIONS[SET_STANDARD] in text and INSTRUCTIONS[RESET_BUTTON] in text
+    assert bench.count == 2 and bench.kbd.switches == [] and bench.kbd.resets == []
 
 
 def test_a_failed_time_fetch_is_named_in_the_clock_failure(lab: Path):  # noqa: F811

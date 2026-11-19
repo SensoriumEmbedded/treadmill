@@ -4,7 +4,9 @@ It owns the rig lock, the serial link, the event log, the recovery ladder,
 and the keyboard board when the station's machine has one, and it is what
 the pytest fixtures and the driver's ``exec`` and ``shell`` hand out. The
 ladder, run before every test, climbs only as far as
-it must: a reset; then the 134-baud USB reboot with a loader relaunch of the
+it must: a reset; then, on a TR+ whose machine has a keyboard board with
+its reset fitted, a reset on the C64's /RESET line, which the TR+ senses
+from any handler; then the 134-baud USB reboot with a loader relaunch of the
 firmware already on the board, when the run knows which hex that is; then a
 mains cycle when the rig has power control; else the station is marked wedged
 and the rest of the run skips with that reason.
@@ -19,6 +21,7 @@ from typing import TYPE_CHECKING, Callable
 from treadmill.errors import TreadmillError
 from treadmill.firmware.flash import REAPPEAR_S, relaunch
 from treadmill.link import Link, LinkError, NotFound, Refused, TransportError, find_port, open_serial
+from treadmill.link.trlink import NotAllowed
 from treadmill.link.banner import Banner
 from treadmill.link.state import MENU_READY, State, derive_state
 from treadmill.link.unsolicited import EventLog
@@ -187,6 +190,18 @@ class Board:
         if self.is_c128:
             self.dma_hold_until = time.monotonic() + C128_RESET_HOLD_S
 
+    def ext_reset(self) -> None:
+        """Reset the C64 on its /RESET line from the keyboard board, with the
+        TR out of it: a TR+ senses the reset and goes back to its menu from
+        any handler, TR BASIC's included. The C128's hold-off starts as for
+        ``reset``, once the pulse has ended."""
+        if self.kbd is None or not self.station.has("ext_reset"):
+            why = f" (keyboard board: {self.kbd_problem})" if self.kbd_problem else ""
+            raise NotAllowed(f"external reset not sent: station {self.station.id} lacks ext_reset{why}")
+        self.kbd.reset()
+        if self.is_c128:
+            self.dma_hold_until = time.monotonic() + C128_RESET_HOLD_S
+
     @property
     def is_c128(self) -> bool:
         """The machine is a C128 by the station file or by the board's own
@@ -233,8 +248,12 @@ class Board:
         except (LinkError, TransportError):
             pass
         rungs: list[tuple[str, Callable[[], None]]] = []
-        if not (self.reboot_hook and self.events.current_handler() in SERIAL_DEAF_HANDLERS):
+        # Without reset sensing, a reset the TR doesn't make leaves it in its handler: no way back to the menu.
+        ext = self.kbd is not None and self.station.has("ext_reset", "reset_sense")
+        if not ((self.reboot_hook or ext) and self.events.current_handler() in SERIAL_DEAF_HANDLERS):
             rungs.append(("reset", self._rung_reset))
+        if ext:
+            rungs.append(("ext-reset", self.ext_reset))
         if self.reboot_hook:
             rungs.append(("usb-reboot", self._rung_reboot))
         if self.station.has("power"):
@@ -246,7 +265,7 @@ class Board:
                 self.wait_for_menu()
                 self.recoveries.append(name)
                 return
-            except (LinkError, TransportError, PowerUnavailable, Refused, NotFound) as e:
+            except (LinkError, TransportError, PowerUnavailable, Refused, NotFound, KbdError) as e:
                 failures.append(f"{name}: {e}")
         self.wedged_reason = "; ".join(failures) or "no recovery rung available"
         raise Wedged(self.wedged_reason)

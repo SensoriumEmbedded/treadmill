@@ -146,14 +146,17 @@ def load_or_calibrate(board: Board, video: FrameSource, bank: GlyphBank | None, 
 def fake_keyboard(station: Station, tr=None):
     """For the self-tests: a factory for a fake keyboard board with the chip
     id the station names, or None when the station names none. Given the
-    fake TeensyROM, what it types reaches that fake's C64."""
+    fake TeensyROM, what it types reaches that fake's C64, and its resets
+    are that fake's external resets."""
     if station.keyboard is None:
         return None
     from selftest.fake_kbd import FakeKeyboard, getin_codes
 
     chip = station.keyboard.chip
     on_type = (lambda text: tr.press_keys(getin_codes(text))) if tr is not None else None
-    return lambda: KeyboardBoard.attach(FakeKeyboard(chip=chip, on_type=on_type).connect(), port="fake-keyboard")
+    on_reset = tr.external_reset if tr is not None else None
+    return lambda: KeyboardBoard.attach(FakeKeyboard(chip=chip, on_type=on_type, on_reset=on_reset).connect(),
+                                        port="fake-keyboard")
 
 
 def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:

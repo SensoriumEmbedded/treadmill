@@ -117,6 +117,21 @@ def test_a_skip_in_setup_after_the_screen_is_a_skip(pytester: pytest.Pytester, l
     result.assert_outcomes(skipped=1)
 
 
+def test_a_warning_reaches_run_json_and_the_report_once(pytester: pytest.Pytester, lab: Path):
+    pytester.makeconftest('pytest_plugins = ["treadmill.pytest_plugin"]')
+    pytester.makepyfile(test_hw=textwrap.dedent("""
+        def test_shrank(at_menu, warn):
+            warn("nS_PLAprop up: clean to 205, 25 ns inside 230 on abc")
+    """))
+    result = pytester.runpytest("--station", "s1", "--reports", str(lab / "reports"), "-p", "no:anyio",
+                                "-p", "no:cacheprovider")
+    result.assert_outcomes(passed=1)
+    run = next((lab / "reports").iterdir())
+    rec = json.loads((run / "run.json").read_text(encoding="utf-8"))["tests"][0]
+    assert rec["outcome"] == "passed" and rec["warnings"] == ["nS_PLAprop up: clean to 205, 25 ns inside 230 on abc"]
+    assert "<h2>Warnings: 1</h2>" in (run / "report.html").read_text(encoding="utf-8")
+
+
 def test_a_run_that_ends_before_any_test_records_why(pytester: pytest.Pytester, lab: Path):
     pytester.makeconftest('pytest_plugins = ["treadmill.pytest_plugin"]')
     pytester.makepyfile(test_hw=TESTS)

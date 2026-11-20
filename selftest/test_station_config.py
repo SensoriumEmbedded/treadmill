@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from treadmill.margins import Floor
 from treadmill.station import ConfigError, list_stations, load_rig, load_station
 from treadmill.station.model import TR_PLUS, Station, capabilities, tier, unknown_caps
 from treadmill.station.registry import normalize_model, normalize_region, read_registry
@@ -145,6 +146,25 @@ def test_a_bad_keyboard_table_fails_loudly(lab: Path, table, match):
         f'id = "kb"\nrig = "rigA"\nmachine_id = "1"\n[tr]\nuid = "1"\n[keyboard]\n{table}', encoding="utf-8")
     with pytest.raises(ConfigError, match=match):
         load_station("kb", lab)
+
+
+def test_floors_are_per_direction(lab: Path):
+    (lab / "stations" / "fl.toml").write_text(
+        'id = "fl"\nrig = "rigA"\nmachine_id = "1"\n[tr]\nuid = "1"\n'
+        '[margins]\nnS_PLAprop = { up = 200, down = 140 }\nth = { down = 330 }\n', encoding="utf-8")
+    assert load_station("fl", lab).margins == {"nS_PLAprop": Floor(up=200, down=140), "nS_DataHold": Floor(down=330)}
+
+
+@pytest.mark.parametrize("table, match", [
+    ("nS_PLAprop = 200", "a floor per direction"),
+    ("nS_PLAprop = { left = 1 }", "only up and down"),
+    ("nS_PLAplop = { up = 1 }", "no timing knob"),
+])
+def test_a_bad_floor_fails_loudly(lab: Path, table, match):
+    (lab / "stations" / "fl.toml").write_text(
+        f'id = "fl"\nrig = "rigA"\nmachine_id = "1"\n[tr]\nuid = "1"\n[margins]\n{table}\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match=match):
+        load_station("fl", lab)
 
 
 def test_list_stations_skips_examples(lab: Path):

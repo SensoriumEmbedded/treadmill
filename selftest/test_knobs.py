@@ -56,6 +56,11 @@ def test_couplings_follow_the_other_knob():
     assert limits(KNOBS["w"], "NTSC", at)[1] == 978 - 60 - 430
 
 
+def test_which_knobs_time_dma_and_which_read_back_at_the_defaults():
+    assert {k.letter for k in KNOBS.values() if k.times_dma} == {"a", "b", "e", "w", "y", "n"}
+    assert {k.letter for k in KNOBS.values() if k.readback_at_defaults} == {"m", "a", "b", "e", "w", "y", "n"}
+
+
 def test_standard_names_and_knob_names():
     assert [standard_of("C64", "PAL"), standard_of("C64", "NTSC"), standard_of("C128", "NTSC"),
             standard_of("C128", "PAL"), standard_of(None, None)] == ["PAL", "NTSC", "NTSC C128", "PAL", "PAL"]

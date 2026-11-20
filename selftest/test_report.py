@@ -62,6 +62,19 @@ def test_render_report_shows_failures_with_their_artifacts(tmp_path: Path):
     assert page.count("<h2 id=") == 1, "only the failed test gets a details section"
 
 
+def test_render_report_lists_the_warnings_of_passing_tests(tmp_path: Path):
+    run = tmp_path / "r"
+    run.mkdir()
+    tests = [{"nodeid": "tests/sweep/x.py::test_m", "outcome": "passed", "duration": 1.0, "message": None,
+              "folder": None, "warnings": ["nS_PLAprop up: clean to 205, 25 ns inside 230 on <old>"]},
+             {"nodeid": "tests/x.py::test_n", "outcome": "passed", "duration": 1.0, "message": None, "folder": None}]
+    (run / "run.json").write_text(json.dumps({"stamp": "r", "tests": tests, "summary": {"passed": 2}}),
+                                  encoding="utf-8")
+    page = render_report(run).read_text(encoding="utf-8")
+    assert "<h2>Warnings: 1</h2>" in page and "25 ns inside 230 on &lt;old&gt;" in page
+    assert "tests/sweep/x.py::test_m" in page.split("<h2>Warnings")[1]
+
+
 def test_render_report_with_nothing_run(tmp_path: Path):
     run = tmp_path / "r"
     run.mkdir()

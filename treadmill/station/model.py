@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Mapping
 
+from treadmill.margins import Floor
+
 # Board kinds as the version banner reports them: "TeensyROM+ v0.9" is a TR+.
 TR = "tr"
 TR_PLUS = "tr-plus"
@@ -139,7 +141,7 @@ class Station:
     tr: TRBoard
     allow_eeprom_reset: bool = False
     settings_baseline: Mapping[str, object] = field(default_factory=dict)
-    margins: Mapping[str, int] = field(default_factory=dict)   # knob name -> value a sweep must find clean
+    margins: Mapping[str, Floor] = field(default_factory=dict)  # knob name -> how far each edge must be clean
     keyboard: KeyboardSpec | None = None
     kbd_fitted: frozenset[str] | None = None   # the keyboard board's fitted outputs; None until it answers
     standard: str | None = None      # PAL | NTSC as the TR's banner last reported it; None until then

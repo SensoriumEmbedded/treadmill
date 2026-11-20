@@ -76,6 +76,11 @@ def _results(tests: list[dict]) -> str:
             + "".join(rows) + "</table>")
 
 
+def _warnings(tests: list[dict]) -> str:
+    items = [f"<li>{_e(t['nodeid'])}: {_e(w)}</li>" for t in tests for w in t.get("warnings") or []]
+    return f"<h2>Warnings: {len(items)}</h2><ul>{''.join(items)}</ul>" if items else ""
+
+
 def _details(run: Path, t: dict) -> str:
     folder = run / t["folder"]
     parts = [f"<h2 id=\"{_e(t['folder'])}\">{_e(t['nodeid'])}: <span class=\"{_e(t['outcome'])}\">"
@@ -107,7 +112,7 @@ def render_report(run: Path) -> Path:
     summary = meta.get("summary") or {}
     counts = ", ".join(f"{n} {k}" for k, n in sorted(summary.items())) or "no tests ran"
     body = [f"<h1>TReadmill run {_e(meta.get('stamp', run.name))}</h1>", _header(meta),
-            f"<h2>Results: {_e(counts)}</h2>", _results(tests)]
+            f"<h2>Results: {_e(counts)}</h2>", _results(tests), _warnings(tests)]
     body += [_details(run, t) for t in tests if t.get("folder") and t["outcome"] in ("failed", "error")]
     page = (f"<!doctype html><html><head><meta charset=\"utf-8\"><title>TReadmill run {_e(meta.get('stamp'))}"
             f"</title><style>{_STYLE}</style></head><body>" + "\n".join(body) + "</body></html>\n")

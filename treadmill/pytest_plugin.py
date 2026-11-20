@@ -46,6 +46,7 @@ from treadmill.station.model import KEYBOARD_CAPS, unknown_caps
 
 RUN_ATTR = "_treadmill_run"          # the RunDir on the pytest config, for hooks and fixtures alike
 FAKE_ATTR = "_treadmill_fake"
+WARNING_PROPERTY = "treadmill_warning"   # a user property: the warn fixture's lines
 
 
 def _log(message: str) -> None:
@@ -179,6 +180,9 @@ class _RunRecorder:
         rec = rd.tests.setdefault(report.nodeid, {"nodeid": report.nodeid, "outcome": "passed",
                                                   "duration": 0.0, "message": None})
         rec["duration"] += report.duration
+        for name, text in report.user_properties:
+            if name == WARNING_PROPERTY and text not in rec.setdefault("warnings", []):
+                rec["warnings"].append(text)
         if report.failed:
             if rec["outcome"] in ("failed", "error"):
                 # A failure in the call and another in teardown (the invariants, say): the first is the
@@ -444,6 +448,17 @@ def screen(request: pytest.FixtureRequest, at_menu: Board, video: FrameSource | 
 
 
 # -- the menu, keys, debug letters, programs, the card, goldens -----------------
+
+@pytest.fixture
+def warn(request: pytest.FixtureRequest):
+    """``warn(text)``: a line in the test's ``warnings`` in run.json and in
+    report.html, for something to look at that does not fail the test (a
+    margin that shrank against an earlier build)."""
+    def add(text: str) -> None:
+        request.node.user_properties.append((WARNING_PROPERTY, text))
+        print(f"[treadmill] warning: {text}")
+    return add
+
 
 @pytest.fixture
 def artifacts(request: pytest.FixtureRequest, run_dir: RunDir) -> Path:

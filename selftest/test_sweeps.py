@@ -1,5 +1,6 @@
 """The sweep engine without hardware: the search on synthetic probes, a
-sweep of the fake board's nS_PLAprop with both probes, and the command."""
+sweep of the fake board's nS_PLAprop with both probes, both edges, passes
+and scans, nS_DMASetup with the sums held, and the command."""
 
 import json
 import random
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import treadmill.link.dbgcmds as dbgcmds
 from selftest.fake_board import KNOB_DEFAULTS, start_fake_board
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
 from treadmill.board import Board
@@ -14,8 +16,9 @@ from treadmill.cli import EXIT_OK, EXIT_USAGE, main
 from treadmill.link import DebugCommands, Link
 from treadmill.observe.channels import ScreenChannel
 from treadmill.observe.golden import Golden
+from treadmill.probes import IdReadProbe, MenuProbe
 from treadmill.station import load_station
-from treadmill.sweeps import KNOBS, IdReadProbe, MenuProbe, Point, SearchSpec, Sweep, SweepError, knob_named, search
+from treadmill.sweeps import KNOBS, Point, Sample, SearchSpec, Sweep, SweepError, knob_named, search
 
 REPO = Path(__file__).resolve().parents[1]
 ROOT_GOLDEN = REPO / "tests" / "golden" / "menu" / "root.screen.txt"
@@ -54,6 +57,14 @@ def test_search_without_an_edge_and_with_a_failing_start():
     assert (clean, fail) == (150, None) and len(points) == 1
 
 
+def test_search_from_a_start_already_probed():
+    probe_at = _probe_at(207)
+    points, clean, fail = search(probe_at, 150, SearchSpec(stop=300, step=10, fine=1), probe_start=False)
+    assert (clean, fail) == (207, 208) and probe_at.probed[0] == 160
+    points, clean, fail = search(_probe_at(1000), 150, SearchSpec(stop=150), probe_start=False)
+    assert (points, clean, fail) == ([], 150, None)
+
+
 def test_search_runs_downward_and_stops_at_fine():
     def low_fails(value: int) -> Point:            # a hold time that fails when too short
         return Point(value, 1 if value < 183 else 0, 1, 0.0)
@@ -63,11 +74,15 @@ def test_search_runs_downward_and_stops_at_fine():
 
 
 def test_a_spec_that_could_not_end_is_refused():
-    for bad in ({"step": 0}, {"fine": 0}, {"repeat": 0}, {"step": -10}):
+    for bad in ({"step": 0}, {"fine": 0}, {"repeat": 0}, {"step": -10}, {"passes": 0}):
         with pytest.raises(SweepError) as e:
             SearchSpec(stop=300, **bad)
         assert "at least 1" in str(e.value) and e.value.code == EXIT_USAGE
     SearchSpec(stop=300, step=1, fine=1, repeat=1)
+    assert [SearchSpec().mode, SearchSpec(both=True).mode, SearchSpec(scan=(1, 2)).mode] == ["one", "both", "scan"]
+    with pytest.raises(SweepError) as e:
+        SearchSpec(scan=(300, 200))
+    assert "low end comes first" in str(e.value)
 
 
 def test_knob_lookup():
@@ -78,7 +93,13 @@ def test_knob_lookup():
 
 
 @pytest.fixture
-def fake_station(lab):  # noqa: F811
+def quick_replies(monkeypatch):
+    """The fake writes each reply in one piece, so a short quiet gap ends it."""
+    monkeypatch.setattr(dbgcmds, "TEXT_REPLY", (3.0, 0.05, 20.0))
+
+
+@pytest.fixture
+def fake_station(lab, quick_replies):  # noqa: F811
     fake, stream = start_fake_board(debug_defines={"Dbg_SerTimChg"})
     board = Board.open(load_station("s1"), link_factory=lambda: Link(stream), fw_defines=("Dbg_SerTimChg",))
     try:
@@ -93,32 +114,67 @@ def _idread_program(tmp_path: Path) -> Path:
     return crt
 
 
+class Window:
+    """A probe on the fake's knobs alone: a point fails outside ``window``
+    (per knob letter); ``moves`` shifts the window each time the default
+    comes round again, for a machine that drifts between passes; ``hangs``
+    is a value from which the workload collapses."""
+
+    def __init__(self, fake, letter: str, window: tuple[int, int], *, moves: int = 0, hangs: int | None = None,
+                 name: str = "window"):
+        self.fake, self.letter, self.window, self.moves, self.hangs = fake, letter, window, moves, hangs
+        self.name = name
+        self.seen_default = 0
+        self.inside_defaults: list[dict] = []
+
+    def setup(self) -> None:
+        pass
+
+    def sample(self, label: str, setting=None) -> Sample:
+        value = self.fake.knobs[self.letter]
+        if value == KNOB_DEFAULTS[self.letter]:
+            self.seen_default += 1
+        if setting is not None and setting.bracket:
+            with setting.at_defaults():
+                self.inside_defaults.append(dict(self.fake.knobs))
+        shift = self.moves * (self.seen_default - 1)
+        low, high = self.window[0] + shift, self.window[1] + shift
+        if self.hangs is not None and value >= self.hangs:
+            return Sample(1, 1, "hung", hung=True)
+        return Sample(0 if low <= value <= high else 1, 1)
+
+    def teardown(self) -> None:
+        pass
+
+
 def test_sweep_of_the_fake_s_pla_margin_by_idread(fake_station, tmp_path: Path):
     fake, board = fake_station
     dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
     probe = IdReadProbe(board, _idread_program(tmp_path), dwell=0.2, log=lambda m: None)
     sweep = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["p"] + 100, step=20, fine=5), log=lambda m: None)
     margin = sweep.run()
-    assert margin.default == KNOB_DEFAULTS["p"] and margin.probe == "idread"
+    assert margin.default == KNOB_DEFAULTS["p"] and margin.probe == "idread" and margin.standard == "NTSC"
     assert margin.last_clean is not None and margin.first_fail is not None
     io_high = fake.windows["io"][1]
     assert margin.last_clean <= io_high < margin.first_fail and margin.first_fail - margin.last_clean <= 5
     assert margin.restored and fake.knobs["p"] == KNOB_DEFAULTS["p"] and fake.letters[-1] == "td"
     assert margin.points[0].value == KNOB_DEFAULTS["p"] and not margin.points[0].failed
     bad = next(p for p in margin.points if p.failed)
-    assert 0 < bad.rate <= 1 and bad.samples > 100
+    assert 0 < bad.rate <= 1 and bad.samples > 100 and bad.failed_by == ["idread"]
     assert bad.notes[0].startswith("rom 0/") and ", io2 0/" not in bad.notes[0], bad.notes   # IO goes first
     assert not board.link.ping().endswith("Busy!"), "teardown left the board at the menu"
     text = margin.describe()
     assert "nS_PLAprop: clean up to" in text and "of margin" in text
     d = margin.to_dict()
-    assert d["margin"] == margin.last_clean - KNOB_DEFAULTS["p"] and len(d["points"]) == len(margin.points)
+    assert d["edges"]["up"]["margin"] == margin.last_clean - KNOB_DEFAULTS["p"]
+    assert len(d["points"]) == len(margin.points)
+    assert d["edges"]["up"]["probes"] == ["idread"] and d["limits"] == [135, 270]
 
 
 def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, tmp_path: Path):
     """Lowered, nS_PLAprop samples the select lines before IO's have asserted;
     below nS_RWnReady it changes nothing, since both waits count from the
-    cycle's start."""
+    cycle's start, so the knob table stops the walk there."""
     fake, board = fake_station
     dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
     probe = IdReadProbe(board, _idread_program(tmp_path), dwell=0.2, log=lambda m: None)
@@ -126,10 +182,115 @@ def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, t
     margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"], step=5, fine=1), log=lambda m: None).run()
     assert margin.direction == -1 and (margin.last_clean, margin.first_fail) == (io_low, io_low - 1)
     assert "nS_PLAprop: clean down to" in margin.describe() and margin.restored
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"] - 30), log=lambda m: None).run()
+    assert e.value.code == EXIT_USAGE and "past the sweep limits 135..270" in str(e.value)
     fake.windows["io"] = (100, 210)                                  # selects in time at any reachable value
-    clean = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"] - 30, step=20, fine=1),
+    clean = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"], step=20, fine=1),
                   log=lambda m: None).run()
-    assert clean.first_fail is None and [p.value for p in clean.points] == [150, 130, 110, 105]
+    assert clean.first_fail is None and [p.value for p in clean.points] == [150, 135]
+
+
+def test_both_edges_from_one_probe_of_the_default(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Window(fake, "p", (142, 210))
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(both=True, step=10, fine=1), log=lambda m: None).run()
+    values = [p.value for p in margin.points]
+    assert values.count(150) == 1 and values[:3] == [150, 140, 145], "the default once, then down first"
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (142, 141, 210, 211)
+    assert down.probes == ["window"] and not down.drifting and margin.restored
+    text = margin.describe()
+    assert "clean down to 142, fails from 141" in text and "clean up to 210, fails from 211" in text
+
+
+def test_passes_alternate_and_mark_a_drifting_edge(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Window(fake, "p", (142, 210), moves=-10)                  # pass 2: clean 132..200
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(both=True, step=10, fine=1, passes=2),
+                   log=lambda m: None).run()
+    second = [p.value for p in margin.points if p.pass_no == 2]
+    assert second[:2] == [150, 160], "pass 2 goes up first"
+    up, down = margin.edges["up"], margin.edges["down"]
+    assert (up.clean_to, up.first_fail) == (200, 201), "a value is clean only if clean in every pass"
+    assert up.drifting and [x["first_fail"] for x in up.per_pass] == [211, 201]
+    assert (down.clean_to, down.first_fail) == (142, 141) and down.drifting      # pass 2 found no edge down
+    assert "drifting between passes" in margin.describe()
+
+
+def test_a_scan_alternates_and_stops_past_two_collapses(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Window(fake, "p", (135, 270), hangs=240)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(135, 270), step=15, passes=2), log=lambda m: None).run()
+    first = [p.value for p in margin.points if p.pass_no == 1]
+    second = [p.value for p in margin.points if p.pass_no == 2]
+    assert first == [135, 150, 165, 180, 195, 210, 225, 240, 255], "stops after two collapses past the window"
+    assert second == [270, 255, 240, 225, 210, 195, 180, 165, 150, 135], "descending; no stop before the window"
+    up, down = margin.edges["up"], margin.edges["down"]
+    assert (up.clean_to, up.first_fail, down.clean_to, down.first_fail) == (225, 240, 135, None)
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(160, 200)), log=lambda m: None).run()
+    assert "must take in the default 150" in str(e.value)
+
+
+def test_dmasetup_holds_the_release_and_the_latch_and_reads_at_the_defaults(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Window(fake, "e", (390, 470))
+    seen: list[Point] = []
+    margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None,
+                   on_point=seen.append).run()
+    assert margin.held == {"release": 854, "latch": 834} and margin.limits == (330, 520)
+    for p in seen:
+        assert p.held == {"w": 854 - p.value, "y": 834 - p.value}
+    assert all(k["e"] == 430 and k["w"] == 424 and k["y"] == 404 for k in probe.inside_defaults), \
+        "a DMA knob's readback runs at the defaults"
+    assert (margin.edges["down"].clean_to, margin.edges["up"].clean_to) == (390, 470)
+    assert fake.knobs == KNOB_DEFAULTS and margin.restored
+    free = Sweep(dbg, KNOBS["e"], probe, SearchSpec(stop=440), hold=False, log=lambda m: None).run()
+    assert free.held is None and free.points[-1].held == {}
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=160), hold=True)
+    assert "only nS_DMASetup" in str(e.value)
+
+
+def test_a_dma_knob_is_never_probed_by_resetting_the_c64(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["w"], MenuProbe(board, screen, Golden.load(ROOT_GOLDEN)), SearchSpec(stop=440))
+    assert "times DMA" in str(e.value) and e.value.code == EXIT_USAGE
+
+
+def test_a_value_the_firmware_moves_mid_sample_fails_the_point(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+
+    class Resetting(Window):
+        def sample(self, label, setting=None):
+            got = super().sample(label, setting)
+            self.fake.knobs["p"] = KNOB_DEFAULTS["p"]           # as a standard change re-applies the defaults
+            return got
+
+    margin = Sweep(dbg, KNOBS["p"], Resetting(fake, "p", (100, 300)), SearchSpec(stop=170, step=20, fine=20),
+                   log=lambda m: None).run()
+    assert [p.failed for p in margin.points] == [False, True]
+    assert "the board moved {'p': 150}" in margin.points[1].notes[0]
+
+
+def test_several_probes_at_a_point(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    wide, narrow = Window(fake, "p", (100, 260), name="wide"), Window(fake, "p", (140, 200), name="narrow")
+    margin = Sweep(dbg, KNOBS["p"], [wide, narrow], SearchSpec(stop=250, step=20, fine=5), log=lambda m: None).run()
+    edge = margin.edges["up"]
+    assert edge.probes == ["narrow"] and edge.clean_to <= 200 < edge.first_fail and margin.probe == "wide+narrow"
+    bad = next(p for p in margin.points if p.failed)
+    assert bad.by_probe["wide"] == [0, 1] and bad.by_probe["narrow"] == [1, 1]
 
 
 def test_menu_probe_sees_the_misread_marks(fake_station, tmp_path: Path):
@@ -137,10 +298,10 @@ def test_menu_probe_sees_the_misread_marks(fake_station, tmp_path: Path):
     screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)
     probe = MenuProbe(board, screen, Golden.load(ROOT_GOLDEN), tmp_path)
     probe.setup()
-    assert probe.sample("p150") == (0, 1, None)
+    assert probe.sample("p150")[:3] == (0, 1, None)
     fake.knobs["p"] = fake.windows["io"][1] + 40
-    failures, samples, note = probe.sample("p250")
-    assert (failures, samples) == (1, 1) and "differ from the golden" in note
+    got = probe.sample("p250")
+    assert (got.failures, got.samples) == (1, 1) and "differ from the golden" in got.note
     assert (tmp_path / "p250.screen.txt").is_file()
     fake.knobs["p"] = KNOB_DEFAULTS["p"]
 
@@ -178,8 +339,8 @@ class _Counters:
 
 
 def test_idread_setup_wants_the_loop_running_not_just_the_counters_zeroed(tmp_path: Path, monkeypatch):
-    import treadmill.sweeps as sweeps
-    monkeypatch.setattr(sweeps, "IDREAD_START_S", 2.5)
+    import treadmill.probes.idread as idread
+    monkeypatch.setattr(idread, "IDREAD_START_S", 2.5)
     stale, zeroed = bytes([0x20] * 8), bytes(8)
     dead = IdReadProbe(_Counters([stale, zeroed]), _idread_program(tmp_path), log=lambda m: None)
     with pytest.raises(SweepError) as e:
@@ -197,6 +358,9 @@ def test_a_value_the_board_does_not_take_is_an_error(fake_station, tmp_path: Pat
     with pytest.raises(SweepError) as e:
         sweep.current()
     assert "no nS_PLAprop" in str(e.value)
+    with pytest.raises(SweepError) as e:
+        sweep.run()
+    assert "td not confirmed" in str(e.value)
 
 
 def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
@@ -205,24 +369,42 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
     out, err = capsys.readouterr()
     assert code == EXIT_OK, err
     payload = json.loads(out)
-    assert payload["knob"] == "nS_PLAprop" and payload["last_clean"] <= 210 < payload["first_fail"]
-    assert payload["restored"] and payload["default"] == 150
+    up = payload["edges"]["up"]
+    assert payload["knob"]["name"] == "nS_PLAprop" and up["clean_to"] <= 210 < up["first_fail"]
+    assert payload["restored"] and payload["default"] == 150 and payload["schema"] == 1
+    assert payload["station"] == "s1" and payload["firmware"]["image"] == "main"
     folder = Path(payload["folder"])
-    assert json.loads((folder / "sweep.json").read_text(encoding="utf-8"))["first_fail"] == payload["first_fail"]
+    record = json.loads((folder / "margins.json").read_text(encoding="utf-8"))
+    assert record["edges"]["up"]["first_fail"] == up["first_fail"]
     assert (folder / "serial.log").is_file()
     assert main(["sweep", "q", "--station", "s1", "--json"]) == EXIT_USAGE
     assert "no timing knob" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "x", "--station", "s1", "--json"]) == EXIT_USAGE
+    assert "a mode" in json.loads(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--json"]) == EXIT_USAGE
     assert "lacks Dbg_SerTimChg" in json.loads(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
                  "--fine", "0", "--json"]) == EXIT_USAGE
     assert "fine must be at least 1" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
+                 "--to", "400", "--json"]) == EXIT_USAGE
+    assert "past the sweep limits" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "p", "--station", "s1", "--both", "--to", "200", "--json"]) == EXIT_USAGE
+    assert "one of --to, --both and --scan" in json.loads(capsys.readouterr().err)["error"]
+    # The stored records, read back.
+    assert main(["margins", "table", "--reports", str(lab / "reports")]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "nS_PLAprop" in out and "s1" in out
+    assert main(["margins", "suggest", "--station", "s1", "--reports", str(lab / "reports")]) == EXIT_OK
+    assert "[margins]\nnS_PLAprop = { up = " in capsys.readouterr().out
 
 
-def test_sweep_command_with_the_menu_probe(lab: Path, capsys):  # noqa: F811
+def test_sweep_command_with_the_menu_probe_both_ways(lab: Path, capsys):  # noqa: F811
     code = main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
-                 "--probe", "menu", "--to", "260", "--step", "20", "--fine", "5", "--json"])
+                 "--probe", "menu", "--both", "--step", "20", "--fine", "5", "--json"])
     out, err = capsys.readouterr()
     assert code == EXIT_OK, err
     payload = json.loads(out)
-    assert payload["probe"] == "menu" and payload["last_clean"] <= 210 < payload["first_fail"] and payload["restored"]
+    up, down = payload["edges"]["up"], payload["edges"]["down"]
+    assert payload["probes"] == ["menu"] and up["clean_to"] <= 210 < up["first_fail"] and payload["restored"]
+    assert down["first_fail"] is not None and down["clean_to"] >= 142

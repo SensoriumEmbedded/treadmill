@@ -209,7 +209,8 @@ the keyboard board), `kbd` (the keyboard board itself), `dbg` (the
 debug letters, gated on the build's defines), `programs("hello")` (an
 assembled C64 program, or a raw payload a test writes in by DMA), `sd_card`
 and `sd_fixtures` (the generated type set, on the card), `goldens` (`goldens.check(read, "menu/root")`), `artifacts` (the
-test's folder). Mark what it needs; declare its length with
+test's folder), `warn("...")` (a line in the test's warnings in `run.json` and
+`report.html`, for what to look at without failing). Mark what it needs; declare its length with
 `@pytest.mark.duration(minutes)` so `--estimate` can add it up. The module
 docstring names what the test guards (a PR, a commit or a Known-Issues
 section) and the machines where that matters. The fake board runs the whole
@@ -270,30 +271,63 @@ recorded as one.
 
 ## Sweeps
 
-`treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg` finds a
-bus timing knob's margin: the knob (`p`, `tp` or `nS_PLAprop`; any of the
-firmware's `t` knobs) walks from its default toward `--to` in `--step` steps
-until the probe fails, the edge is bisected down to `--fine`, the defaults are
-restored whatever happened, and the result is the last clean value, the first
-failing one and every point probed, as text or `--json` and as `sweep.json` in
-the run's folder. A `--to` below the knob's value walks it down instead. The
-TeensyROM cannot see its own read errors, so the probes are the C64's:
-`idread` launches a one-bank EasyFlash cartridge that reads its own ROM and the
-EasyFlash IO2 page in a loop and counts wrong answers per path, read back by
-DMA over `--dwell` seconds per sample (a TR+; a launched PRG would run under
-the None IO handler, with nothing answering at IO1); `menu` resets, lets the
-menu boot and compares it with its golden (any TR, by video). `--repeat N`
-takes several samples a point, so an intermittent edge is a rate, not a coin
-toss.
+`treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --both`
+finds a bus timing knob's margin each way: the knob (`p`, `tp` or
+`nS_PLAprop`; any of the firmware's `t` knobs) is probed once at its default,
+then walks down to its lower limit and up to its upper one in `--step` steps
+until a probe fails, and each edge is bisected down to `--fine`. Without
+`--both` it walks one way, toward `--to` (default: the upper limit). `--scan
+LO:HI` probes every step of a range instead, with no bisection. `--passes N`
+repeats the search or the scan, alternating which edge or which end goes
+first; a value counts as clean only if it was clean in every pass, and an
+edge that moves between passes is marked drifting. The defaults are restored
+whatever happened, and the result is each edge (how far it is clean, where
+it fails, which probe failed there) and every point of every pass, as text
+or `--json` and as `margins.json` in the run's folder.
+
+`treadmill/knobs.py` is the knob table: each knob's letter, digits, unit,
+the bus path it times, the images and boards that take it (`tx` and `tn`,
+the Kernal Replace pair, on a TR+ build only), its defaults per standard,
+and the limits a sweep keeps to, which follow the other knobs: `nS_PLAprop`
+goes no lower than `nS_RWnReady` (both waits count from the cycle's start, so
+below it the knob changes nothing), and `nS_DMASetup` moves with
+`nS_DMADataHold` and `nS_DMADataSetup` the other way, so the release and the
+latch, as the board's defaults put them, stay where they are (`--free` moves
+it alone). A spec past the limits is refused. `KSenseMode` is a mode, set
+with `tx`, not swept, and `td` leaves it where it was.
+
+The TeensyROM cannot see its own read errors, so the probes are the C64's,
+in `treadmill/probes/`: `idread` launches a one-bank EasyFlash cartridge
+that reads its own ROM and the EasyFlash IO2 page in a loop and counts wrong
+answers per path, read back by DMA over `--dwell` seconds per sample (a TR+;
+a launched PRG would run under the None IO handler, with nothing answering
+at IO1); `menu` resets, lets the menu boot and compares it with its golden
+(any TR, by video). `--probe` repeats for several probes at each point: the
+point fails if any fails, and the record keeps each one's counts. While a
+knob that times DMA (or `nS_MaxAdj`, which moves every cycle's start) is off
+its default, a probe reads its counters by DMA only with the defaults back
+in place; and while a DMA knob is off, nothing resets the C64 (a C128 can
+hang on DMA right after a reset), so the `menu` probe is refused for those
+knobs. `--repeat N` takes several samples a point, so an intermittent edge is
+a rate, not a coin toss.
 
 `nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
 reads fail before ROM reads, since the board drives them only after a call
-into the IO handler; lowered, the select lines are sampled before the slowest
-has asserted. It reaches no lower than `nS_RWnReady`: both waits count from
-the start of the cycle, so below it the knob changes nothing.
-`tests/sweep/test_tp_margin.py` runs both sweeps as a regression guard: the
-default must be clean, and a station that names a floor in its `[margins]`
-table (`nS_PLAprop = 200`) fails the test when reads go wrong below it.
+into the IO handler; lowered, the select lines are sampled before the
+slowest has asserted. `tests/sweep/test_tp_margin.py` runs both sweeps as a
+regression guard: the default must be clean, and a station's floor fails the
+test when reads go wrong short of it.
+
+A station's floors are in its `[margins]` table, per edge, as knob values:
+`nS_PLAprop = { up = 200, down = 140 }` means the up edge must be clean at
+least to 200 and the down edge at least to 140. `treadmill margins table`
+(or `csv`) lists the records under `--reports`, a line each, and `treadmill
+margins suggest --station <id>` prints the floors the station's last
+`--last` records of each knob support, one coarse step inside the worst edge
+each way and never past the default, to copy into its file. A test compares
+each edge with the newest earlier record of the same station, knob, edge and
+probes on another build: a shrink of more than twice `--fine` (10 ns at
+least) is a warning, not a failure, since machines drift.
 
 ## Manufacturing test
 

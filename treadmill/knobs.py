@@ -41,6 +41,7 @@ class Knob:
     tr_plus_only: bool = False    # compiled in only on a TR+ build (Fab04_KernalReplace)
     restored_by_td: bool = True
     swept: bool = True            # a mode is set, never swept
+    readback_at_defaults: bool = False   # times DMA (or every cycle's start): read counters by DMA at the defaults
     defaults: tuple = ()          # PAL, NTSC, NTSC C128
     low: int | None = None        # the sweep limits before couplings (limits())
     high: int | None = None
@@ -48,6 +49,13 @@ class Knob:
     @property
     def command(self) -> str:
         return "t" + self.letter
+
+    @property
+    def times_dma(self) -> bool:
+        """A DMA edge (the DMA set, or a time from the re-latch): off its
+        default, nothing may reset the C64, since a C128 can hang on DMA
+        right after a reset."""
+        return self.group == "dma" or self.phase == "relatch"
 
     def default(self, standard: str) -> int:
         return self.defaults[STANDARDS.index(standard)]
@@ -67,22 +75,24 @@ def _k(letter, name, digits, group, phase, defaults, low=None, high=None, **kw) 
 
 # In SerUSBIO.ino's order; selftest/test_knobs.py checks letters, names and digits against it.
 KNOBS: dict[str, Knob] = {k.letter: k for k in (
-    _k("m", "nS_MaxAdj", 4, "cpu", "entry", (1030, 993, 993), None, 1200, images=BOTH_IMAGES),
+    _k("m", "nS_MaxAdj", 4, "cpu", "entry", (1030, 993, 993), None, 1200, images=BOTH_IMAGES,
+       readback_at_defaults=True),
     _k("r", "nS_RWnReady", 3, "cpu", "rise", 135, 60, None, images=BOTH_IMAGES),
     _k("p", "nS_PLAprop", 3, "cpu", "rise", 150, None, None, images=BOTH_IMAGES),
     _k("s", "nS_DataSetup", 3, "cpu", "rise", 220, 100, 480, images=BOTH_IMAGES),
     _k("h", "nS_DataHold", 3, "cpu", "rise", 390, 250, 520, images=BOTH_IMAGES),
     _k("v", "nS_VICStart", 3, "vic", "fall", 210, 60, 400, images=BOTH_IMAGES),
     _k("i", "nS_VICDHold", 3, "vic", "fall", 365, 250, 520),
-    _k("a", "nS_DMAAssert", 3, "dma", "fall", 40, 0, 420),
-    _k("b", "nS_DMABAWait", 3, "dma", "fall", 200, 60, 400),
-    _k("e", "nS_DMASetup", 3, "dma", "fall", (454, 430, 460), 330, 520),
-    _k("w", "nS_DMADataHold", 3, "dma", "relatch", (430, 424, 394), 250, None),
-    _k("y", "nS_DMADataSetup", 3, "dma", "relatch", (390, 404, 374), 250, None),
+    _k("a", "nS_DMAAssert", 3, "dma", "fall", 40, 0, 420, readback_at_defaults=True),
+    _k("b", "nS_DMABAWait", 3, "dma", "fall", 200, 60, 400, readback_at_defaults=True),
+    _k("e", "nS_DMASetup", 3, "dma", "fall", (454, 430, 460), 330, 520, readback_at_defaults=True),
+    _k("w", "nS_DMADataHold", 3, "dma", "relatch", (430, 424, 394), 250, None, readback_at_defaults=True),
+    _k("y", "nS_DMADataSetup", 3, "dma", "relatch", (390, 404, 374), 250, None, readback_at_defaults=True),
     _k("k", "Cyc_KernProp", 2, "kernal", "cycles", 35, 5, 99, unit="cycles"),
     _k("x", "KSenseMode", 1, "kernal", "mode", 9, unit="mode", tr_plus_only=True, restored_by_td=False,
        swept=False),
-    _k("n", "nS_KSenseSample", 3, "kernal", "relatch", 250, 50, None, tr_plus_only=True),
+    _k("n", "nS_KSenseSample", 3, "kernal", "relatch", 250, 50, None, tr_plus_only=True,
+       readback_at_defaults=True),
 )}
 
 # KSenseMode's values: the Kernal Replace HIRAM sense method, applied at the next launch.

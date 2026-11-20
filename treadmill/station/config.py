@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from treadmill.errors import EXIT_USAGE, TreadmillError
+from treadmill.knobs import knob_named
+from treadmill.margins import Floor
 from treadmill.station.model import (
     CaptureSpec,
     KeyboardSpec,
@@ -169,6 +171,26 @@ def _keyboard(table: dict[str, Any] | None, path: Path) -> KeyboardSpec | None:
     return spec
 
 
+def _margins(table: dict[str, Any] | None, path: Path) -> dict[str, Floor]:
+    """``nS_PLAprop = { up = 200, down = 140 }``: how far each edge of a
+    knob must be found clean, by the knob's variable name."""
+    floors: dict[str, Floor] = {}
+    for name, value in (table or {}).items():
+        where = f"{path} [margins] {name}"
+        if not isinstance(value, dict):
+            raise ConfigError(f"{where}: give a floor per direction, {{ up = <value>, down = <value> }}")
+        unknown = sorted(set(value) - {"up", "down"})
+        if unknown:
+            raise ConfigError(f"{where}: {', '.join(unknown)}: only up and down")
+        try:
+            knob = knob_named(name)
+        except KeyError as e:
+            raise ConfigError(f"{where}: {e.args[0]}") from None
+        floors[knob.name] = Floor(up=int(value["up"]) if "up" in value else None,
+                                  down=int(value["down"]) if "down" in value else None)
+    return floors
+
+
 def load_station(station_id: str, base: Path | None = None) -> Station:
     base = base or data_dir()
     path = base / "stations" / f"{station_id}.toml"
@@ -189,7 +211,7 @@ def load_station(station_id: str, base: Path | None = None) -> Station:
         tr=tr,
         allow_eeprom_reset=bool(t.get("allow_eeprom_reset", False)),
         settings_baseline=dict(t.get("settings_baseline") or {}),
-        margins={str(k): int(v) for k, v in (t.get("margins") or {}).items()},
+        margins=_margins(t.get("margins"), path),
         keyboard=_keyboard(t.get("keyboard"), path),
     )
     return replace(st, caps=capabilities(st))

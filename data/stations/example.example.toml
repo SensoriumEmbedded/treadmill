@@ -39,5 +39,6 @@ reset_detect = true
 autolaunch = "none"
 show_extensions = false # Settings' show-extensions option: off hides a typed file's extension on a card
 
-[margins]                # timing floors: a sweep of the knob must find every value up to this one clean
-# nS_PLAprop = 200       # the read margin the item-type fix left on NTSC (Constraints.md)
+[margins]                # timing floors, per edge: how far up and down a sweep must find the knob clean
+# nS_PLAprop = { up = 200, down = 140 }   # up 200: the read margin the item-type fix left on NTSC
+                                          # (Constraints.md); floors come from `treadmill margins suggest`

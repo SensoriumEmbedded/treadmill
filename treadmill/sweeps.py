@@ -1,51 +1,54 @@
-"""Knob x probe x search: a bus timing margin as a number.
+"""Knob x probes x search: a bus timing margin as a number, each way.
 
-What was done by hand before (build with ``Dbg_SerTimChg``, raise
-``nS_PLAprop`` over serial until the C64's reads of TeensyROM-served bytes
-fail) is an engine here. A *knob* is one of the firmware's ``t`` timing
-variables; a *probe* takes samples at the current value and says how many
-failed; a *search* walks the knob from its default outward in coarse steps,
-then bisects the first failing interval down to ``fine``. The defaults are
-restored on exit whatever happened, and the result is a margin: the last
-clean value, the first failing one, and every point probed. The TeensyROM
-cannot see its own read errors, so the probes are the C64's: a cartridge
-counting wrong reads of its ROM and of its IO2 page apart (``idread``,
-read back by DMA on a TR+), or the menu itself compared with its golden
-after a reset (``menu``, by video on any TR).
+What was done by hand before (build with ``Dbg_SerTimChg``, move a knob over
+serial until the C64's reads of TeensyROM-served bytes fail) is an engine
+here. A *knob* is one of the firmware's ``t`` timing variables
+(``treadmill.knobs``); a *probe* takes samples at the current value and says
+how many failed (``treadmill.probes``); a *search* walks the knob from its
+default in coarse steps until a point fails, then bisects that interval
+down to ``fine``.
 
-``nS_PLAprop`` has an edge each way. Raised, the data leaves too late, and
-IO reads go first: the board drives them only after both ROM tests and a
-call into the IO handler. Lowered, the select lines are sampled before the
-slowest has asserted, IO1 and IO2 coming through a decoder after the PLA.
-Below ``nS_RWnReady`` the knob does nothing, since both waits count from the
-start of the cycle and the address read comes first.
+Modes: one edge (toward ``stop``); both edges (the default once, then down
+to the knob's lower limit and up to its upper one, each edge bisected); and
+a scan (every step of a fixed range, no bisection). Passes repeat the
+search or the scan, alternating which edge or which end goes first, and a
+value counts as clean only if it was clean in every pass; an edge that
+moves between passes marks the record drifting. ``nS_DMASetup`` moves with
+the release and the latch held (``nS_DMADataHold`` and ``nS_DMADataSetup``
+move the other way, from the sums the board's defaults make). The limits
+come from the knob table and its couplings; a spec past them is refused.
+
+The TeensyROM cannot see its own read errors, so the probes are the C64's,
+or the screen's. While a knob that times DMA is off its default, a probe
+reads its counters by DMA only with the defaults back in place (the
+``Setting`` it is handed brackets the read), nothing resets the C64, and
+the defaults are restored on exit whatever happened.
 """
 
 from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Protocol
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
+from typing import Callable, Iterator, NamedTuple, Protocol, Sequence
 
 from treadmill import knobs
-from treadmill.board import Board
 from treadmill.errors import EXIT_USAGE, TreadmillError
-from treadmill.knobs import KNOBS, Knob  # noqa: F401  (KNOBS: the tests import it from here)
-from treadmill.link import DebugCommands, LinkError, TransportError
-from treadmill.observe.channels import ScreenChannel, ScreenError
-from treadmill.observe.golden import Golden, compare, save_golden
+from treadmill.knobs import HELD_SUMS, KNOBS, Knob, parse_listing, standard_of  # noqa: F401  (KNOBS: re-exported)
+from treadmill.link import DebugCommands
 
-IDREAD_RESULTS = 0xC000           # idread.a's counters: passes (16-bit), wrong ROM reads, wrong IO2 reads (24-bit)
-IDREAD_ROM_READS_PER_PASS = 512   # two ROM pages, 256 rounds
-IDREAD_IO_READS_PER_PASS = 256    # the IO2 page, 256 rounds
-IDREAD_START_S = 6.0
-MENU_BOOT_S = 20.0                # a knob that breaks the menu program never boots: do not wait the station's minute
+_DEFAULTS_FOR = re.compile(r"Defaults set \((PAL|NTSC) (C64|C128)\)")
 
 
 class SweepError(TreadmillError):
     pass
+
+
+def usage_error(message: str) -> SweepError:
+    err = SweepError(message)
+    err.code = EXIT_USAGE
+    return err
 
 
 def knob_named(text: str) -> Knob:
@@ -59,6 +62,56 @@ def knob_named(text: str) -> Knob:
     return knob
 
 
+class Sample(NamedTuple):
+    failures: int
+    samples: int
+    note: str | None = None
+    hung: bool = False            # the workload stopped: a collapse, not a count
+
+
+class Probe(Protocol):
+    name: str
+
+    def setup(self) -> None: ...
+
+    def sample(self, label: str, setting: "Setting | None" = None) -> Sample | tuple:
+        """(failures, samples, note) at the knob's current value."""
+        ...
+
+    def teardown(self) -> None: ...
+
+
+class Setting:
+    """The values under test at one point, handed to each probe so that a
+    read by DMA can step back to the defaults while a DMA-timing knob is off."""
+
+    def __init__(self, sweep: "Sweep", values: dict[str, int], bracket: bool):
+        self.sweep = sweep
+        self.values = values
+        self.bracket = bracket
+
+    @contextmanager
+    def at_defaults(self) -> Iterator[None]:
+        if not self.bracket:
+            yield
+            return
+        self.sweep.restore()
+        try:
+            yield
+        finally:
+            self.sweep.apply(self.values)
+
+
+@contextmanager
+def at_defaults(setting: Setting | None) -> Iterator[None]:
+    """``setting.at_defaults()``, or nothing when a probe runs on its own."""
+    if setting is None:
+        yield
+    else:
+        with setting.at_defaults():
+            yield
+
+
 @dataclass
 class Point:
     value: int
@@ -66,6 +119,11 @@ class Point:
     samples: int
     seconds: float
     notes: list[str] = field(default_factory=list)
+    by_probe: dict[str, list[int]] = field(default_factory=dict)    # probe -> [failures, samples]
+    failed_by: list[str] = field(default_factory=list)
+    hung: bool = False
+    pass_no: int = 1
+    held: dict[str, int] = field(default_factory=dict)              # the knobs moved with this one
 
     @property
     def failed(self) -> bool:
@@ -75,153 +133,57 @@ class Point:
     def rate(self) -> float:
         return self.failures / self.samples if self.samples else 1.0
 
-
-class Probe(Protocol):
-    name: str
-
-    def setup(self) -> None: ...
-
-    def sample(self, label: str) -> tuple[int, int, str | None]:
-        """(failures, samples, note) at the knob's current value."""
-        ...
-
-    def teardown(self) -> None: ...
-
-
-class IdReadProbe:
-    """idread.a, a one-bank EasyFlash cartridge, reads its own ROM and the
-    EasyFlash handler's IO2 page on the C64 and counts wrong answers per
-    path; a sample is the counts added over ``dwell`` seconds, read by DMA,
-    with both paths' shares in its note."""
-
-    name = "idread"
-
-    def __init__(self, board: Board, program: Path, *, dwell: float = 1.0, drive: str = "sd",
-                 remote: str = "/treadmill/idread.crt", log=print):
-        self.board = board
-        self.program = Path(program)
-        self.dwell = dwell
-        self.drive = drive
-        self.remote = remote
-        self.log = log
-        self._stalled = False
-
-    def setup(self) -> None:
-        if not self.board.dma_allowed():
-            raise SweepError("the idread probe reads its counters by DMA: it needs a TR+ running its main image")
-        self.board.ensure_menu()
-        self.board.link.push_file(self.program.read_bytes(), self.remote, self.drive)
-        self.board.link.launch(self.remote, self.drive)
-        # The first change can be the start-up zeroing the counters over what RAM held: a
-        # cartridge that dies right after that passed this check on the bench. Two changes
-        # mean the loop runs.
-        deadline = time.monotonic() + IDREAD_START_S
-        seen, moves = self.counters()[0], 0
-        while time.monotonic() < deadline:
-            time.sleep(0.5)
-            passes = self.counters()[0]
-            if passes != seen:
-                seen, moves = passes, moves + 1
-                if moves >= 2:
-                    self._stalled = False
-                    return
-        raise SweepError("idread is not running on the C64: its pass counter does not move")
-
-    def counters(self) -> tuple[int, int, int]:
-        """(passes, wrong ROM reads, wrong IO2 reads)."""
-        b = self.board.link.read_memory(IDREAD_RESULTS, 8)
-        return b[0] | b[1] << 8, b[2] | b[3] << 8 | b[4] << 16, b[5] | b[6] << 8 | b[7] << 16
-
-    def sample(self, label: str) -> tuple[int, int, str | None]:
-        if self._stalled:
-            self.log(f"[sweep] idread stopped at the last value; relaunching for {label}")
-            self.setup()
-        before = self.counters()
-        time.sleep(self.dwell)
-        after = self.counters()
-        passes = (after[0] - before[0]) & 0xFFFF
-        rom = (after[1] - before[1]) & 0xFFFFFF
-        io = (after[2] - before[2]) & 0xFFFFFF
-        if passes == 0:
-            self._stalled = True
-            return 1, 1, "idread stopped: the C64 hung"
-        rom_reads, io_reads = passes * IDREAD_ROM_READS_PER_PASS, passes * IDREAD_IO_READS_PER_PASS
-        return rom + io, rom_reads + io_reads, f"rom {rom}/{rom_reads}, io2 {io}/{io_reads}"
-
-    def teardown(self) -> None:
-        self.board.ensure_menu()
-
-
-class MenuProbe:
-    """Reset, let the menu boot, and compare its listing with the root
-    golden: the item-type marks are what the NTSC misread broke, and the
-    read works by video on a plain TR. A menu that does not come back is a
-    failure too."""
-
-    name = "menu"
-
-    def __init__(self, board: Board, screen: ScreenChannel, golden: Golden, artifacts: Path | None = None,
-                 *, boot_timeout: float = MENU_BOOT_S, settle_timeout: float = 10.0):
-        self.board = board
-        self.screen = screen
-        self.golden = golden
-        self.artifacts = artifacts
-        self.boot_timeout = boot_timeout
-        self.settle_timeout = settle_timeout
-
-    def setup(self) -> None:
-        if not self.screen.has_video and not self.board.dma_allowed():
-            raise SweepError("the menu probe cannot read the screen: the station has no video channel "
-                             "(capture, calibration and glyph bank) and no DMA")
-
-    def sample(self, label: str) -> tuple[int, int, str | None]:
-        self.board.reset()
-        try:
-            self.board.wait_for_menu(timeout=self.boot_timeout)
-        except (LinkError, TransportError) as e:
-            return 1, 1, f"the menu did not come back: {e}"
-        try:
-            read = self.screen.wait_settled(timeout=self.settle_timeout)
-        except ScreenError as e:
-            return 1, 1, f"the screen did not settle: {e}"
-        mismatches = compare(read.rows(), self.golden)
-        if mismatches and self.artifacts is not None:
-            save_golden(read.rows(), self.artifacts / f"{label}.screen.txt")
-        if mismatches:
-            return 1, 1, f"{len(mismatches)} cell(s) differ from the golden"
-        return 0, 1, None
-
-    def teardown(self) -> None:
-        self.board.ensure_menu()
+    def to_dict(self) -> dict:
+        return {"pass": self.pass_no, "value": self.value, "failures": self.failures, "samples": self.samples,
+                "rate": round(self.rate, 5), "seconds": round(self.seconds, 2), "by_probe": self.by_probe,
+                "failed_by": self.failed_by, "hung": self.hung, "held": self.held, "notes": self.notes}
 
 
 @dataclass(frozen=True)
 class SearchSpec:
-    stop: int
-    start: int | None = None      # None: the knob's current value
+    stop: int | None = None       # one edge: walk toward this value (None: up to the knob's limit)
+    start: int | None = None      # None: the knob's default
     step: int = 10
     fine: int = 1                 # bisect until the clean and failing values are this close
-    repeat: int = 1               # samples per point
+    repeat: int = 1               # samples a point, each probe
+    both: bool = False            # both edges, each to the knob's limit
+    passes: int = 1
+    scan: tuple[int, int] | None = None   # every step from LO to HI, no bisection
 
     def __post_init__(self) -> None:
         # The walk moves by step and the bisection ends at fine: at zero neither loop would end,
         # and a point with no samples would pass as clean.
-        for name in ("step", "fine", "repeat"):
+        for name in ("step", "fine", "repeat", "passes"):
             if getattr(self, name) < 1:
                 raise usage_error(f"{name} must be at least 1, not {getattr(self, name)}")
+        if self.scan is not None and self.scan[0] > self.scan[1]:
+            raise usage_error(f"scan {self.scan[0]}:{self.scan[1]}: the low end comes first")
+
+    @property
+    def mode(self) -> str:
+        return "scan" if self.scan is not None else "both" if self.both else "one"
 
 
-def search(probe_at: Callable[[int], Point], start: int, spec: SearchSpec) -> tuple[list[Point], int | None, int | None]:
+def search(probe_at: Callable[[int], Point], start: int, spec: SearchSpec, *,
+           probe_start: bool = True) -> tuple[list[Point], int | None, int | None]:
     """Coarse steps from ``start`` toward ``spec.stop`` until a point fails,
     then bisection between the last clean and the first failing value until
     they are ``spec.fine`` apart. Returns the points, the last clean value
     and the first failing one (None when the range holds no edge, or when
-    the start itself fails)."""
+    the start itself fails). ``probe_start=False``: the start was probed
+    already and was clean."""
     direction = 1 if spec.stop >= start else -1
     points: list[Point] = []
     last_clean: int | None = None
     first_fail: int | None = None
     value = start
+    if not probe_start:
+        last_clean = start
+        if start == spec.stop:
+            return points, last_clean, None
+        value = start + direction * spec.step
+        if (value - spec.stop) * direction > 0:
+            value = spec.stop
     while True:
         point = probe_at(value)
         points.append(point)
@@ -248,60 +210,149 @@ def search(probe_at: Callable[[int], Point], start: int, spec: SearchSpec) -> tu
 
 
 @dataclass
+class Edge:
+    way: str                      # down | up
+    stop: int                     # the limit the walk could reach
+    clean_to: int | None          # the furthest value clean in every pass with no failure nearer the origin
+    first_fail: int | None        # the nearest value that failed in any pass; None: clean through the stop
+    probes: list[str] = field(default_factory=list)    # the probes that failed there
+    drifting: bool = False
+    per_pass: list[dict] = field(default_factory=list)
+
+    def margin(self, origin: int) -> int | None:
+        return None if self.clean_to is None else abs(self.clean_to - origin)
+
+    def to_dict(self, default: int) -> dict:
+        return {"way": self.way, "stop": self.stop, "clean_to": self.clean_to, "first_fail": self.first_fail,
+                "margin": self.margin(default), "probes": self.probes, "drifting": self.drifting,
+                "per_pass": self.per_pass}
+
+
+def _edge_values(points: Sequence[Point], origin: int, sign: int) -> tuple[int | None, int | None]:
+    side = [p for p in points if (p.value - origin) * sign >= 0]
+    failed = {p.value for p in side if p.failed}
+    first = min(failed, key=lambda v: (v - origin) * sign) if failed else None
+    clean = {p.value for p in side if p.value not in failed and (first is None or (p.value - first) * sign < 0)}
+    return (max(clean, key=lambda v: (v - origin) * sign) if clean else None), first
+
+
+def edge_of(points: Sequence[Point], origin: int, way: str, stop: int, fine: int) -> Edge:
+    """One side's edge from every point probed on it, all passes together:
+    a value that failed in any pass is failed."""
+    sign = 1 if way == "up" else -1
+    clean_to, first = _edge_values(points, origin, sign)
+    probes = sorted({n for p in points if p.value == first for n in p.failed_by}) if first is not None else []
+    per_pass = []
+    for n in sorted({p.pass_no for p in points}):
+        c, f = _edge_values([p for p in points if p.pass_no == n], origin, sign)
+        per_pass.append({"pass": n, "clean_to": c, "first_fail": f})
+    fails = [x["first_fail"] for x in per_pass if x["first_fail"] is not None]
+    some_found_it = 0 < len(fails) < len(per_pass)
+    drifting = len(per_pass) > 1 and (some_found_it or (bool(fails) and max(fails) - min(fails) > fine))
+    return Edge(way, stop, clean_to, first, probes, drifting, per_pass)
+
+
+@dataclass
 class Margin:
     knob: Knob
-    probe: str
+    probes: list[str]
     default: int
     start: int
     spec: SearchSpec
     points: list[Point]
-    last_clean: int | None
-    first_fail: int | None
+    edges: dict[str, Edge]
     restored: bool
     seconds: float
+    standard: str | None = None
+    defaults: dict[str, int] = field(default_factory=dict)
+    held: dict[str, int] | None = None                 # the sums held, by name (release, latch)
+    limits: tuple[int, int] | None = None
+
+    @property
+    def probe(self) -> str:
+        return "+".join(self.probes)
+
+    @property
+    def mode(self) -> str:
+        return self.spec.mode
+
+    # One edge's numbers, as a single-direction sweep reports them.
+    def _only(self) -> Edge | None:
+        return next(iter(self.edges.values())) if len(self.edges) == 1 else None
 
     @property
     def direction(self) -> int:
-        return 1 if self.spec.stop >= self.start else -1
+        edge = self._only()
+        return -1 if edge is not None and edge.way == "down" else 1
+
+    @property
+    def last_clean(self) -> int | None:
+        edge = self._only()
+        return edge.clean_to if edge else None
+
+    @property
+    def first_fail(self) -> int | None:
+        edge = self._only()
+        return edge.first_fail if edge else None
 
     @property
     def margin(self) -> int | None:
         """How far the knob moves from its default before the first clean
         value is left behind; None when the range held no edge."""
-        if self.last_clean is None or self.first_fail is None:
+        edge = self._only()
+        if edge is None or edge.clean_to is None or edge.first_fail is None:
             return None
-        return abs(self.last_clean - self.default)
+        return abs(edge.clean_to - self.default)
 
     def to_dict(self) -> dict:
+        s = self.spec
         return {
-            "knob": self.knob.name, "letter": self.knob.letter, "unit": self.knob.unit, "probe": self.probe,
-            "default": self.default, "start": self.start, "stop": self.spec.stop, "step": self.spec.step,
-            "fine": self.spec.fine, "repeat": self.spec.repeat, "direction": self.direction,
-            "last_clean": self.last_clean, "first_fail": self.first_fail, "margin": self.margin,
-            "restored": self.restored, "seconds": round(self.seconds, 1),
-            "points": [{"value": p.value, "failures": p.failures, "samples": p.samples, "rate": round(p.rate, 5),
-                        "seconds": round(p.seconds, 2), "notes": p.notes} for p in self.points],
+            "knob": {"name": self.knob.name, "letter": self.knob.letter, "unit": self.knob.unit,
+                     "group": self.knob.group},
+            "mode": self.mode, "probes": self.probes, "standard": self.standard, "default": self.default,
+            "start": self.start, "defaults": self.defaults, "held": self.held,
+            "limits": list(self.limits) if self.limits else None,
+            "spec": {"stop": s.stop, "step": s.step, "fine": s.fine, "repeat": s.repeat,
+                     "scan": list(s.scan) if s.scan else None},
+            "passes": s.passes, "restored": self.restored, "seconds": round(self.seconds, 1),
+            "edges": {way: e.to_dict(self.default) for way, e in self.edges.items()},
+            "points": [p.to_dict() for p in self.points],
         }
 
     def describe(self) -> str:
-        head = (f"{self.knob.name} ({self.probe} probe): from {self.start} toward {self.spec.stop} by "
-                f"{self.spec.step}, fine {self.spec.fine}, {self.spec.repeat} sample(s) a point")
-        lines = [head]
-        for p in sorted(self.points, key=lambda p: p.value):
+        s = self.spec
+        how = {"one": f"from {self.start} toward {s.stop} by {s.step}, fine {s.fine}",
+               "both": f"both ways from {self.start} by {s.step}, fine {s.fine}"
+                       + (f", limits {self.limits[0]}..{self.limits[1]}" if self.limits else ""),
+               "scan": f"every {s.step} from {s.scan[0] if s.scan else ''} to {s.scan[1] if s.scan else ''}"}[self.mode]
+        held = f", {' and '.join(f'{k} {v}' for k, v in self.held.items())} held" if self.held else ""
+        lines = [f"{self.knob.name} ({self.probe}): {how}, {s.repeat} sample(s) a point, "
+                 f"{s.passes} pass(es){held}"]
+        many = s.passes > 1
+        for p in sorted(self.points, key=lambda p: (p.value, p.pass_no)):
             mark = "FAIL " if p.failed else "clean"
             note = f"  ({'; '.join(p.notes)})" if p.notes else ""
-            lines.append(f"  {p.value:5d}  {mark}  {p.failures:6d} / {p.samples:<7d}{note}")
-        if self.first_fail is None:
-            lines.append(f"{self.knob.name}: clean through {self.last_clean}; no edge within the range")
-        elif self.last_clean is None:
-            lines.append(f"{self.knob.name}: fails at {self.first_fail}, the first value probed")
-        else:
-            way = "up" if self.direction > 0 else "down"
-            lines.append(f"{self.knob.name}: clean {way} to {self.last_clean}, fails from {self.first_fail} "
-                         f"(default {self.default}: {self.margin} {self.knob.unit} of margin)")
+            tag = f"p{p.pass_no} " if many else ""
+            lines.append(f"  {tag}{p.value:5d}  {mark}  {p.failures:6d} / {p.samples:<7d}{note}")
+        for way, e in self.edges.items():
+            name = self.knob.name
+            if e.first_fail is None:
+                lines.append(f"{name}: clean {way} through {e.clean_to}; no edge within the range")
+            elif e.clean_to is None:
+                lines.append(f"{name}: fails at {e.first_fail}, the first value probed")
+            else:
+                lines.append(f"{name}: clean {way} to {e.clean_to}, fails from {e.first_fail} by {self.probe_list(e)} "
+                             f"(default {self.default}: {e.margin(self.default)} {self.knob.unit} of margin)")
+            if e.drifting:
+                lines.append(f"  drifting between passes: " + ", ".join(
+                    f"pass {x['pass']} clean to {x['clean_to']}, fails from {x['first_fail']}" for x in e.per_pass))
         if not self.restored:
             lines.append("DEFAULTS NOT RESTORED: the board still runs the last value")
         return "\n".join(lines)
+
+    @staticmethod
+    def probe_list(edge: Edge) -> str:
+        return "+".join(edge.probes) or "?"
 
 
 def value_in(listing: str, knob: Knob) -> int:
@@ -318,66 +369,286 @@ def current_value(dbg: DebugCommands, knob: Knob) -> int:
 
 
 class Sweep:
-    """One knob, one probe, one search; the defaults restored when it ends."""
+    """One knob, its probes, one search, scan or pair of edges; the defaults
+    restored when it ends."""
 
-    def __init__(self, dbg: DebugCommands, knob: Knob, probe: Probe, spec: SearchSpec, *, log=print,
+    def __init__(self, dbg: DebugCommands, knob: Knob, probes: Probe | Sequence[Probe], spec: SearchSpec, *,
+                 standard: str | None = None, hold: bool | None = None, log=print,
                  on_point: Callable[[Point], None] | None = None):
         self.dbg = dbg
         self.knob = knob
-        self.probe = probe
+        self.probes = list(probes) if isinstance(probes, (list, tuple)) else [probes]
         self.spec = spec
+        self.standard = standard
+        self.hold = (knob.letter == "e") if hold is None else hold
         self.log = log
         self.on_point = on_point
+        self.defaults: dict[str, int] = {}
+        self.sums: dict[str, int] | None = None
+        self.low = self.high = 0
+        self._now: dict[str, int] = {}
+        if self.hold and knob.letter != "e":
+            raise usage_error(f"only nS_DMASetup moves with sums held, not {knob.name}")
+        if knob.times_dma:
+            resets = [p.name for p in self.probes if getattr(p, "resets", False)]
+            if resets:
+                raise usage_error(f"{knob.name} times DMA: the {', '.join(resets)} probe resets the C64 at the "
+                                  f"value under test, and a C128 can hang on DMA right after a reset")
 
     def current(self) -> int:
         return current_value(self.dbg, self.knob)
 
-    def set_value(self, value: int) -> None:
-        shown = self.dbg.set_knob(self.knob.letter, value)
-        if value_in(shown, self.knob) != value:
-            raise SweepError(f"t{self.knob.letter}{value} not taken:\n{shown}")
+    # -- the board's knobs -------------------------------------------------------------
 
-    def probe_at(self, value: int) -> Point:
+    def restore(self) -> dict[str, int]:
+        """``td``, confirmed: the knobs ``td`` restores back at the defaults."""
+        reply = self.dbg.restore_defaults()
+        listed = parse_listing(reply)
+        if "Defaults set" not in reply:
+            raise SweepError(f"td not confirmed:\n{reply}")
+        if self.defaults:
+            wrong = {l: listed.get(l) for l, v in self.defaults.items()
+                     if KNOBS[l].restored_by_td and listed.get(l) != v}
+            if wrong:
+                raise SweepError(f"td did not restore {wrong}; the defaults were {self.defaults}")
+        self._now = dict(listed)
+        return listed
+
+    def prepare(self) -> None:
+        """The defaults (``td``), the standard they are for, the held sums and
+        the knob's limits."""
+        reply = self.dbg.restore_defaults()
+        if "Defaults set" not in reply:
+            raise SweepError(f"td not confirmed:\n{reply}")
+        self.defaults = parse_listing(reply)
+        self._now = dict(self.defaults)
+        if self.knob.letter not in self.defaults:
+            raise SweepError(f"the timing listing has no {self.knob.name}; does the build carry "
+                             f"{self.knob.define}{', and is it a TR+' if self.knob.tr_plus_only else ''}?\n{reply}")
+        if self.standard is None:
+            m = _DEFAULTS_FOR.search(reply)
+            if not m:
+                raise usage_error("td did not name the standard (MinimalBoot does not): give the sweep its standard")
+            self.standard = standard_of(m.group(2), m.group(1))
+        if self.hold:
+            self.sums = {name: sum(self.defaults[l] for l in letters) for name, (letters, _) in HELD_SUMS.items()}
+        self.low, self.high = self._range()
+
+    def setting_for(self, value: int) -> dict[str, int]:
+        setting = {self.knob.letter: value}
+        if self.sums:
+            for name, (letters, _) in HELD_SUMS.items():
+                setting[letters[1]] = self.sums[name] - value
+        return setting
+
+    def allowed(self, value: int) -> bool:
+        setting = self.setting_for(value)
+        for letter, v in setting.items():
+            # Each knob's limits follow the others' values; its own counts at its default.
+            at = {**self.defaults, **{other: x for other, x in setting.items() if other != letter}}
+            low, high = knobs.limits(KNOBS[letter], self.standard, at)
+            if not (KNOBS[letter].fits(v) and low <= v <= high):
+                return False
+        return True
+
+    def _range(self) -> tuple[int, int]:
+        """The run of allowed values around the default."""
+        default = self.defaults[self.knob.letter]
+        if not self.allowed(default):
+            raise usage_error(f"the board's default {self.knob.name} {default} is outside the knob table's limits "
+                              f"for {self.standard}: check treadmill.knobs against this build")
+        low = high = default
+        while self.allowed(low - 1):
+            low -= 1
+        while self.allowed(high + 1):
+            high += 1
+        return low, high
+
+    def check(self, value: int, what: str) -> None:
+        if not self.low <= value <= self.high:
+            raise usage_error(f"{what} {self.knob.name} {value} is past the sweep limits {self.low}..{self.high} "
+                              f"for {self.standard}" + (" with the sums held" if self.sums else ""))
+
+    def apply(self, setting: dict[str, int]) -> None:
+        """Set each knob of ``setting``, the ones going down first so a held
+        sum never passes its value on the way, and check the listing."""
+        order = sorted(setting, key=lambda l: setting[l] - self._now.get(l, setting[l]))
+        reply = ""
+        for letter in order:
+            reply = self.dbg.set_knob(letter, setting[letter])
+        got = parse_listing(reply)
+        wrong = {l: got.get(l) for l, v in setting.items() if got.get(l) != v}
+        if wrong:
+            raise SweepError(f"{setting} not taken: the board lists {wrong}\n{reply}")
+        self._now.update(got)
+
+    # -- points ------------------------------------------------------------------------
+
+    def probe_at(self, value: int, pass_no: int = 1) -> Point:
         t0 = time.monotonic()
-        self.set_value(value)
+        setting = self.setting_for(value)
+        self.apply(setting)
+        handle = Setting(self, setting, bracket=self.knob.readback_at_defaults)
+        label = self.knob.format(value)[1:]
+        main = [p for p in self.probes if not getattr(p, "companion", False)]
+        companions = [p for p in self.probes if getattr(p, "companion", False)]
         failures = samples = 0
         notes: list[str] = []
-        for _ in range(self.spec.repeat):
-            f, s, note = self.probe.sample(f"{self.knob.letter}{value:0{self.knob.digits}d}")
-            failures += f
-            samples += s
+        by_probe: dict[str, list[int]] = {}
+        failed_by: list[str] = []
+        hung = False
+
+        def add(name: str, got) -> None:
+            nonlocal failures, samples, hung
+            s = Sample(*got)
+            failures += s.failures
+            samples += s.samples
+            counts = by_probe.setdefault(name, [0, 0])
+            counts[0] += s.failures
+            counts[1] += s.samples
+            if s.failures and name not in failed_by:
+                failed_by.append(name)
+            hung = hung or s.hung
+            note = s.note if len(self.probes) == 1 or not s.note else f"{name}: {s.note}"
             if note and note not in notes:
                 notes.append(note)
-        point = Point(value, failures, samples, time.monotonic() - t0, notes)
-        self.log(f"[sweep] {self.knob.name} {value}: {'FAIL' if point.failed else 'clean'} "
-                 f"{failures}/{samples}" + (f" ({'; '.join(notes)})" if notes else ""))
+
+        for _ in range(self.spec.repeat):
+            for c in companions:
+                c.begin(label)
+            try:
+                for probe in main:
+                    add(probe.name, probe.sample(label, handle))
+            finally:
+                for c in companions:
+                    add(c.name, c.end())
+        if not handle.bracket:
+            # A firmware that re-applies its defaults (a standard change, a relaunch) would leave
+            # the samples taken at the wrong value: count the point as failed rather than clean.
+            listed = parse_listing(self.dbg.listing())
+            moved = {l: listed.get(l) for l, v in setting.items() if listed.get(l) != v}
+            if moved:
+                failures, samples = failures + 1, samples + 1
+                notes.append(f"the board moved {moved} during the samples")
+                self.apply(setting)
+        held = {l: v for l, v in setting.items() if l != self.knob.letter}
+        point = Point(value, failures, samples, time.monotonic() - t0, notes, by_probe, failed_by, hung, pass_no,
+                      held)
+        self.log(f"[sweep] {self.knob.name} {value}" + (f" (pass {pass_no})" if self.spec.passes > 1 else "")
+                 + f": {'FAIL' if point.failed else 'clean'} {failures}/{samples}"
+                 + (f" ({'; '.join(notes)})" if notes else ""))
         if self.on_point:
             self.on_point(point)
         return point
 
-    def run(self) -> Margin:
-        t0 = time.monotonic()
-        default = self.current()
-        start = default if self.spec.start is None else self.spec.start
+    # -- the modes ---------------------------------------------------------------------
+
+    def _both(self, start: int, pass_no: int) -> list[Point]:
+        points = [self.probe_at(start, pass_no)]
+        if points[0].failed:
+            self.log(f"[sweep] {self.knob.name} fails at {start} itself: no edges to look for")
+            return points
+        ways = ("down", "up") if pass_no % 2 else ("up", "down")
+        for way in ways:
+            stop = self.low if way == "down" else self.high
+            if stop == start:
+                continue
+            found, _, _ = search(lambda v: self.probe_at(v, pass_no), start, replace(self.spec, stop=stop),
+                                 probe_start=False)
+            points += found
+        return points
+
+    def _scan(self, pass_no: int) -> list[Point]:
+        low, high = self.spec.scan
+        values = list(range(low, high + 1, self.spec.step))
+        if values[-1] != high:
+            values.append(high)
+        if pass_no % 2 == 0:
+            values.reverse()
         points: list[Point] = []
-        last_clean = first_fail = None
-        restored = False
-        self.probe.setup()
+        collapses, seen_clean = 0, False
+        for value in values:
+            point = self.probe_at(value, pass_no)
+            points.append(point)
+            seen_clean = seen_clean or not point.failed
+            collapses = collapses + 1 if point.hung else 0
+            if collapses >= 2 and seen_clean:
+                self.log(f"[sweep] two collapses in a row past the clean values: pass {pass_no} stops at {value}")
+                break
+        return points
+
+    def spot(self, values: Sequence[int]) -> list[Point]:
+        """Each value once (``spec.repeat`` samples a probe), within the
+        limits, and the defaults back after: a floor checked directly."""
+        self.prepare()
+        for value in values:
+            self.check(value, "a spot value")
+        points: list[Point] = []
+        started: list[Probe] = []
         try:
-            points, last_clean, first_fail = search(self.probe_at, start, self.spec)
+            for probe in self.probes:
+                probe.setup()
+                started.append(probe)
+            points = [self.probe_at(value) for value in values]
         finally:
             try:
-                restored = "Defaults set" in self.dbg.restore_defaults()
+                self.restore()
             finally:
-                self.probe.teardown()
-        margin = Margin(self.knob, self.probe.name, default, start, self.spec, points, last_clean, first_fail,
-                        restored, time.monotonic() - t0)
+                for probe in reversed(started):
+                    probe.teardown()
+        return points
+
+    def run(self) -> Margin:
+        t0 = time.monotonic()
+        spec = self.spec
+        self.prepare()
+        default = self.defaults[self.knob.letter]
+        start = default if spec.start is None else spec.start
+        self.check(start, "the start")
+        if spec.mode == "one":
+            if spec.stop is None:
+                spec = self.spec = replace(spec, stop=self.high)
+            self.check(spec.stop, "the stop")
+        elif spec.mode == "scan":
+            self.check(spec.scan[0], "the scan's low end")
+            self.check(spec.scan[1], "the scan's high end")
+            if not spec.scan[0] <= default <= spec.scan[1]:
+                raise usage_error(f"the scan {spec.scan[0]}:{spec.scan[1]} must take in the default {default}: "
+                                  f"the edges are measured from it")
+        points: list[Point] = []
+        restored = False
+        started: list[Probe] = []
+        try:
+            for probe in self.probes:
+                probe.setup()
+                started.append(probe)
+            if spec.mode == "one":
+                points, _, _ = search(lambda v: self.probe_at(v, 1), start, spec)
+            elif spec.mode == "both":
+                for n in range(1, spec.passes + 1):
+                    points += self._both(start, n)
+            else:
+                for n in range(1, spec.passes + 1):
+                    points += self._scan(n)
+        finally:
+            try:
+                self.restore()
+                restored = True
+            except SweepError as e:
+                self.log(f"[sweep] {e}")
+            finally:
+                for probe in reversed(started):
+                    probe.teardown()
+        if spec.mode == "one":
+            way = "up" if spec.stop >= start else "down"
+            edges = {way: edge_of(points, start, way, spec.stop, spec.fine)}
+        else:
+            origin = start if spec.mode == "both" else default
+            low, high = (self.low, self.high) if spec.mode == "both" else spec.scan
+            edges = {way: edge_of(points, origin, way, stop, spec.fine)
+                     for way, stop in (("down", low), ("up", high)) if stop != origin}
+        margin = Margin(self.knob, [p.name for p in self.probes], default, start, spec, points, edges, restored,
+                        time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high))
         if not restored:
             raise SweepError("td not confirmed: the board is still running the last value\n" + margin.describe())
         return margin
-
-
-def usage_error(message: str) -> SweepError:
-    err = SweepError(message)
-    err.code = EXIT_USAGE
-    return err

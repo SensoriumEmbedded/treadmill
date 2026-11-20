@@ -162,17 +162,34 @@ def cmd_shell(args: argparse.Namespace) -> int:
         return shell(h)
 
 
+def _scan_range(text: str) -> tuple[int, int]:
+    low, sep, high = text.partition(":")
+    try:
+        if sep:
+            return int(low), int(high)
+    except ValueError:
+        pass
+    raise CommandError(f"--scan {text!r}: give the range as LO:HI", EXIT_USAGE)
+
+
 def cmd_sweep(args: argparse.Namespace) -> int:
-    """Walk one timing knob until the probe fails, bisect the edge, restore
-    the defaults, report the margin."""
+    """Walk one timing knob until a probe fails, bisect the edge (one way, or
+    both), or scan a range; restore the defaults; record the margin."""
+    from treadmill import margins
     from treadmill.driver import Harness
     from treadmill.observe.golden import Golden
+    from treadmill.probes import IdReadProbe, MenuProbe
     from treadmill.programs.build import AssembleError, assemble
     from treadmill.station.config import repo_root
-    from treadmill.sweeps import IdReadProbe, MenuProbe, SearchSpec, Sweep, SweepError, current_value, knob_named
+    from treadmill.sweeps import SearchSpec, Sweep, SweepError, knob_named
 
+    scan = _scan_range(args.scan) if args.scan else None
+    if sum((args.to is not None, args.both, scan is not None)) > 1:
+        raise CommandError("give one of --to, --both and --scan", EXIT_USAGE)
     try:
         knob = knob_named(args.knob)
+        spec = SearchSpec(stop=args.to, start=args.start, step=args.step, fine=args.fine, repeat=args.repeat,
+                          both=args.both, passes=args.passes, scan=scan)
     except SweepError as e:
         raise CommandError(str(e), EXIT_USAGE) from e
     log = _log_for(args)
@@ -183,22 +200,50 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             raise CommandError(f"the flashed build lacks {knob.define}: build with --fw ... --define {knob.define}, "
                                f"or name the defines a build flashed by other means carries with --fw-defines",
                                EXIT_USAGE)
-        if args.probe == "idread":
-            try:
-                program = assemble("idread", primary=h.firmware.primary if h.firmware else None)
-            except AssembleError as e:
-                raise CommandError(str(e), EXIT_USAGE) from e
-            probe = IdReadProbe(board, program, dwell=args.dwell, log=log)
-        else:
-            golden_dir = Path(args.golden_dir) if args.golden_dir else repo_root() / "tests" / "golden"
-            probe = MenuProbe(board, ns["screen"], Golden.load(golden_dir / "menu" / "root.screen.txt"), h.folder)
-        start = args.start if args.start is not None else current_value(dbg, knob)
-        spec = SearchSpec(stop=args.to if args.to is not None else start + 100, start=args.start,
-                          step=args.step, fine=args.fine, repeat=args.repeat)
-        margin = Sweep(dbg, knob, probe, spec, log=log).run()
-        h.run_dir.write_json("sweep.json", margin.to_dict(), h.folder)
-        payload = {**margin.to_dict(), "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
-    _emit(payload, args.json, margin.describe() + f"\nsweep.json in {h.folder}")
+        probes = []
+        for name in dict.fromkeys(args.probe or ["idread"]):
+            if name == "idread":
+                try:
+                    program = assemble("idread", primary=h.firmware.primary if h.firmware else None)
+                except AssembleError as e:
+                    raise CommandError(str(e), EXIT_USAGE) from e
+                probes.append(IdReadProbe(board, program, dwell=args.dwell, log=log))
+            else:
+                golden_dir = Path(args.golden_dir) if args.golden_dir else repo_root() / "tests" / "golden"
+                probes.append(MenuProbe(board, ns["screen"], Golden.load(golden_dir / "menu" / "root.screen.txt"),
+                                        h.folder))
+        margin = Sweep(dbg, knob, probes, spec, hold=args.hold, log=log).run()
+        record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None))
+        h.run_dir.write_json(margins.NAME, record, h.folder)
+        payload = {**record, "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
+    _emit(payload, args.json, margin.describe() + f"\n{margins.NAME} in {h.folder}")
+    return EXIT_OK
+
+
+def cmd_margins(args: argparse.Namespace) -> int:
+    """The margin records under a reports folder: a table, CSV, or the
+    floors a station's runs support."""
+    from treadmill import knobs, margins
+
+    records = margins.load(Path(args.reports))
+    if args.station:
+        records = [r for r in records if r.get("station") == args.station]
+    if args.knob:
+        try:
+            name = knobs.knob_named(args.knob).name
+        except KeyError as e:
+            raise CommandError(e.args[0], EXIT_USAGE) from e
+        records = [r for r in records if (r.get("knob") or {}).get("name") == name]
+    if args.what == "table":
+        _emit({"records": margins.rows(records)}, args.json, margins.table(records))
+    elif args.what == "csv":
+        _emit({"records": margins.rows(records)}, args.json, margins.to_csv(records).rstrip("\n"))
+    else:
+        if not args.station:
+            raise CommandError("suggest needs --station: floors are per station", EXIT_USAGE)
+        floors = margins.suggest(records, args.station, last=args.last)
+        _emit({"station": args.station, "floors": {k: {"up": f.up, "down": f.down} for k, f in floors.items()}},
+              args.json, margins.floors_toml(floors).rstrip("\n") if floors else "no margin records for the station")
     return EXIT_OK
 
 
@@ -618,26 +663,54 @@ def build_parser() -> argparse.ArgumentParser:
     _no_link_arg(s)
     s.set_defaults(func=cmd_shell, json=False)
 
-    s = sub.add_parser("sweep", help="find a timing knob's margin: raise it until the probe fails, bisect, restore",
-                       description="A build with Dbg_SerTimChg. The knob (p, tp or nS_PLAprop) walks from --from "
-                                   "(default: its current value) toward --to in --step steps until a point fails, "
-                                   "then the edge is bisected to --fine; the defaults are restored whatever happens. "
-                                   "A --to below the current value walks the knob down; nS_PLAprop does nothing "
-                                   "below nS_RWnReady. The idread probe, a cartridge, counts wrong reads of its ROM "
-                                   "and of its IO2 page apart on the C64 (a TR+, by DMA); the menu probe resets and "
-                                   "compares the menu with its golden (any TR, by video).")
+    s = sub.add_parser("sweep", help="find a timing knob's margin, one way or both: walk until a probe fails, bisect, "
+                                     "restore",
+                       description="A build with Dbg_SerTimChg. The knob (p, tp or nS_PLAprop) walks from its default "
+                                   "toward --to (default: its upper limit) in --step steps until a point fails, then "
+                                   "the edge is bisected to --fine; --both does that each way from one probe of the "
+                                   "default, to the knob's limits; --scan LO:HI probes every step of a range instead. "
+                                   "--passes repeats it, alternating the order, and a value is clean only if clean in "
+                                   "every pass. The limits (treadmill/knobs.py) follow the other knobs: nS_PLAprop "
+                                   "goes no lower than nS_RWnReady, and nS_DMASetup moves with nS_DMADataHold and "
+                                   "nS_DMADataSetup the other way, so the release and the latch stay put (--free "
+                                   "drops that). The defaults are restored whatever happens. The idread probe, a "
+                                   "cartridge, counts wrong reads of its ROM and of its IO2 page apart on the C64 (a "
+                                   "TR+, by DMA); the menu probe resets and compares the menu with its golden (any "
+                                   "TR, by video; not for a knob that times DMA). margins.json goes in the run folder.")
     _station_args(s)
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
-    s.add_argument("--probe", choices=["idread", "menu"], default="idread")
+    s.add_argument("--probe", choices=["idread", "menu"], action="append",
+                   help="idread (default) or menu; repeat it for several probes at each point")
     s.add_argument("--golden-dir", help="menu probe: where the screen goldens live (default: tests/golden)")
-    s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's current value")
-    s.add_argument("--to", type=int, help="the last value to try; default: 100 past the first")
+    s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's default")
+    s.add_argument("--to", type=int, help="one edge: the last value to try; default: the knob's upper limit")
+    s.add_argument("--both", action="store_true", help="both edges, each to the knob's limit")
+    s.add_argument("--scan", metavar="LO:HI", help="every --step from LO to HI, no bisection; takes in the default")
+    s.add_argument("--passes", type=int, default=1, help="repeat the search or scan, alternating order (default 1)")
+    hold = s.add_mutually_exclusive_group()
+    hold.add_argument("--hold", dest="hold", action="store_const", const=True, default=None,
+                      help="nS_DMASetup: hold the release and latch sums (the default for it)")
+    hold.add_argument("--free", dest="hold", action="store_const", const=False,
+                      help="nS_DMASetup: move it alone")
     s.add_argument("--step", type=int, default=10, help="the coarse step (default 10)")
     s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
-    s.add_argument("--repeat", type=int, default=1, help="samples a point (default 1)")
+    s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")
     s.add_argument("--dwell", type=float, default=1.0, help="idread: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep)
+
+    s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, or floors for a station",
+                       description="Reads every margins.json under --reports. table: one line a record, the clean "
+                                   "window and where each side fails; csv: the same as CSV; suggest: the [margins] "
+                                   "floors a station's last --last records of each knob support, one coarse step "
+                                   "inside the worst edge each way, never past the default, to copy into its file.")
+    s.add_argument("what", choices=["table", "csv", "suggest"])
+    s.add_argument("--reports", default="reports", help="where run folders are (default: reports/)")
+    s.add_argument("--station", help="only this station's records (suggest needs it)")
+    s.add_argument("--knob", help="only this knob's records")
+    s.add_argument("--last", type=int, default=5, help="suggest: the records per knob it weighs (default 5)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_margins)
 
     s = sub.add_parser("mfg", help="the manufacturing test of new TR+ boards, one after another",
                        description="Waits for a TeensyROM on USB, then checks its firmware against the factory "

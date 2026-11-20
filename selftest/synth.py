@@ -4,6 +4,8 @@ frame, and a glyph bank harvested from rendered allcodes screens."""
 
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 from treadmill.c64.screen import CHARSET_LOWER_UPPER, SCREEN_BYTES, SCREEN_COLUMNS
@@ -65,6 +67,9 @@ def allcodes_screens() -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     return pages
 
 
+FRAME_S = 1 / 60
+
+
 def fake_frame_source(fake):
     """Frames of the fake board's screen RAM, as its capture would show them:
     the fake's VIC registers pick the charset, each frame gets fresh noise."""
@@ -73,8 +78,15 @@ def fake_frame_source(fake):
     from treadmill.c64.screen import charset_in, screen_address
     from treadmill.observe.capture import SyntheticSource
     seeds = itertools.count(1000)
+    last = [0.0]
 
     def render() -> np.ndarray:
+        # A capture delivers 60 frames a second: a reader polling for the next one waits for it,
+        # rather than rendering as fast as the CPU goes beside the fake board's own thread.
+        wait = last[0] + FRAME_S - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        last[0] = time.monotonic()
         if fake.heartbeat:                       # hello.a ticks its bottom-right cell once a frame
             fake.memory[0x07E7] = (fake.memory[0x07E7] + 1) & 0xFF
         memptr, cia2 = fake.memory[VIC_MEMPTR], fake.memory[CIA2_PORT_A]

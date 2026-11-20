@@ -14,7 +14,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 def _run(pytester: pytest.Pytester, lab: Path, *extra: str):  # noqa: F811
     return pytester.runpytest(
-        str(REPO / "tests"), "--rootdir", str(REPO), "--station", "s1", "--fw-defines", "Dbg_SerTimChg",
+        str(REPO / "tests"), "--rootdir", str(REPO), "--station", "s1", "--fw-defines", "Dbg_SerTimChg,Dbg_SerDMA",
         "--golden-dir", str(REPO / "tests" / "golden"), "--reports", str(lab / "reports"),
         "-p", "no:anyio", "-p", "no:cacheprovider", "-v", *extra)
 

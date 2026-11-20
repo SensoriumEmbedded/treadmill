@@ -249,12 +249,11 @@ cost or a wart with a known, small fix.
    Fix: run the whole suite once on every station (README, "Which tests
    run where"), and give each station a `[margins]` floor for `nS_PLAprop`
    from its own sweep.
-26. **medium, with item 20** The DMA setup margin has no regression test.
-   `tests/sweep/test_tp_margin.py` guards `nS_PLAprop`, but nothing guards
-   `nS_DMASetup` once PR #99's sweeps are done. Fix, once `sweep e`
-   exists: `tests/sweep/test_dma_setup_margin.py`, the defaults clean on
-   the `z` and REU probes and a per-station `[margins]` floor, on every
-   TR+ machine class (factory NTSC C128s drift the most, item 20).
+26. **closed 2026-11-19, with the DMA margin test.** The DMA setup margin
+   had no regression test. `tests/sweep/test_dma_margins.py` sweeps
+   `nS_DMASetup` with its sums held, and the other four DMA knobs, both
+   ways on every TR+ station, three passes on a C128, against the station's
+   floors.
 30. **closed 2026-11-19, with the screen teardown's getattr.** A skip in
    setup after `screen` was reported as an error. The `screen` fixture's
    teardown (`treadmill/pytest_plugin.py`) read `request.node.rep_failed`,

@@ -331,6 +331,11 @@ probe at the defaults, before the first point and again after the last.
 `--grid LO:HI` with `--scan LO:HI` maps `nS_DMASetup` (the rows) by
 `nS_DMADataHold` (the columns) with the latch held, rows running up and down
 in turn, as a map rather than edges (backlog 23).
+`tests/sweep/test_dma_margins.py` sweeps the five DMA knobs both ways with
+`zpattern`, the REU loop (with sprites for `nS_DMABAWait`; `cpuwatch` in its
+place for `nS_DMAAssert`, since the C64 runs one program at a time) and
+`noise` where the station has video, Special IO set to the REU for the test
+and put back; a C128 gets three passes.
 
 `nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
 reads fail before ROM reads, since the board drives them only after a call

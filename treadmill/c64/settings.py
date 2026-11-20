@@ -7,7 +7,8 @@ next IO handler, its name drawn at row 5 from column 19
 menu. Special IO is a saved setting: it applies from the next launch and
 survives a power cycle, so a test that changes it restores it in a finally
 (``special_io``). Keys are typed through whatever the station has: the
-KERNAL key buffer by DMA on a TR+, else the keyboard board.
+KERNAL key buffer by DMA on a TR+, else the keyboard board; the page is
+read by DMA where the board has it, the names being exact text.
 """
 
 from __future__ import annotations
@@ -61,13 +62,13 @@ class Settings:
         self._press(bytes([F8]))
         time.sleep(0.5)
         self._press(TR_PAGE)
-        read = self.screen.wait(lambda r: self._special_io(r.rows()) is not None, self.timeout,
+        read = self.screen.wait(lambda r: self._special_io(r.rows()) is not None, self.timeout, exact=True,
                                 what="the Settings page with Special IO")
         return self._special_io(read.rows())
 
     def close(self) -> None:
         self._press(bytes([SPACE]))
-        self.screen.wait_text(LEGEND_ROW1.strip(), timeout=self.timeout)
+        self.screen.wait_text(LEGEND_ROW1.strip(), timeout=self.timeout, exact=True)
 
     def special_io_now(self) -> str:
         """Special IO as the TeensyROM page shows it, the menu left as it was."""
@@ -89,7 +90,7 @@ class Settings:
                 self._press(bytes([NEXT_IO]))
                 before = now
                 read = self.screen.wait(lambda r: self._special_io(r.rows()) not in (None, before), self.timeout,
-                                        what=f"Special IO to move on from {before!r}")
+                                        exact=True, what=f"Special IO to move on from {before!r}")
                 now = self._special_io(read.rows())
             if now != want:
                 raise SettingsError(f"Special IO never showed {want!r}; last {now!r}")

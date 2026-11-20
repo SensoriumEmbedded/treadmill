@@ -34,7 +34,7 @@ TIMING_KNOBS = {k.letter: k.digits for k in KNOBS.values()}
 TIMING_NAMES = {k.letter: k.name for k in KNOBS.values()}
 
 TEXT_REPLY = (3.0, 0.3, 20.0)
-LONG_REPLY_GAP_S = 2.0        # z### prints a line per pattern, seconds apart at 300 pages
+LONG_REPLY_GAP_S = 2.0        # the most run() waits for a first byte before it checks again
 
 
 class DebugCommands:
@@ -81,7 +81,7 @@ class DebugCommands:
         self._link._send(command.encode("latin-1"))
         text, end = "", time.monotonic() + timeout
         while not done(text) and (left := end - time.monotonic()) > 0:
-            text += self._link.stream.read_idle(min(LONG_REPLY_GAP_S, left), LONG_REPLY_GAP_S,
+            text += self._link.stream.read_idle(min(LONG_REPLY_GAP_S, left), TEXT_REPLY[1],
                                                 left).decode("latin-1", "replace")
         return text
 

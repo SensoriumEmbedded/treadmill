@@ -271,18 +271,23 @@ def test_board_log_header_once_and_a_fallback_when_refused(tmp_path: Path):
     assert "could not be written" in out.getvalue()
 
 
-def _bench_on(monkeypatch, states: list[list[tuple[str, str]]]) -> tuple[RealBench, io.StringIO]:
-    """A RealBench whose USB shows ``states`` in turn, one per look."""
-    seq, now = iter(states), []
+def _bench_on(monkeypatch, states: list[list[tuple[str, str]]],
+              keyboard: str | None = None) -> tuple[RealBench, io.StringIO]:
+    """A RealBench whose USB shows ``states`` in turn, one per look, the
+    looks 5 s apart on its clock."""
+    seq, now, t = iter(states), [], [0.0]
 
     def ports():
         now[:] = next(seq, now)
+        t[0] += 5.0
         return list(now)
 
     monkeypatch.setattr(mfg, "list_teensyrom_ports", ports)
     monkeypatch.setattr(mfg, "BOARD_POLL_S", 0.0)
     console, out = _console()
-    return RealBench(console), out
+    bench = RealBench(console, keyboard)
+    bench.clock = lambda: t[0]
+    return bench, out
 
 
 def test_a_teensyrom_on_usb_before_the_session_is_never_taken(monkeypatch):
@@ -299,6 +304,25 @@ def test_a_teensyrom_on_usb_before_the_session_is_never_taken(monkeypatch):
     assert bench.wait_for_board() == ("COM5", "33333333")
     assert "COM3 (chip id 11111111), COM4 (chip id 22222222), COM6 (chip id ?)" in out.getvalue()
     assert "skipped for this session" in out.getvalue() and "start again" in out.getvalue()
+
+
+def test_a_board_under_test_on_at_the_start_is_taken_after_its_c64_is_switched_off_and_on(monkeypatch):
+    """The test C64 was on when the session started, so its board was
+    skipped with another machine's. The station's keyboard board is powered
+    by the test C64: the skipped board that leaves USB with it is the board
+    under test, and is taken when it comes back. The other machine's board,
+    which left USB on its own earlier, stays skipped."""
+    other, early = ("COM3", "TEENSYROM-SERIAL-11111111"), ("COM4", "TEENSYROM-SERIAL-22222222")
+    kbd = ("COM9", "C64USBKEYBOARD_2262330")
+    bench, out = _bench_on(monkeypatch, [[other, early, kbd], [other, early, kbd], [early, kbd],
+                                         [other, early, kbd], [other], [other, early, kbd]], keyboard="2262330")
+    assert bench.wait_for_board() == ("COM4", "22222222")
+    text = out.getvalue()
+    assert "COM3 (chip id 11111111), COM4 (chip id 22222222). A board under test among them is taken once " \
+           "its C64 is switched off and on again." in text
+    assert "COM9" not in text and "start again" not in text
+    assert "Chip id 22222222 left USB with the station's keyboard board" in text and "11111111 left" not in text
+    assert bench.others == {"11111111"}
 
 
 # -- whole sessions against fake boards ----------------------------------------------------------------

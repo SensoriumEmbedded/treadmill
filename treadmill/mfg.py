@@ -73,7 +73,7 @@ from treadmill.observe.golden import Golden, Mismatch, compare, save_golden
 from treadmill.report.artifacts import RunDir, write_board_artifacts
 from treadmill.station.config import ConfigError, data_dir, repo_root
 from treadmill.station.kawari import OTHER
-from treadmill.station.kbd import KbdError, KeyboardBoard
+from treadmill.station.kbd import KbdError, KeyboardBoard, keyboard_chip
 from treadmill.station.model import Station
 
 T = TypeVar("T")
@@ -155,6 +155,10 @@ STATUS_NAMES = {0xC3: "its reply to a message, rsContinue"}            # Menu_Re
 
 SERIAL_POLL_S = 0.05
 BOARD_POLL_S = 0.5        # USB, for the next board; no port is opened
+# A skipped board and the station's keyboard board lose power at the same instant, but each
+# removal is seen at a poll, so they can land one poll apart. Much wider, and a TR+ in another
+# bench machine switched off at about the same moment would be taken for the board under test.
+LEFT_TOGETHER_S = 2.0
 # The waits on a person (the buttons, the LED answers) poll more slowly: each round reads video or
 # sends a DMA read, and a quarter second is nothing next to a hand.
 OPERATOR_POLL_S = 0.25
@@ -475,27 +479,66 @@ class RealBench:
     starts belongs to another machine on the bench, or is a board under test
     that was switched on early: neither is taken this session. They are known
     by chip id, so one that leaves USB and comes back, on any port (its
-    machine power-cycled, a treadmill run reflashing it), is not taken either."""
+    machine power-cycled, a treadmill run reflashing it), is not taken either,
+    with one exception: the station's keyboard board takes its power from the
+    test C64, so a skipped board that leaves USB with it was in that C64, and
+    is taken when it comes back."""
 
-    def __init__(self, console: Console):
+    def __init__(self, console: Console, keyboard: str | None = None):
         self.console = console
+        self.keyboard = keyboard            # the station's keyboard board's chip id
+        self.clock = time.monotonic
         ports = list_teensyrom_ports()
         self.others = {uid for _, s in ports if (uid := teensyrom_uid(s))}
-        if ports:
-            names = ", ".join(f"{port} (chip id {teensyrom_uid(s) or '?'})" for port, s in ports)
-            console.warn(f"Already on USB, so skipped for this session: {names}. A board under test among "
-                         "them is skipped too: end the session, switch its C64 off, and start again.")
+        self._present = set(self.others)    # skipped boards on USB at the last look
+        self._left: dict[str, float] = {}   # skipped boards that left USB since, and when
+        self._kbd_on = self._keyboard_on(ports)
+        self._kbd_left: float | None = None
+        shown = [(port, s) for port, s in ports if keyboard_chip(s) is None]
+        if shown:
+            names = ", ".join(f"{port} (chip id {teensyrom_uid(s) or '?'})" for port, s in shown)
+            advice = ("A board under test among them is taken once its C64 is switched off and on again."
+                      if self._kbd_on else
+                      "A board under test among them is skipped too: end the session, switch its C64 off, "
+                      "and start again.")
+            console.warn(f"Already on USB, so skipped for this session: {names}. {advice}")
 
     def do(self, action: str) -> None:
         self.console.instruct(INSTRUCTIONS[action])
 
     def wait_for_board(self) -> tuple[str, str]:
         while True:
-            for port, serial_string in list_teensyrom_ports():
+            ports = list_teensyrom_ports()
+            self._follow_the_test_c64(ports)
+            for port, serial_string in ports:
                 uid = teensyrom_uid(serial_string)
                 if uid and uid not in self.others:
                     return port, uid
             time.sleep(BOARD_POLL_S)
+
+    def _keyboard_on(self, ports: list[tuple[str, str]]) -> bool:
+        return self.keyboard is not None and any(keyboard_chip(s) == self.keyboard for _, s in ports)
+
+    def _follow_the_test_c64(self, ports: list[tuple[str, str]]) -> None:
+        """Takes a skipped board off the list when it left USB within
+        ``LEFT_TOGETHER_S`` of the station's keyboard board."""
+        now = self.clock()
+        present = {uid for _, s in ports if (uid := teensyrom_uid(s))} & self.others
+        for uid in self._present - present:
+            self._left[uid] = now
+        self._present = present
+        kbd_on = self._keyboard_on(ports)
+        if self._kbd_on and not kbd_on:
+            self._kbd_left = now
+        self._kbd_on = kbd_on
+        if self._kbd_left is None:
+            return
+        for uid, t in list(self._left.items()):
+            if abs(t - self._kbd_left) <= LEFT_TOGETHER_S:
+                self.others.discard(uid)
+                del self._left[uid]
+                self.console.say(f"Chip id {uid} left USB with the station's keyboard board, so it is in the "
+                                 "test C64: it is taken when the C64 is on again.")
 
     def open_board(self, station: Station, timeout: float) -> Board:
         """The board, opened once its main image answers. A port that drops

@@ -239,7 +239,7 @@ def cmd_mfg(args: argparse.Namespace) -> int:
             bench = FakeBench(console)
             video = bench.video_kit()
         else:
-            bench = RealBench(console)
+            bench = RealBench(console, template.keyboard.chip if template.keyboard else None)
             video = open_video_kit(template, log)
         run_dir = RunDir(Path(args.reports))
         try:

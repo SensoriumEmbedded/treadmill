@@ -304,7 +304,10 @@ the machine, so switching the machine on is what starts a board. A
 TeensyROM already on USB when the session starts is skipped for the whole
 session by its chip id, even when it leaves USB and comes back: it belongs
 to another machine on the bench. A board under test switched on before the
-session is skipped with them, until the session is restarted with it off. The steps
+session is skipped with them, until the session is restarted with it off;
+with a keyboard board named in the station, switching the test C64 off and
+on is enough, since a skipped board that leaves USB with the keyboard board
+was in that C64. The startup message lists only the TeensyROMs. The steps
 run in order, launching the two built-in tests through the menu by keys, as
 an operator does (a remote launch changes how the firmware lays out RAM2,
 and with it the REU's size):

@@ -1,0 +1,82 @@
+; vicrom.a: the C64 side of the vicrom probe, an 8K Ultimax cartridge (EXROM high,
+; GAME low), which the TeensyROM serves with EmulateVicCycles on: in each VIC cycle it
+; samples the address at nS_VICStart after Phi2 falls and drives ROMH until
+; nS_VICDHold. In Ultimax mode the VIC sees ROMH's upper 4K at $3000, so the charset
+; is put there ($F000 here, $3000 to the VIC) and every glyph on screen is fetched
+; from the cartridge in VIC cycles: a sample point or a release off its window shows
+; as wrong pixels in the glyphs. The CPU sees RAM only at $0000-$0FFF, so the screen
+; is at $0400 and the counters at $0F00: frames counted (16-bit) and $5A at $0F04
+; once running. The border steps once a frame, so a hung C64 shows on video too.
+; The firmware blanks $D011 before an Ultimax launch; the code turns the screen on.
+
+passes = $0f00
+ready  = $0f04
+
+* = $e000
+reset   sei
+        cld
+        ldx #$ff
+        txs
+        lda #$7f
+        sta $dc0d
+        sta $dd0d
+        lda $dc0d
+        lda $dd0d
+        lda #$03
+        sta $dd02
+        lda #$97                ; VIC bank 0
+        sta $dd00
+        lda #0
+        sta $d015
+        sta $d01a
+        sta $d020
+        sta $d021
+        lda #$c8
+        sta $d016
+        lda #$1c                ; screen $0400, charset $3000: ROMH as the VIC sees it
+        sta $d018
+        ldx #0
+-       txa
+        sta $0400,x
+        sta $0500,x
+        sta $0600,x
+        sta $06e8,x
+        lda #1
+        sta $d800,x
+        sta $d900,x
+        sta $da00,x
+        sta $dae8,x
+        inx
+        bne -
+        lda #0
+        sta passes
+        sta passes+1
+        lda #$1b
+        sta $d011
+        lda #$5a
+        sta ready
+
+frame   lda $d012               ; once a frame: line 0 (and 256, on PAL)
+        bne frame
+        inc $d020
+        inc passes
+        bne +
+        inc passes+1
++
+-       lda $d012
+        beq -
+        jmp frame
+
+nmi
+irq     rti
+
+; 256 glyphs, every one different and none blank, so every fetch moves bits.
+* = $f000
+!for i, 0, 255 {
+        !for r, 0, 7 {
+                !byte (i * 7 + r * 29 + (i >> 2) + 1) & $ff
+        }
+}
+
+* = $fffa
+        !word nmi, reset, irq

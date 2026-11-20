@@ -100,6 +100,9 @@ def fake_frame_source(fake):
         charset = charset_in(memptr, cia2)
         if charset == CHARSET_CUSTOM:
             charset = CHARSET_UPPER_GRAPHICS
+        if fake.ultimax_since is not None:      # vicrom.a steps the border once a frame
+            border = int((time.monotonic() - fake.ultimax_since) * 60) % 16
+            return frame_of(codes, LIGHT_GREY, charset, seed=next(seeds), border=border)
         look = getattr(fake.program, "look", None)          # a program drawing in its own colors
         if look is not None:
             colors, background, border = look()

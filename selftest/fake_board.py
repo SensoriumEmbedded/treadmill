@@ -92,6 +92,31 @@ class C64Loop:
 
 
 @dataclass
+class KrLoop:
+    """krread.a's counters at $C110 (passes, reads without the replacement
+    with HIRAM set, reads with it over RAM), advanced by the clock: all of
+    them wrong when Kernal Replace is not serving the probe KERNAL, a share
+    while the sense knob in use lies outside its window."""
+    last: float
+    serving: bool
+    passes: float = 0.0
+    rom: float = 0.0
+    ram: float = 0.0
+
+    def advance(self, now: float, outside_ns: int) -> None:
+        dt = max(0.0, now - self.last)
+        self.last = now
+        n = dt * REU_ROUNDS_PER_S
+        share = 1.0 if not self.serving else min(1.0, outside_ns * IDREAD_WRONG_PER_NS)
+        self.passes += n
+        self.rom += n * share
+        self.ram += n * share / 2
+
+    def bytes(self) -> bytes:
+        return b"".join((int(v) & 0xFFFF).to_bytes(2, "little") for v in (self.passes, self.rom, self.ram))
+
+
+@dataclass
 class IdRead:
     """The counters idread.a would leave at $C000, advanced by the clock each
     time they are read: a path's wrong reads accrue only while the sample
@@ -156,9 +181,17 @@ class FakeBoard:
     # Below this nS_DMASetup the DMA drives into the VIC's half of the cycle: stray cells on screen, a
     # cell for every ns, before the data goes wrong at the window's edge (as PR #99's sweeps showed).
     vic_noise_below: int = 400
+    # vicrom.a running (an Ultimax image, its glyphs fetched in VIC cycles): the VIC knobs' windows, a
+    # wrong cell a frame for every ns outside one, and when it started, for its frame counter at $0F00.
+    vic_windows: dict = field(default_factory=lambda: {"v": (150, 290), "i": (300, 430)})
+    ultimax_since: float | None = None
     idread: IdRead | None = field(default=None, repr=False)
     c64loop: C64Loop | None = field(default=None, repr=False)
     special_io: str = "None"             # the Settings page's Special IO: what a launched PRG runs beside
+    kernal_file: str | None = None       # the Kernal Replace file the menu's K chose ("SD:/path")
+    krloop: KrLoop | None = field(default=None, repr=False)
+    # Kernal Replace's HIRAM sense: the knob each method times, and its window.
+    sense_windows: dict = field(default_factory=lambda: {"k": (20, 60), "n": (150, 330)})
     # The manufacturing test's side: the program running and what breaks it (fake_programs.py), the
     # board's power, and the serve loop held while a program services nothing (the External Ports wait).
     faults: dict = field(default_factory=dict)
@@ -197,9 +230,18 @@ class FakeBoard:
             self.program = program(self)
             self.program.start()
             return
-        if path.lower().endswith("idread.crt"):
-            self.idread = IdRead(time.monotonic())
         name = path.lower().rpartition("/")[2]
+        if name.endswith("idread.crt"):
+            self.idread = IdRead(time.monotonic())
+        if name.startswith("krread"):
+            self.krloop = KrLoop(time.monotonic(), self.special_io == "Kernal Replace" and self.kernal_file is not None)
+            self.memory[0xC104] = 0x5A
+        if path.lower().endswith("vicrom.crt"):
+            screen = bytes(i & 0xFF for i in range(SCREEN_BYTES))
+            self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = screen
+            self.memory[0xD018] = 0x1C
+            self.memory[0x0F04] = 0x5A
+            self.ultimax_since = time.monotonic()
         if "reuloop" in name or "cpuwatch" in name:
             self.c64loop = C64Loop(time.monotonic(), needs_reu="reuloop" in name,
                                    collapse_ns=self.faults.get("reu_collapse_ns"))
@@ -290,6 +332,8 @@ class FakeBoard:
             self.heartbeat = False
             self.idread = None
             self.c64loop = None
+            self.krloop = None
+            self.ultimax_since = None
             self.booting_for = self.boot_polls
             self.cold_start()
             self.menu.reset()
@@ -351,9 +395,25 @@ class FakeBoard:
                 worst = max(worst, lo - self.knobs[letter], self.knobs[letter] - hi)
         return worst
 
+    def sense_outside(self) -> int:
+        """How far the knob of the HIRAM sense in effect lies outside its
+        window: nS_KSenseSample for the DMA method (KSenseMode 2, or 9 on a
+        C128), Cyc_KernProp for Skoe."""
+        mode = self.knobs["x"]
+        dma = mode == 2 or (mode == 9 and parse_banner(self.banner).machine == "C128")
+        letter = "n" if dma else "k"
+        lo, hi = self.sense_windows[letter]
+        return max(0, lo - self.knobs[letter], self.knobs[letter] - hi)
+
+    def vic_outside(self) -> int:
+        """How far, in ns, the VIC knobs lie outside their windows while vicrom runs."""
+        if self.ultimax_since is None:
+            return 0
+        return max(0, *(max(lo - self.knobs[k], self.knobs[k] - hi) for k, (lo, hi) in self.vic_windows.items()))
+
     def vic_glitches(self) -> int:
         """How many screen cells the capture shows wrong in a frame."""
-        return max(0, self.vic_noise_below - self.knobs["e"])
+        return max(0, self.vic_noise_below - self.knobs["e"]) + self.vic_outside()
 
     def dma_outside(self) -> int:
         """How far, in ns, the DMA knobs lie outside their windows; 0 inside all."""
@@ -381,6 +441,8 @@ class FakeBoard:
             self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
         if self.c64loop is not None:
             self.c64loop.advance(time.monotonic(), self.special_io in REU_NAMES, self.dma_outside())
+        if self.krloop is not None:
+            self.krloop.advance(time.monotonic(), self.sense_outside())
 
     def serve(self, end: PipeEnd) -> None:
         self.end = end
@@ -448,14 +510,16 @@ class FakeBoard:
                 head = f"\nVal Set to: {int(digits)}\n\n"          # GetDigits()
                 if sub == "x":
                     head += "Kernal HIRAM sense mode set: takes effect at the next Kernal Replace launch\n"
-                self.menu.render()                                 # the marks follow the margin at once
+                if not self.busy:                                  # a running program's screen is its own
+                    self.menu.render()                             # the marks follow the margin at once
             elif sub == "d":
                 self.restore_knobs()
                 self.letters.append("td")
                 banner = parse_banner(self.banner)
                 head = ("Defaults set\n" if self.image == "minimal"
                         else f"Defaults set ({banner.video or 'PAL'} {banner.machine or 'C64'})\n")
-                self.menu.render()
+                if not self.busy:
+                    self.menu.render()
             else:
                 self.letters.append(f"t{sub}")
                 head = "No changes\n"
@@ -466,7 +530,8 @@ class FakeBoard:
             digits = end.read(3, WAIT_S).decode("latin-1")
             self.letters.append(f"z{digits}")
             if self.faults.get("z_stall"):
-                end.write(b"\nDMA pattern test: ...\n\n  no pattern write on pass 3: C64 bus not clocking, or DMA timed out\n")
+                end.write(b"\nDMA pattern test: ...\n\n"
+                          b"  no pattern write on pass 3: C64 bus not clocking, or DMA timed out\n")
             elif self.dma:
                 end.write(self._z_report(int(digits or 0) or 64).encode("latin-1"))
             return
@@ -586,6 +651,8 @@ class FakeBoard:
         self.heartbeat = False
         self.idread = None
         self.c64loop = None
+        self.krloop = None
+        self.ultimax_since = None
         with self.lock:
             self.program = None
             self.memory[0xD018] = 0x17
@@ -606,6 +673,11 @@ class FakeBoard:
             self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 8] = self.idread.bytes()
         if self.c64loop is not None:
             self.memory[0xC110:0xC114] = self.c64loop.bytes()
+        if self.krloop is not None:
+            self.memory[0xC110:0xC116] = self.krloop.bytes()
+        if self.ultimax_since is not None and not self.vic_outside() > self.faults.get("vic_hang_ns", 10 ** 6):
+            frames = int((time.monotonic() - self.ultimax_since) * 60) & 0xFFFF
+            self.memory[0x0F00:0x0F02] = frames.to_bytes(2, "little")
         if address == VIC_MEMPTR and self.key_on_screen_read:
             keys, self.key_on_screen_read = self.key_on_screen_read, ""
             self.type_keys(keys)

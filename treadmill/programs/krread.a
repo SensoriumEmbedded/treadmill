@@ -1,0 +1,72 @@
+; krread.a: the C64 side of the krread probe, run under Kernal Replace with a probe
+; KERNAL: the machine's own KERNAL with a run of filler bytes (MARK, LEN bytes of
+; FILL) inverted. IRQs off. Each pass sets HIRAM ($01 = $37) and reads the run, where
+; the TeensyROM must serve the inverted bytes; then clears it ($01 = $35) and reads
+; the same addresses, where the C64 must see its own RAM (PAT, written there first).
+; Every write to $01 makes the TeensyROM sense HIRAM again, on the next KERNAL read
+; (Cyc_KernProp, Skoe) or in a stolen cycle right after the write (nS_KSenseSample,
+; DMA), so every pass is two senses. Counters at $C110: passes, reads where the
+; replacement was missing (ROM side) and reads where it came over RAM (RAM side),
+; 16 bits each; $5A at $C104 once running.
+
+ready   = $c104
+passes  = $c110
+romwrong = $c112
+ramwrong = $c114
+
+* = $0801
+!word next, 10
+!byte $9e
+!text "2064"
+!byte 0
+next !word 0
+
+* = $0810
+        sei
+        lda #$7f
+        sta $dc0d
+        sta $dd0d
+        lda $dc0d
+        lda $dd0d
+        lda #0
+        sta $d01a
+        ldx #5
+-       sta passes,x
+        dex
+        bpl -
+        lda #$35
+        sta $01
+        ldx #LEN - 1
+        lda #PAT
+-       sta MARK,x              ; RAM under the KERNAL
+        dex
+        bpl -
+        lda #$5a
+        sta ready
+
+loop    lda #$37                ; KERNAL in: the replacement's bytes
+        sta $01
+        ldx #LEN - 1
+-       lda MARK,x
+        cmp #FILL XOR $ff
+        beq +
+        inc romwrong
+        bne +
+        inc romwrong+1
++       dex
+        bpl -
+        lda #$35                ; KERNAL out: RAM
+        sta $01
+        ldx #LEN - 1
+-       lda MARK,x
+        cmp #PAT
+        beq +
+        inc ramwrong
+        bne +
+        inc ramwrong+1
++       dex
+        bpl -
+        inc passes
+        bne loop
+        inc passes+1
+        jmp loop

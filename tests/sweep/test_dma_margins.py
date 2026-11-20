@@ -51,7 +51,7 @@ def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, prog
     if video is not None and calibration is not None:
         probes.append(NoiseProbe(video, calibration, pattern, log=print))
     passes = C128_PASSES if board.is_c128 else 1
-    spec = SearchSpec(both=True, step=pace.dma_step, fine=pace.dma_fine, passes=passes)
+    spec = SearchSpec(both=True, step=pace.slow_step, fine=pace.slow_fine, passes=passes)
     with Settings(screen, keys, log=print).special_io(REU):
         margin = Sweep(dbg, knob, probes, spec, log=print).run()
     print(margin.describe())

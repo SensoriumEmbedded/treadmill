@@ -269,9 +269,15 @@ class MenuDriver:
     def select(self, name: str) -> None:
         """RETURN on ``name``: a file launches, so there is nothing to wait
         for here; the caller watches the screen or the link."""
+        self.highlight(name)
+        self.press(RETURN)
+
+    def highlight(self, name: str) -> Listing:
+        """The cursor on ``name``, for a key that acts on the highlighted item
+        (``K`` takes it as the Kernal Replace file)."""
         listing, index = self.find(name)
         self._reach(listing, index)
-        self.press(RETURN)
+        return listing
 
     def ensure_root(self, drive: str = "teensy") -> Listing:
         """At the root of ``drive``: by its F-key when the station presses

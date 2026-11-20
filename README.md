@@ -337,6 +337,22 @@ place for `nS_DMAAssert`, since the C64 runs one program at a time) and
 `noise` where the station has video, Special IO set to the REU for the test
 and put back; a C128 gets three passes.
 
+Two probes time paths the CPU does not use. `vicrom` launches an 8K Ultimax
+cartridge, which the TeensyROM serves with its VIC cycles on, whose charset
+the VIC fetches from ROMH: every glyph comes through `nS_VICStart` and
+`nS_VICDHold`. It needs video, not DMA: a reference picture of the text area
+(half a cell in from the border, which steps once a frame to show the C64
+is alive) is taken at the defaults, and a point fails when its worst frame
+strays from it by three times the defaults' own stray and 100 pixels more.
+`krread` times Kernal Replace's HIRAM sense (`Cyc_KernProp` for Skoe,
+`nS_KSenseSample` for the DMA method): its KERNAL is the machine's own, read
+by DMA, with its longest filler run inverted, chosen as the Kernal Replace
+file with the menu's `K` and put back after, and `krread.a` toggles HIRAM and
+counts the reads that came back wrong each way. `tests/sweep/test_vic_margins.py`
+and `tests/sweep/test_kernal_margins.py` sweep them both ways; the latter sets
+Special IO and `KSenseMode` and puts them back, and skips `Cyc_KernProp` on a
+C128, whose transceiver hides the address the Skoe sense drives.
+
 `nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
 reads fail before ROM reads, since the board drives them only after a call
 into the IO handler; lowered, the select lines are sampled before the

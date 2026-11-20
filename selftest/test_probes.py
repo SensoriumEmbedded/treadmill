@@ -1,7 +1,8 @@
 """The DMA-path probes on the fake board: the firmware's z### pattern test,
 the C64's own REU loop with the Settings page that turns the REU on, the
-C64's own writes beside z###, screen noise beside a workload, and what each
-makes of a stall or a crash."""
+C64's own writes beside z###, screen noise beside a workload, the VIC's
+fetches from an Ultimax cartridge, and what each makes of a stall, a crash or
+a hang."""
 
 import time
 from pathlib import Path
@@ -17,8 +18,10 @@ from treadmill.c64.settings import REU, Settings, SettingsError
 from treadmill.link import DebugCommands, Link
 from treadmill.observe.channels import ScreenChannel
 from treadmill.probes.cpuwatch import CpuWatchProbe
+from treadmill.probes.krread import ksense_mode, probe_kernal
 from treadmill.probes.noise import NoiseProbe
 from treadmill.probes.reuloop import ReuLoopProbe
+from treadmill.probes.vicrom import VicRomProbe
 from treadmill.probes.zpattern import ZPatternProbe
 from treadmill.station import load_station
 from treadmill.sweeps import KNOBS, Sample, SearchSpec, Sweep, SweepError
@@ -207,3 +210,87 @@ def test_a_grid_maps_dmasetup_by_dmadatahold_with_the_latch_held(fake_station):
     with pytest.raises(SweepError) as e:
         Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(140, 160), grid=(1, 2)))
     assert "a grid is nS_DMASetup" in str(e.value)
+
+
+def _vicrom(fake, board, tmp_path: Path, **kw) -> "VicRomProbe":
+    from selftest.synth import calibrated, fake_frame_source
+    crt = tmp_path / "vicrom.crt"
+    crt.write_bytes(b"C64 CARTRIDGE   " + bytes(64))
+    return VicRomProbe(board, fake_frame_source(fake), calibrated(), crt, dwell=0.3, log=lambda m: None, **kw)
+
+
+def test_vicrom_finds_the_vic_start_window_from_the_picture(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    probe = _vicrom(fake, board, tmp_path)
+    margin = Sweep(dbg, KNOBS["v"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (150, 145, 290, 295)
+    info = margin.probe_info["vicrom"]
+    assert info["baseline"] is not None and info["limit"] >= 100
+    bad = next(p for p in margin.points if p.failed)
+    assert "off the reference" in bad.notes[0]
+    assert fake.ultimax_since is None and fake.knobs == KNOB_DEFAULTS, "back at the menu with the defaults"
+
+
+def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    fake.faults["vic_hang_ns"] = 30
+    probe = _vicrom(fake, board, tmp_path)
+    margin = Sweep(dbg, KNOBS["i"], probe, SearchSpec(scan=(250, 370), step=40), log=lambda m: None).run()
+    first, second = margin.points[0], margin.points[1]
+    assert (first.value, first.hung) == (250, True) and "stopped" in first.notes[0]
+    assert (second.value, second.hung, second.failed) == (290, False, True), "relaunched, counting, glyphs wrong"
+    assert [p.failed for p in margin.points[2:]] == [False, False]
+
+
+def test_the_probe_kernal_inverts_the_longest_filler_run():
+    kernal = bytearray(range(256)) * 32
+    kernal[0x04B7:0x04D3] = b"\xaa" * 28                     # the stock KERNAL's filler at $E4B7
+    image, defines = probe_kernal(bytes(kernal))
+    assert defines == {"MARK": 0xE4B7, "LEN": 28, "FILL": 0xAA, "PAT": 0x0F}
+    assert image[0x04B7:0x04D3] == b"\x55" * 28 and image[:0x04B7] == bytes(kernal[:0x04B7])
+    with pytest.raises(SweepError):
+        probe_kernal(bytes(range(256)) * 32)                  # no run long enough
+    _, defines = probe_kernal(b"\x0f" * 0x2000)
+    assert defines["LEN"] == 64 and defines["PAT"] == 0x3C, "the RAM pattern steers clear of the filler"
+
+
+def test_ksense_mode_comes_back_after_the_block(fake_station):
+    fake, board, dbg = fake_station
+    with ksense_mode(dbg, 0) as was:
+        assert was == 9 and fake.knobs["x"] == 0
+        dbg.restore_defaults()
+        assert fake.knobs["x"] == 0, "td leaves it"
+    assert fake.knobs["x"] == 9
+
+
+def test_the_kernal_file_is_chosen_with_k_and_put_back(fake_station):
+    fake, board, dbg = fake_station
+    from treadmill.c64.menu import MenuDriver
+    screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)
+    keys = KernalKeys(board)
+    menu = MenuDriver(screen, keys, board)
+    settings = Settings(screen, keys, timeout=10.0, log=lambda m: None)
+    fake.files["/treadmill/krprobe.bin"] = bytes(0x2000)
+    fake.files["/kernals/jiffy.bin"] = bytes(0x2000)
+    fake.directories += ["/treadmill", "/kernals"]
+    fake.kernal_file = "SD:/kernals/jiffy.bin"
+    assert settings.kernal_file_now() == "SD:/kernals/jiffy.bin"
+    with settings.kernal_file(menu, "SD:/treadmill/krprobe.bin") as was:
+        assert was == "SD:/kernals/jiffy.bin" and fake.kernal_file == "SD:/treadmill/krprobe.bin"
+    assert fake.kernal_file == "SD:/kernals/jiffy.bin"
+    with pytest.raises(SettingsError):
+        settings.set_kernal_file(menu, "TR:/whatever.bin")
+
+
+def test_sweep_command_with_vicrom_and_krread(lab: Path, capsys):  # noqa: F811
+    from treadmill.cli import EXIT_OK, main
+    import json
+    base = ["--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg", "--json",
+            "--dwell", "0.3", "--both", "--step", "20", "--fine", "10"]
+    assert main(["sweep", "v", "--probe", "vicrom", *base]) == EXIT_OK, capsys.readouterr().err
+    edges = json.loads(capsys.readouterr().out)["edges"]
+    assert (edges["down"]["clean_to"], edges["up"]["clean_to"]) == (150, 290)
+    assert main(["sweep", "n", "--probe", "krread", *base]) == EXIT_OK, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["probes"] == ["krread"] and payload["edges"]["up"]["clean_to"] == 330

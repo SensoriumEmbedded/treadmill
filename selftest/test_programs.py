@@ -34,7 +34,13 @@ def test_cartridges_assemble_to_crt_files(tmp_path: Path):
         crt = assemble(name, tmp_path, acme=_acme())
         data = crt.read_bytes()
         assert crt.suffix == ".crt" and len(data) == 0x40 + len(loads) * (0x10 + 0x2000), name
-        assert data[0x50 + 4:0x50 + 9] == b"\xc3\xc2\xcd80", name             # CBM80: the KERNAL starts it
+        if loads[0] == 0x8000:
+            assert data[0x50 + 4:0x50 + 9] == b"\xc3\xc2\xcd80", name         # CBM80: the KERNAL starts it
+        else:                                                                # Ultimax: the reset vector does
+            assert data[-4:-2] == loads[0].to_bytes(2, "little"), name
+    vicrom = (tmp_path / "vicrom.crt").read_bytes()
+    assert vicrom[0x18:0x1A] == bytes([1, 0]) and vicrom[0x50 + 0x1000:0x50 + 0x1008] != bytes(8), \
+        "EXROM high, GAME low (8K-Hi), and a charset at $F000, where the VIC sees ROMH"
     data = (tmp_path / "idread.crt").read_bytes()
     roml, romh = data[0x50:0x2050], data[0x2060:]
     assert roml[0x100:0x200] == bytes(range(256)) and roml[0x200:0x300] == bytes(i ^ 0xFF for i in range(256))

@@ -22,7 +22,9 @@ from treadmill.c64.menu import (
     Entry, mark_for, render_listing, shown_name, shown_path,
 )
 from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
-from treadmill.c64.settings import NEXT_IO, SPECIAL_IO, SPECIAL_IO_LABEL
+from treadmill.c64.settings import (
+    KERNAL_FILE_LABEL, KERNAL_FILE_SET, NEXT_IO, SET_KERNAL_FILE, SPECIAL_IO, SPECIAL_IO_LABEL,
+)
 from treadmill.observe.golden import save_golden
 
 _UP = Entry(UP_DIR, MARK_DIR)
@@ -119,6 +121,7 @@ class FakeMenu:
         self.source, self.path, self.page, self.cursor = "teensy", "/", 1, 0
         self.info_page = False
         self.settings_page: int | None = None
+        self.message: list[str] | None = None        # a message screen the next key clears (K's answer)
         self.render()
 
     # -- what is listed ----------------------------------------------------------
@@ -141,9 +144,15 @@ class FakeMenu:
         if self.settings_page is not None:
             # Pg_TRSettings.asm's page 2 in miniature: Special IO's name at row 5 from column 19.
             rows = [banner.center(SCREEN_COLUMNS), "", f" Settings page {self.settings_page}", "", ""]
-            rows.append(f" a/A {SPECIAL_IO_LABEL}".ljust(19) + self.board.special_io if self.settings_page == 2 else "")
+            if self.settings_page == 2:
+                # Special IO's name at row 5 from column 19; the Kernal file's path on row 8.
+                rows += [f" a/A {SPECIAL_IO_LABEL}".ljust(19) + self.board.special_io, "",
+                         f"  {KERNAL_FILE_LABEL} ('K' to sel)", "  " + (self.board.kernal_file or "")]
             rows += [""] * (24 - len(rows)) + [" Space: back to the main menu"]
             return [r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS] for r in rows[:25]]
+        if self.message is not None:
+            rows = [banner.center(SCREEN_COLUMNS), ""] + self.message
+            return [r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS] for r in rows + [""] * (25 - len(rows))]
         if self.info_page:
             rows = [banner.center(SCREEN_COLUMNS), "", "SID Info Page:", "", " File Information for", "",
                     " This Machine: C64 NTSC 60Hz TOD"]
@@ -158,7 +167,7 @@ class FakeMenu:
 
     def render(self) -> None:
         codes = self._codes(self.rows())
-        listing = not self.info_page and self.settings_page is None
+        listing = not self.info_page and self.settings_page is None and self.message is None
         if listing:
             row = FIRST_ITEM_ROW + self.cursor
             for i in range(row * SCREEN_COLUMNS, (row + 1) * SCREEN_COLUMNS):
@@ -190,6 +199,14 @@ class FakeMenu:
     # -- keys ----------------------------------------------------------------------
 
     def key(self, code: int) -> None:
+        if self.message is not None:
+            self.message = None          # "any key"
+            self.render()
+            return
+        if code == SET_KERNAL_FILE and not self.info_page and self.settings_page is None:
+            self._set_kernal_file()
+            self.render()
+            return
         if self.settings_page is not None:
             if code == SPACE:
                 self.settings_page = None
@@ -239,6 +256,21 @@ class FakeMenu:
             if self.board.program is not None:
                 return                   # the launched program draws its own screen
         self.render()
+
+    def _set_kernal_file(self) -> None:
+        """StatusFunctions.c's SetKERNALBin: the highlighted card file becomes
+        the Kernal Replace file; Teensy Mem files are refused."""
+        if self.source != "sd":
+            self.message = ["Select file from SD or USB only"]
+            return
+        entry = self.page_entries()[self.cursor]
+        found = next((p for p in self.board.files
+                      if _parent(p) == self.path and shown_name(p.rsplit("/", 1)[-1]) == entry.name), None)
+        if entry.mark == MARK_DIR or found is None:
+            self.message = ["Invalid File Type"]
+            return
+        self.board.kernal_file = "SD:" + found
+        self.message = [f"File Selected:", found, f"{KERNAL_FILE_SET}:", "  * Enable via Settings menu/Special IO"]
 
     def _page_down(self) -> None:
         self.page = self.page % self.pages() + 1

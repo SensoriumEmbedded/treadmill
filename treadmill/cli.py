@@ -163,6 +163,9 @@ def cmd_shell(args: argparse.Namespace) -> int:
         return shell(h)
 
 
+KRREAD_KERNAL = "/treadmill/krprobe.bin"
+
+
 def _scan_range(text: str, flag: str = "--scan") -> tuple[int, int]:
     low, sep, high = text.partition(":")
     try:
@@ -181,9 +184,13 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     from treadmill.driver import Harness
     from treadmill.observe.golden import Golden
     from treadmill.probes import IdReadProbe, MenuProbe
+    from treadmill.c64.menu import MenuDriver
+    from treadmill.c64.settings import KERNAL_REPLACE
     from treadmill.probes.cpuwatch import CpuWatchProbe
+    from treadmill.probes.krread import DMA, KERNAL, KERNAL_SIZE, SKOE, KrReadProbe, ksense_mode, probe_kernal
     from treadmill.probes.noise import NoiseProbe
     from treadmill.probes.reuloop import ReuLoopProbe
+    from treadmill.probes.vicrom import VicRomProbe
     from treadmill.probes.zpattern import ZPatternProbe
     from treadmill.programs.build import AssembleError, assemble
     from treadmill.station.config import repo_root
@@ -234,12 +241,29 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                                            dwell=args.dwell, sprites=sprites, log=log))
             elif name == "cpuwatch":
                 probes.append(CpuWatchProbe(board, dbg, program("cpuwatch"), pages=args.z_pages, log=log))
+            elif name == "vicrom":
+                probes.append(VicRomProbe(board, ns["video"], getattr(ns["screen"], "calib", None), program("vicrom"),
+                                          dwell=args.dwell, log=log))
+            elif name == "krread":
+                image, defines = probe_kernal(board.link.read_memory(KERNAL, KERNAL_SIZE))
+                board.link.push_file(image, KRREAD_KERNAL, "sd")
+                try:
+                    prg = assemble("krread", primary=h.firmware.primary if h.firmware else None, extra=defines)
+                except AssembleError as e:
+                    raise CommandError(str(e), EXIT_USAGE) from e
+                probes.append(KrReadProbe(board, prg, defines["LEN"], dwell=args.dwell, log=log))
         if "noise" in names:
             screen = ns["screen"]
             probes.append(NoiseProbe(ns["video"], getattr(screen, "calib", None), probes[0], log=log))
         with contextlib.ExitStack() as stack:
+            settings = Settings(ns["screen"], ns["keys"], log=log)
             if any(isinstance(p, ReuLoopProbe) and not isinstance(p, CpuWatchProbe) for p in probes):
-                stack.enter_context(Settings(ns["screen"], ns["keys"], log=log).special_io(REU))
+                stack.enter_context(settings.special_io(REU))
+            if any(isinstance(p, KrReadProbe) for p in probes):
+                stack.enter_context(settings.kernal_file(MenuDriver(ns["screen"], ns["keys"], board),
+                                                         "SD:" + KRREAD_KERNAL))
+                stack.enter_context(settings.special_io(KERNAL_REPLACE))
+                stack.enter_context(ksense_mode(dbg, SKOE if knob.letter == "k" else DMA))
             margin = Sweep(dbg, knob, probes, spec, hold=args.hold, log=log).run()
         record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None))
         h.run_dir.write_json(margins.NAME, record, h.folder)
@@ -742,11 +766,13 @@ def build_parser() -> argparse.ArgumentParser:
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
     s.add_argument("--probe", choices=["idread", "menu", "zpattern", "reuloop", "reuloop-sprites", "cpuwatch",
-                                       "noise"], action="append",
+                                       "noise", "vicrom", "krread"], action="append",
                    help="idread (default), menu, zpattern (z###, needs Dbg_SerDMA), reuloop or reuloop-sprites (the "
                         "C64's REU loop; Special IO is set to the REU for the sweep and put back), cpuwatch (the "
-                        "C64's writes beside z###), noise (screen noise beside the first of the others); repeat "
-                        "it for several probes at each point")
+                        "C64's writes beside z###), noise (screen noise beside the first of the others), vicrom "
+                        "(an Ultimax cartridge's glyphs fetched in VIC cycles, by video), krread (Kernal Replace's "
+                        "HIRAM sense: the probe KERNAL, Special IO and KSenseMode are set for the sweep and put "
+                        "back); repeat it for several probes at each point")
     s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")
     s.add_argument("--golden-dir", help="menu probe: where the screen goldens live (default: tests/golden)")
     s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's default")
@@ -766,7 +792,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
     s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")
     s.add_argument("--dwell", type=float, default=1.0,
-                   help="idread and reuloop: seconds of counting per sample (default 1)")
+                   help="idread, reuloop, vicrom, krread: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep)
 
     s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, the map, floors for a station",

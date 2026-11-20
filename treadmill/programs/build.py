@@ -28,6 +28,8 @@ PROGRAMS = {
     "reuclient": ("reuclient.a", {}),
     "reuclient_sprites": ("reuclient.a", {"SPRITES": 1}),
     "cpuwatch": ("cpuwatch.a", {}),
+    # The stock KERNAL's filler run; the probe gives the machine's own (treadmill.probes.krread).
+    "krread": ("krread.a", {"MARK": 0xE4B7, "LEN": 28, "FILL": 0xAA, "PAT": 0x0F}),
 }
 # Code with no load address, written into a running machine by DMA: the source
 # sets its own origin, and ``origin`` is where the test writes it.
@@ -49,8 +51,11 @@ class Cartridge(NamedTuple):
 
 # An EasyFlash image's header names Ultimax mode and its ROMH chips load at $A000.
 CRT_EASYFLASH = 32
+CRT_NORMAL = 0
 CARTRIDGES = {
     "idread": Cartridge("idread.a", {}, CRT_EASYFLASH, "TREADMILL IDREAD", (0x8000, 0xA000), (1, 0)),
+    # An 8K Ultimax image (EXROM high, GAME low): the TeensyROM serves it with its VIC cycles on.
+    "vicrom": Cartridge("vicrom.a", {}, CRT_NORMAL, "TREADMILL VICROM", (0xE000,), (1, 0)),
 }
 # The sparse grid allcodes.a draws: cell i of page p shows code p * 228 + i.
 SPARSE_ROWS, SPARSE_COLS, SPARSE_CELLS = 12, 19, 228

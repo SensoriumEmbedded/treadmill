@@ -80,6 +80,11 @@ def fake_frame_source(fake):
         memptr, cia2 = fake.memory[VIC_MEMPTR], fake.memory[CIA2_PORT_A]
         address = screen_address(memptr, cia2)
         codes = np.frombuffer(bytes(fake.memory[address:address + SCREEN_BYTES]), np.uint8)
+        glitches = fake.vic_glitches()
+        if glitches:                             # a DMA drive in the VIC's half: stray cells, new each frame
+            rng = np.random.default_rng(next(seeds))
+            codes = codes.copy()
+            codes[rng.integers(0, SCREEN_BYTES, glitches)] = rng.integers(0, 256, glitches)
         charset = charset_in(memptr, cia2)
         if charset == CHARSET_CUSTOM:
             charset = CHARSET_UPPER_GRAPHICS

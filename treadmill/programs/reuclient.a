@@ -1,0 +1,124 @@
+; reuclient.a: the C64 side of the reuloop probe. IRQs off. The loop stashes a page
+; to the REU, fetches it back to another page and compares, counting rounds and
+; mismatches: the C64's own REU transfers, the first byte of which is what PR #99
+; tuned nS_DMASetup for. With -DSPRITES=1 all eight sprites are on, double height,
+; so their fetches take BA low on most display lines and the DMA has to wait for
+; them (nS_DMABAWait's edges). A CIA2 timer NMI, if a host starts it, stores to
+; $D418 for slices to lock to.
+;
+; Copied from TeensyROM's tools/bench/reuclient.a so the probe stays the same
+; whatever firmware is under test. MIT License, Copyright (c) 2023 Travis Smith.
+* = $0801
+!word next, 10
+!byte $9e
+!text "2064"
+!byte 0
+next !word 0
+
+ready  = $c104          ; $5A once set up
+rounds = $c110          ; 16 bits
+errors = $c112          ; 16 bits
+seed   = $c114
+source = $4000
+dest   = $5000
+
+reu_cmd  = $df01
+reu_c64  = $df02
+reu_reu  = $df04
+reu_len  = $df07
+stash    = $90          ; execute now, C64 to REU
+fetch    = $91          ; execute now, REU to C64
+
+* = $0810
+        sei
+        lda #$7f
+        sta $dc0d
+        sta $dd0d
+        lda $dc0d
+        lda $dd0d
+        lda #0
+        sta $d01a
+        sta rounds
+        sta rounds+1
+        sta errors
+        sta errors+1
+        sta seed
+        lda #<nmi
+        sta $0318
+        lda #>nmi
+        sta $0319
+!ifdef SPRITES {
+        ldx #7
+-       txa
+        asl
+        tay
+        lda #160
+        sta $d000,y
+        lda sprite_y,x
+        sta $d001,y
+        lda #$0d                ; any block: only the fetches matter
+        sta $07f8,x
+        dex
+        bpl -
+        lda #0
+        sta $d010
+        lda #$ff
+        sta $d017
+        sta $d015
+}
+        lda #$5a
+        sta ready
+
+loop    inc seed
+        ldx #0
+-       txa
+        eor seed
+        sta source,x
+        inx
+        bne -
+        lda #>source
+        ldy #stash
+        jsr transfer
+        lda #>dest
+        ldy #fetch
+        jsr transfer
+        ldx #0
+-       lda dest,x
+        cmp source,x
+        bne bad
+        inx
+        bne -
+        inc rounds
+        bne loop
+        inc rounds+1
+        jmp loop
+bad     inc errors
+        bne loop
+        inc errors+1
+        jmp loop
+
+; A = C64 page, Y = command. 256 bytes at REU address 0; every register is
+; written each time, since a transfer leaves them advanced.
+transfer
+        ldx #0
+        stx reu_c64
+        sta reu_c64+1
+        stx reu_reu
+        stx reu_reu+1
+        stx reu_reu+2
+        stx reu_len
+        inx
+        stx reu_len+1
+        sty reu_cmd
+        rts
+
+!ifdef SPRITES {
+sprite_y !byte 50, 92, 134, 176, 218, 71, 113, 155
+}
+
+nmi     pha
+        lda $dd0d
+        lda #$0f
+        sta $d418
+        pla
+        rti

@@ -48,6 +48,8 @@ KNOB_DEFAULTS = {k.letter: k.default("NTSC") for k in KNOBS.values()}
 IDREAD_RESULTS = 0xC000
 IDREAD_PASSES_PER_S = 1500.0
 IDREAD_WRONG_PER_NS = 0.02
+REU_ROUNDS_PER_S = 142.0          # the bench's rate: about 1,420 rounds in 10 s
+REU_NAMES = ("512KB REU", "REU+USB Mouse/Disk")
 # The built-in programs the manufacturing test launches, by the name ending their path.
 PROGRAMS = {"TeensyROM External Ports Test": ExtPorts, "TR+ C64 Expansion Port Test": ExpPort,
             "REU-Checker v1.0            +REU": ReuChecker}
@@ -56,6 +58,37 @@ HOT_KEYS = {2: "/Test+Diags/REU-Checker v1.0            +REU"}
 KERNAL_GETIN = (0xF13E).to_bytes(2, "little")     # IGETIN as RESTOR sets it
 LED_QUESTION_ROW = SCREEN_RAM_DEFAULT + LED_ROW * SCREEN_COLUMNS
 LED_QUESTION_MARK = codes_for_text("Y/N")
+
+
+@dataclass
+class C64Loop:
+    """reuclient.a's or cpuwatch.a's counters at $C110 (clean rounds, bad
+    rounds), advanced by the clock: every round of the REU client is bad
+    without an REU at Special IO, and a share of either's while the DMA
+    knobs are outside their windows."""
+    last: float
+    needs_reu: bool = True
+    rounds: float = 0.0
+    bad: float = 0.0
+    collapse_ns: int | None = None    # this far outside, the client crashes and counts nothing more
+    crashed: bool = False
+
+    def advance(self, now: float, reu: bool, dma_outside_ns: int) -> None:
+        reu = reu or not self.needs_reu
+        dt = max(0.0, now - self.last)
+        self.last = now
+        if self.collapse_ns is not None and dma_outside_ns > self.collapse_ns:
+            self.crashed = True
+        if self.crashed:
+            return
+        n = dt * REU_ROUNDS_PER_S
+        share = 1.0 if not reu else min(1.0, dma_outside_ns * IDREAD_WRONG_PER_NS)
+        self.bad += n * share
+        self.rounds += n * (1.0 - share)
+
+    def bytes(self) -> bytes:
+        good, bad = int(self.rounds) & 0xFFFF, int(self.bad) & 0xFFFF
+        return bytes([good & 0xFF, good >> 8, bad & 0xFF, bad >> 8])
 
 
 @dataclass
@@ -116,7 +149,16 @@ class FakeBoard:
     # The other CPU-cycle knobs, each with a window of its own: outside any of them a path's reads go
     # wrong too. nS_DataSetup latches the C64's writes, so it counts against IO (idread's IO2 page) only.
     knob_windows: dict = field(default_factory=lambda: {"s": (160, 330), "h": (330, 460), "m": (930, 1100)})
+    # The DMA knobs' windows: outside any of them the board's own DMA (z###, the REU) goes wrong. Wide
+    # for nS_DMADataHold and nS_DMADataSetup, so that nS_DMASetup with the sums held decides alone.
+    dma_windows: dict = field(default_factory=lambda: {"e": (380, 480), "w": (360, 520), "y": (300, 480),
+                                                       "a": (0, 300), "b": (100, 330)})
+    # Below this nS_DMASetup the DMA drives into the VIC's half of the cycle: stray cells on screen, a
+    # cell for every ns, before the data goes wrong at the window's edge (as PR #99's sweeps showed).
+    vic_noise_below: int = 400
     idread: IdRead | None = field(default=None, repr=False)
+    c64loop: C64Loop | None = field(default=None, repr=False)
+    special_io: str = "None"             # the Settings page's Special IO: what a launched PRG runs beside
     # The manufacturing test's side: the program running and what breaks it (fake_programs.py), the
     # board's power, and the serve loop held while a program services nothing (the External Ports wait).
     faults: dict = field(default_factory=dict)
@@ -157,6 +199,11 @@ class FakeBoard:
             return
         if path.lower().endswith("idread.crt"):
             self.idread = IdRead(time.monotonic())
+        name = path.lower().rpartition("/")[2]
+        if "reuloop" in name or "cpuwatch" in name:
+            self.c64loop = C64Loop(time.monotonic(), needs_reu="reuloop" in name,
+                                   collapse_ns=self.faults.get("reu_collapse_ns"))
+            self.memory[0xC104] = 0x5A
         if path.lower().endswith("hello.prg"):
             self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = b"\x20" * SCREEN_BYTES
             self.memory[0xD018] = 0x17
@@ -242,6 +289,7 @@ class FakeBoard:
             self.deaf = False
             self.heartbeat = False
             self.idread = None
+            self.c64loop = None
             self.booting_for = self.boot_polls
             self.cold_start()
             self.menu.reset()
@@ -303,11 +351,36 @@ class FakeBoard:
                 worst = max(worst, lo - self.knobs[letter], self.knobs[letter] - hi)
         return worst
 
+    def vic_glitches(self) -> int:
+        """How many screen cells the capture shows wrong in a frame."""
+        return max(0, self.vic_noise_below - self.knobs["e"])
+
+    def dma_outside(self) -> int:
+        """How far, in ns, the DMA knobs lie outside their windows; 0 inside all."""
+        return max(0, *(max(lo - self.knobs[k], self.knobs[k] - hi) for k, (lo, hi) in self.dma_windows.items()))
+
+    def _z_report(self, pages: int) -> str:
+        """z###'s serial report (StatusFunctions.c TestDMAPattern): the
+        control pattern stays clean, the other four go wrong outside the
+        DMA windows."""
+        k = self.knobs
+        total = pages * 256
+        bad = int(total * min(1.0, self.dma_outside() * IDREAD_WRONG_PER_NS))
+        lines = [f"\nDMA pattern test: DMADataHold={k['w']} DMADataSetup={k['y']} DMASetup={k['e']} "
+                 f"Passes={pages}\n  (overwrites C64 $c000-$c0ff)\n"]
+        for i, (head, prior) in enumerate((("$ff", "ff"), ("$ff", "00"), ("$00", "ff"), ("$00/$ff alt", "00"),
+                                           ("$55/$aa alt", "ff"))):
+            n = 0 if i == 0 else bad
+            lines.append(f"{head} over ${prior} @ $c000: {n} bad of {total} bytes" + ("  CLEAN\n" if n == 0 else "\n"))
+        return "".join(lines)
+
     def accrue(self) -> None:
-        """idread's counters up to now, at the knobs as they have been since
-        the last read or change."""
+        """idread's and the REU client's counters up to now, at the knobs as
+        they have been since the last read or change."""
         if self.idread is not None:
             self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
+        if self.c64loop is not None:
+            self.c64loop.advance(time.monotonic(), self.special_io in REU_NAMES, self.dma_outside())
 
     def serve(self, end: PipeEnd) -> None:
         self.end = end
@@ -388,6 +461,14 @@ class FakeBoard:
                 head = "No changes\n"
             listing = self._minimal_knob_listing() if self.image == "minimal" else self._knob_listing()
             end.write(("-----\n" + head + listing).encode("latin-1"))
+            return
+        if letter == "z":
+            digits = end.read(3, WAIT_S).decode("latin-1")
+            self.letters.append(f"z{digits}")
+            if self.faults.get("z_stall"):
+                end.write(b"\nDMA pattern test: ...\n\n  no pattern write on pass 3: C64 bus not clocking, or DMA timed out\n")
+            elif self.dma:
+                end.write(self._z_report(int(digits or 0) or 64).encode("latin-1"))
             return
         self.letters.append(letter)
         end.write(f"ok {letter}\n".encode("latin-1"))
@@ -504,6 +585,7 @@ class FakeBoard:
         self.busy = False
         self.heartbeat = False
         self.idread = None
+        self.c64loop = None
         with self.lock:
             self.program = None
             self.memory[0xD018] = 0x17
@@ -519,9 +601,11 @@ class FakeBoard:
             return
         address = self._number(end, 2)
         length = self._number(end, 2)
+        self.accrue()
         if self.idread is not None:
-            self.accrue()
             self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 8] = self.idread.bytes()
+        if self.c64loop is not None:
+            self.memory[0xC110:0xC114] = self.c64loop.bytes()
         if address == VIC_MEMPTR and self.key_on_screen_read:
             keys, self.key_on_screen_read = self.key_on_screen_read, ""
             self.type_keys(keys)

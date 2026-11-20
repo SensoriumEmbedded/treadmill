@@ -25,6 +25,9 @@ PROGRAMS = {
     "allcodes_lu0": ("allcodes.a", {"CHARSET": 1, "PAGE": 0}),
     "allcodes_lu1": ("allcodes.a", {"CHARSET": 1, "PAGE": 1}),
     "hello": ("hello.a", {}),
+    "reuclient": ("reuclient.a", {}),
+    "reuclient_sprites": ("reuclient.a", {"SPRITES": 1}),
+    "cpuwatch": ("cpuwatch.a", {}),
 }
 # Code with no load address, written into a running machine by DMA: the source
 # sets its own origin, and ``origin`` is where the test writes it.

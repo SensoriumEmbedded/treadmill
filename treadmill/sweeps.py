@@ -149,6 +149,7 @@ class SearchSpec:
     both: bool = False            # both edges, each to the knob's limit
     passes: int = 1
     scan: tuple[int, int] | None = None   # every step from LO to HI, no bisection
+    grid: tuple[int, int] | None = None   # with scan, for nS_DMASetup: nS_DMADataHold's range, a column a step
 
     def __post_init__(self) -> None:
         # The walk moves by step and the bisection ends at fine: at zero neither loop would end,
@@ -156,12 +157,24 @@ class SearchSpec:
         for name in ("step", "fine", "repeat", "passes"):
             if getattr(self, name) < 1:
                 raise usage_error(f"{name} must be at least 1, not {getattr(self, name)}")
-        if self.scan is not None and self.scan[0] > self.scan[1]:
-            raise usage_error(f"scan {self.scan[0]}:{self.scan[1]}: the low end comes first")
+        for name in ("scan", "grid"):
+            span = getattr(self, name)
+            if span is not None and span[0] > span[1]:
+                raise usage_error(f"{name} {span[0]}:{span[1]}: the low end comes first")
+        if self.grid is not None and self.scan is None:
+            raise usage_error("a grid's rows are a scan: give --scan LO:HI with --grid LO:HI")
 
     @property
     def mode(self) -> str:
+        if self.grid is not None:
+            return "grid"
         return "scan" if self.scan is not None else "both" if self.both else "one"
+
+
+def steps(low: int, high: int, step: int) -> list[int]:
+    """Every ``step`` from ``low``, and ``high`` itself."""
+    values = list(range(low, high + 1, step))
+    return values if values[-1] == high else values + [high]
 
 
 def search(probe_at: Callable[[int], Point], start: int, spec: SearchSpec, *,
@@ -267,6 +280,7 @@ class Margin:
     defaults: dict[str, int] = field(default_factory=dict)
     held: dict[str, int] | None = None                 # the sums held, by name (release, latch)
     limits: tuple[int, int] | None = None
+    probe_info: dict[str, dict] = field(default_factory=dict)   # what a probe keeps besides counts (baselines)
 
     @property
     def probe(self) -> str:
@@ -313,9 +327,10 @@ class Margin:
             "start": self.start, "defaults": self.defaults, "held": self.held,
             "limits": list(self.limits) if self.limits else None,
             "spec": {"stop": s.stop, "step": s.step, "fine": s.fine, "repeat": s.repeat,
-                     "scan": list(s.scan) if s.scan else None},
+                     "scan": list(s.scan) if s.scan else None, "grid": list(s.grid) if s.grid else None},
             "passes": s.passes, "restored": self.restored, "seconds": round(self.seconds, 1),
             "edges": {way: e.to_dict(self.default) for way, e in self.edges.items()},
+            "probe_info": self.probe_info,
             "points": [p.to_dict() for p in self.points],
         }
 
@@ -324,10 +339,13 @@ class Margin:
         how = {"one": f"from {self.start} toward {s.stop} by {s.step}, fine {s.fine}",
                "both": f"both ways from {self.start} by {s.step}, fine {s.fine}"
                        + (f", limits {self.limits[0]}..{self.limits[1]}" if self.limits else ""),
-               "scan": f"every {s.step} from {s.scan[0] if s.scan else ''} to {s.scan[1] if s.scan else ''}"}[self.mode]
+               "scan": f"every {s.step} from {s.scan[0] if s.scan else ''} to {s.scan[1] if s.scan else ''}",
+               "grid": f"rows {s.scan} by nS_DMADataHold {s.grid}, every {s.step}"}[self.mode]
         held = f", {' and '.join(f'{k} {v}' for k, v in self.held.items())} held" if self.held else ""
         lines = [f"{self.knob.name} ({self.probe}): {how}, {s.repeat} sample(s) a point, "
                  f"{s.passes} pass(es){held}"]
+        if self.mode == "grid":
+            return "\n".join(lines + self.grid_map())
         many = s.passes > 1
         for p in sorted(self.points, key=lambda p: (p.value, p.pass_no)):
             mark = "FAIL " if p.failed else "clean"
@@ -349,6 +367,24 @@ class Margin:
         if not self.restored:
             lines.append("DEFAULTS NOT RESTORED: the board still runs the last value")
         return "\n".join(lines)
+
+    def grid_map(self) -> list[str]:
+        """A grid as text: a row a nS_DMASetup value, a column a
+        nS_DMADataHold value; '.' clean in every pass, 'x' failed in one,
+        '!' the workload collapsed there, blank not probed."""
+        cells: dict[tuple[int, int], str] = {}
+        for p in self.points:
+            key = (p.value, p.held.get("w"))
+            mark = "!" if p.hung else "x" if p.failed else "."
+            if cells.get(key) in ("!", "x") and mark == ".":
+                continue
+            cells[key] = "!" if "!" in (mark, cells.get(key)) else mark
+        rows = sorted({e for e, _ in cells})
+        cols = sorted({w for _, w in cells})
+        lines = ["  nS_DMASetup \\ nS_DMADataHold " + " ".join(f"{w:3d}" for w in cols)]
+        for e in rows:
+            lines.append(f"  {e:5d}" + " " * 25 + " ".join(f"  {cells.get((e, w), ' ')}" for w in cols))
+        return lines
 
     @staticmethod
     def probe_list(edge: Edge) -> str:
@@ -389,6 +425,8 @@ class Sweep:
         self._now: dict[str, int] = {}
         if self.hold and knob.letter != "e":
             raise usage_error(f"only nS_DMASetup moves with sums held, not {knob.name}")
+        if spec.grid is not None and knob.letter != "e":
+            raise usage_error(f"a grid is nS_DMASetup by nS_DMADataHold, not {knob.name}")
         if knob.times_dma:
             resets = [p.name for p in self.probes if getattr(p, "resets", False)]
             if resets:
@@ -397,6 +435,12 @@ class Sweep:
 
     def current(self) -> int:
         return current_value(self.dbg, self.knob)
+
+    def ordered(self) -> list[Probe]:
+        """The probes in the order they are set up: the companions last,
+        since a companion's baseline runs the others' workload."""
+        return ([p for p in self.probes if not getattr(p, "companion", False)]
+                + [p for p in self.probes if getattr(p, "companion", False)])
 
     # -- the board's knobs -------------------------------------------------------------
 
@@ -430,19 +474,22 @@ class Sweep:
             if not m:
                 raise usage_error("td did not name the standard (MinimalBoot does not): give the sweep its standard")
             self.standard = standard_of(m.group(2), m.group(1))
-        if self.hold:
-            self.sums = {name: sum(self.defaults[l] for l in letters) for name, (letters, _) in HELD_SUMS.items()}
+        held = ["latch"] if self.spec.grid is not None else list(HELD_SUMS) if self.hold else []
+        if held:
+            # A grid moves nS_DMADataHold itself, so only the latch stays where the defaults put it.
+            self.sums = {name: sum(self.defaults[l] for l in HELD_SUMS[name][0]) for name in held}
         self.low, self.high = self._range()
 
     def setting_for(self, value: int) -> dict[str, int]:
         setting = {self.knob.letter: value}
-        if self.sums:
-            for name, (letters, _) in HELD_SUMS.items():
-                setting[letters[1]] = self.sums[name] - value
+        for name, total in (self.sums or {}).items():
+            setting[HELD_SUMS[name][0][1]] = total - value
         return setting
 
     def allowed(self, value: int) -> bool:
-        setting = self.setting_for(value)
+        return self.allowed_setting(self.setting_for(value))
+
+    def allowed_setting(self, setting: dict[str, int]) -> bool:
         for letter, v in setting.items():
             # Each knob's limits follow the others' values; its own counts at its default.
             at = {**self.defaults, **{other: x for other, x in setting.items() if other != letter}}
@@ -484,9 +531,9 @@ class Sweep:
 
     # -- points ------------------------------------------------------------------------
 
-    def probe_at(self, value: int, pass_no: int = 1) -> Point:
+    def probe_at(self, value: int, pass_no: int = 1, setting: dict[str, int] | None = None) -> Point:
         t0 = time.monotonic()
-        setting = self.setting_for(value)
+        setting = setting or self.setting_for(value)
         self.apply(setting)
         handle = Setting(self, setting, bracket=self.knob.readback_at_defaults)
         label = self.knob.format(value)[1:]
@@ -558,11 +605,33 @@ class Sweep:
             points += found
         return points
 
+    def _grid(self, pass_no: int) -> list[Point]:
+        """A row a nS_DMASetup value, a column a nS_DMADataHold value, the
+        latch held; rows run in turn up and down (and the other way round on
+        an even pass), and a row stops after two collapses in a row past its
+        clean cells. Cells past the limits are left out."""
+        latch = self.sums["latch"]
+        cols = steps(*self.spec.grid, self.spec.step)
+        points: list[Point] = []
+        for i, e in enumerate(steps(*self.spec.scan, self.spec.step)):
+            order = cols if (i + pass_no) % 2 else cols[::-1]
+            collapses, seen_clean = 0, False
+            for w in order:
+                setting = {"e": e, "w": w, "y": latch - e}
+                if not self.allowed_setting(setting):
+                    continue
+                point = self.probe_at(e, pass_no, setting)
+                points.append(point)
+                seen_clean = seen_clean or not point.failed
+                collapses = collapses + 1 if point.hung else 0
+                if collapses >= 2 and seen_clean:
+                    self.log(f"[sweep] two collapses in a row: row {e} of pass {pass_no} stops at {w}")
+                    break
+        return points
+
     def _scan(self, pass_no: int) -> list[Point]:
         low, high = self.spec.scan
-        values = list(range(low, high + 1, self.spec.step))
-        if values[-1] != high:
-            values.append(high)
+        values = steps(low, high, self.spec.step)
         if pass_no % 2 == 0:
             values.reverse()
         points: list[Point] = []
@@ -586,7 +655,7 @@ class Sweep:
         points: list[Point] = []
         started: list[Probe] = []
         try:
-            for probe in self.probes:
+            for probe in self.ordered():
                 probe.setup()
                 started.append(probe)
             points = [self.probe_at(value) for value in values]
@@ -609,6 +678,14 @@ class Sweep:
             if spec.stop is None:
                 spec = self.spec = replace(spec, stop=self.high)
             self.check(spec.stop, "the stop")
+        elif spec.mode == "grid":
+            self.check(spec.scan[0], "the grid's first row")
+            self.check(spec.scan[1], "the grid's last row")
+            latch = self.sums["latch"]
+            if not any(self.allowed_setting({"e": e, "w": w, "y": latch - e})
+                       for e in steps(*spec.scan, spec.step) for w in steps(*spec.grid, spec.step)):
+                raise usage_error(f"no cell of the grid {spec.scan} by nS_DMADataHold {spec.grid} is inside the "
+                                  f"limits")
         elif spec.mode == "scan":
             self.check(spec.scan[0], "the scan's low end")
             self.check(spec.scan[1], "the scan's high end")
@@ -619,7 +696,7 @@ class Sweep:
         restored = False
         started: list[Probe] = []
         try:
-            for probe in self.probes:
+            for probe in self.ordered():
                 probe.setup()
                 started.append(probe)
             if spec.mode == "one":
@@ -627,6 +704,9 @@ class Sweep:
             elif spec.mode == "both":
                 for n in range(1, spec.passes + 1):
                     points += self._both(start, n)
+            elif spec.mode == "grid":
+                for n in range(1, spec.passes + 1):
+                    points += self._grid(n)
             else:
                 for n in range(1, spec.passes + 1):
                     points += self._scan(n)
@@ -642,13 +722,17 @@ class Sweep:
         if spec.mode == "one":
             way = "up" if spec.stop >= start else "down"
             edges = {way: edge_of(points, start, way, spec.stop, spec.fine)}
+        elif spec.mode == "grid":
+            edges = {}                   # a grid is read as a map, not along one line
         else:
             origin = start if spec.mode == "both" else default
             low, high = (self.low, self.high) if spec.mode == "both" else spec.scan
             edges = {way: edge_of(points, origin, way, stop, spec.fine)
                      for way, stop in (("down", low), ("up", high)) if stop != origin}
+        info = {p.name: p.info() for p in self.probes if hasattr(p, "info")}
         margin = Margin(self.knob, [p.name for p in self.probes], default, start, spec, points, edges, restored,
-                        time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high))
+                        time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high),
+                        info)
         if not restored:
             raise SweepError("td not confirmed: the board is still running the last value\n" + margin.describe())
         return margin

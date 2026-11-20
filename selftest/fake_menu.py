@@ -15,13 +15,14 @@ import sys
 from pathlib import Path
 
 from treadmill.c64.keys import (
-    CRSR_DOWN, CRSR_LEFT, CRSR_RIGHT, CRSR_UP, F1, F3, F5, F6, HOME, RETURN, SPACE, UP_ARROW,
+    CRSR_DOWN, CRSR_LEFT, CRSR_RIGHT, CRSR_UP, F1, F3, F5, F6, F8, HOME, RETURN, SPACE, UP_ARROW,
 )
 from treadmill.c64.menu import (
     ANY_ROW, EMPTY, FIRST_ITEM_ROW, ITEMS_PER_PAGE, MARK_DIR, MARK_NONE, MARK_UNKNOWN, SCREEN_COLUMNS, UP_DIR,
     Entry, mark_for, render_listing, shown_name, shown_path,
 )
 from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
+from treadmill.c64.settings import NEXT_IO, SPECIAL_IO, SPECIAL_IO_LABEL
 from treadmill.observe.golden import save_golden
 
 _UP = Entry(UP_DIR, MARK_DIR)
@@ -117,6 +118,7 @@ class FakeMenu:
     def reset(self) -> None:
         self.source, self.path, self.page, self.cursor = "teensy", "/", 1, 0
         self.info_page = False
+        self.settings_page: int | None = None
         self.render()
 
     # -- what is listed ----------------------------------------------------------
@@ -136,6 +138,12 @@ class FakeMenu:
 
     def rows(self) -> list[str]:
         banner = self.board.version_string()
+        if self.settings_page is not None:
+            # Pg_TRSettings.asm's page 2 in miniature: Special IO's name at row 5 from column 19.
+            rows = [banner.center(SCREEN_COLUMNS), "", f" Settings page {self.settings_page}", "", ""]
+            rows.append(f" a/A {SPECIAL_IO_LABEL}".ljust(19) + self.board.special_io if self.settings_page == 2 else "")
+            rows += [""] * (24 - len(rows)) + [" Space: back to the main menu"]
+            return [r.ljust(SCREEN_COLUMNS)[:SCREEN_COLUMNS] for r in rows[:25]]
         if self.info_page:
             rows = [banner.center(SCREEN_COLUMNS), "", "SID Info Page:", "", " File Information for", "",
                     " This Machine: C64 NTSC 60Hz TOD"]
@@ -150,12 +158,13 @@ class FakeMenu:
 
     def render(self) -> None:
         codes = self._codes(self.rows())
-        if not self.info_page:
+        listing = not self.info_page and self.settings_page is None
+        if listing:
             row = FIRST_ITEM_ROW + self.cursor
             for i in range(row * SCREEN_COLUMNS, (row + 1) * SCREEN_COLUMNS):
                 codes[i] |= REVERSE_VIDEO
         frames = [codes]
-        if self.draw_by_item and not self.info_page:
+        if self.draw_by_item and listing:
             entries = self.page_entries()
             frames = [self._codes(render_listing(self.source, shown_path(self.path), entries[:k],
                                                  (self.page, self.pages()), clock="",
@@ -181,6 +190,20 @@ class FakeMenu:
     # -- keys ----------------------------------------------------------------------
 
     def key(self, code: int) -> None:
+        if self.settings_page is not None:
+            if code == SPACE:
+                self.settings_page = None
+            elif ord("1") <= code <= ord("4"):
+                self.settings_page = code - ord("0")
+            elif code == NEXT_IO and self.settings_page == 2:
+                i = SPECIAL_IO.index(self.board.special_io)
+                self.board.special_io = SPECIAL_IO[(i + 1) % len(SPECIAL_IO)]
+            self.render()
+            return
+        if not self.info_page and code == F8:
+            self.settings_page = 1
+            self.render()
+            return
         if not self.info_page and HOT_KEY_FIRST <= code <= HOT_KEY_LAST:
             self.board.hot_key(code - HOT_KEY_FIRST + 1)      # the launched program draws its own screen
             return

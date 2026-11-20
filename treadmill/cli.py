@@ -17,6 +17,7 @@ new TR+ boards, the one command that prompts an operator. ``matrix``,
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -162,34 +163,40 @@ def cmd_shell(args: argparse.Namespace) -> int:
         return shell(h)
 
 
-def _scan_range(text: str) -> tuple[int, int]:
+def _scan_range(text: str, flag: str = "--scan") -> tuple[int, int]:
     low, sep, high = text.partition(":")
     try:
         if sep:
             return int(low), int(high)
     except ValueError:
         pass
-    raise CommandError(f"--scan {text!r}: give the range as LO:HI", EXIT_USAGE)
+    raise CommandError(f"{flag} {text!r}: give the range as LO:HI", EXIT_USAGE)
 
 
 def cmd_sweep(args: argparse.Namespace) -> int:
     """Walk one timing knob until a probe fails, bisect the edge (one way, or
     both), or scan a range; restore the defaults; record the margin."""
     from treadmill import margins
+    from treadmill.c64.settings import REU, Settings
     from treadmill.driver import Harness
     from treadmill.observe.golden import Golden
     from treadmill.probes import IdReadProbe, MenuProbe
+    from treadmill.probes.cpuwatch import CpuWatchProbe
+    from treadmill.probes.noise import NoiseProbe
+    from treadmill.probes.reuloop import ReuLoopProbe
+    from treadmill.probes.zpattern import ZPatternProbe
     from treadmill.programs.build import AssembleError, assemble
     from treadmill.station.config import repo_root
     from treadmill.sweeps import SearchSpec, Sweep, SweepError, knob_named
 
     scan = _scan_range(args.scan) if args.scan else None
+    grid = _scan_range(args.grid, "--grid") if args.grid else None
     if sum((args.to is not None, args.both, scan is not None)) > 1:
         raise CommandError("give one of --to, --both and --scan", EXIT_USAGE)
     try:
         knob = knob_named(args.knob)
         spec = SearchSpec(stop=args.to, start=args.start, step=args.step, fine=args.fine, repeat=args.repeat,
-                          both=args.both, passes=args.passes, scan=scan)
+                          both=args.both, passes=args.passes, scan=scan, grid=grid)
     except SweepError as e:
         raise CommandError(str(e), EXIT_USAGE) from e
     log = _log_for(args)
@@ -200,19 +207,40 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             raise CommandError(f"the flashed build lacks {knob.define}: build with --fw ... --define {knob.define}, "
                                f"or name the defines a build flashed by other means carries with --fw-defines",
                                EXIT_USAGE)
+        names = list(dict.fromkeys(args.probe or ["idread"]))
+        if names == ["noise"]:
+            raise CommandError("the noise probe runs beside another: add --probe idread, zpattern, reuloop, "
+                               "reuloop-sprites or cpuwatch", EXIT_USAGE)
+
+        def program(name: str):
+            try:
+                return assemble(name, primary=h.firmware.primary if h.firmware else None)
+            except AssembleError as e:
+                raise CommandError(str(e), EXIT_USAGE) from e
+
         probes = []
-        for name in dict.fromkeys(args.probe or ["idread"]):
+        for name in names:
             if name == "idread":
-                try:
-                    program = assemble("idread", primary=h.firmware.primary if h.firmware else None)
-                except AssembleError as e:
-                    raise CommandError(str(e), EXIT_USAGE) from e
-                probes.append(IdReadProbe(board, program, dwell=args.dwell, log=log))
-            else:
+                probes.append(IdReadProbe(board, program("idread"), dwell=args.dwell, log=log))
+            elif name == "menu":
                 golden_dir = Path(args.golden_dir) if args.golden_dir else repo_root() / "tests" / "golden"
                 probes.append(MenuProbe(board, ns["screen"], Golden.load(golden_dir / "menu" / "root.screen.txt"),
                                         h.folder))
-        margin = Sweep(dbg, knob, probes, spec, hold=args.hold, log=log).run()
+            elif name == "zpattern":
+                probes.append(ZPatternProbe(board, dbg, pages=args.z_pages, log=log))
+            elif name in ("reuloop", "reuloop-sprites"):
+                sprites = name == "reuloop-sprites"
+                probes.append(ReuLoopProbe(board, program("reuclient_sprites" if sprites else "reuclient"),
+                                           dwell=args.dwell, sprites=sprites, log=log))
+            elif name == "cpuwatch":
+                probes.append(CpuWatchProbe(board, dbg, program("cpuwatch"), pages=args.z_pages, log=log))
+        if "noise" in names:
+            screen = ns["screen"]
+            probes.append(NoiseProbe(ns["video"], getattr(screen, "calib", None), probes[0], log=log))
+        with contextlib.ExitStack() as stack:
+            if any(isinstance(p, ReuLoopProbe) and not isinstance(p, CpuWatchProbe) for p in probes):
+                stack.enter_context(Settings(ns["screen"], ns["keys"], log=log).special_io(REU))
+            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, log=log).run()
         record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None))
         h.run_dir.write_json(margins.NAME, record, h.folder)
         payload = {**record, "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
@@ -221,10 +249,29 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 def cmd_margins(args: argparse.Namespace) -> int:
-    """The margin records under a reports folder: a table, CSV, or the
-    floors a station's runs support."""
+    """The margin records under a reports folder: a table, CSV, the map, the
+    floors a station's runs support; or records made from PR #99 runs."""
     from treadmill import knobs, margins
+    from treadmill.report import margin_map
 
+    if args.what == "import":
+        if not args.runs:
+            raise CommandError("import needs the run folders of scripts/2026-11-12-dmasetup-sweep.py", EXIT_USAGE)
+        written = []
+        for run in args.runs:
+            try:
+                records = margins.import_pr99(Path(run))
+            except (OSError, ValueError) as e:
+                raise CommandError(str(e), EXIT_USAGE) from e
+            for r in records:
+                path = margins.write(Path(run) / f"import-{r['probes'][0]}", r)
+                written.append({"path": str(path), "label": margin_map.label(r),
+                                "edges": {w: (e["clean_to"], e["first_fail"]) for w, e in r["edges"].items()}})
+        _emit({"written": written}, args.json,
+              "\n".join(f"{w['label']}: {w['edges']} -> {w['path']}" for w in written))
+        return EXIT_OK
+    if args.runs:
+        raise CommandError(f"{args.what} takes no run folders; only import does", EXIT_USAGE)
     records = margins.load(Path(args.reports))
     if args.station:
         records = [r for r in records if r.get("station") == args.station]
@@ -238,6 +285,20 @@ def cmd_margins(args: argparse.Namespace) -> int:
         _emit({"records": margins.rows(records)}, args.json, margins.table(records))
     elif args.what == "csv":
         _emit({"records": margins.rows(records)}, args.json, margins.to_csv(records).rstrip("\n"))
+    elif args.what == "map":
+        marks: dict[str, list[int]] = {}
+        for text in args.mark or []:
+            name, sep, value = text.partition("=")
+            try:
+                marks.setdefault(knobs.knob_named(name).name, []).append(int(value))
+            except (KeyError, ValueError):
+                raise CommandError(f"--mark {text!r}: give KNOB=VALUE, as nS_DMASetup=414", EXIT_USAGE) from None
+        if args.mermaid:
+            text = margin_map.mermaid(records, marks)
+            _emit({"mermaid": text}, args.json, text.rstrip("\n") or "no margin records")
+        else:
+            out = margin_map.render(records, Path(args.out or Path(args.reports) / "margin-map.html"), marks)
+            _emit({"map": str(out), "records": len(records)}, args.json, f"{len(records)} record(s): {out}")
     else:
         if not args.station:
             raise CommandError("suggest needs --station: floors are per station", EXIT_USAGE)
@@ -680,13 +741,21 @@ def build_parser() -> argparse.ArgumentParser:
     _station_args(s)
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
-    s.add_argument("--probe", choices=["idread", "menu"], action="append",
-                   help="idread (default) or menu; repeat it for several probes at each point")
+    s.add_argument("--probe", choices=["idread", "menu", "zpattern", "reuloop", "reuloop-sprites", "cpuwatch",
+                                       "noise"], action="append",
+                   help="idread (default), menu, zpattern (z###, needs Dbg_SerDMA), reuloop or reuloop-sprites (the "
+                        "C64's REU loop; Special IO is set to the REU for the sweep and put back), cpuwatch (the "
+                        "C64's writes beside z###), noise (screen noise beside the first of the others); repeat "
+                        "it for several probes at each point")
+    s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")
     s.add_argument("--golden-dir", help="menu probe: where the screen goldens live (default: tests/golden)")
     s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's default")
     s.add_argument("--to", type=int, help="one edge: the last value to try; default: the knob's upper limit")
     s.add_argument("--both", action="store_true", help="both edges, each to the knob's limit")
     s.add_argument("--scan", metavar="LO:HI", help="every --step from LO to HI, no bisection; takes in the default")
+    s.add_argument("--grid", metavar="LO:HI",
+                   help="nS_DMASetup only, with --scan for its rows: nS_DMADataHold from LO to HI as the columns, "
+                        "the latch held; a map, not edges")
     s.add_argument("--passes", type=int, default=1, help="repeat the search or scan, alternating order (default 1)")
     hold = s.add_mutually_exclusive_group()
     hold.add_argument("--hold", dest="hold", action="store_const", const=True, default=None,
@@ -696,19 +765,29 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--step", type=int, default=10, help="the coarse step (default 10)")
     s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
     s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")
-    s.add_argument("--dwell", type=float, default=1.0, help="idread: seconds of counting per sample (default 1)")
+    s.add_argument("--dwell", type=float, default=1.0,
+                   help="idread and reuloop: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep)
 
-    s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, or floors for a station",
+    s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, the map, floors for a station",
                        description="Reads every margins.json under --reports. table: one line a record, the clean "
-                                   "window and where each side fails; csv: the same as CSV; suggest: the [margins] "
-                                   "floors a station's last --last records of each knob support, one coarse step "
-                                   "inside the worst edge each way, never past the default, to copy into its file.")
-    s.add_argument("what", choices=["table", "csv", "suggest"])
+                                   "window and where each side fails; csv: the same as CSV; map: an HTML chart per "
+                                   "knob, a row per record, its clean window as a bar and every value probed "
+                                   "beneath it (--mermaid: a gantt block per knob for a PR instead); suggest: the "
+                                   "[margins] floors a station's last --last records of each knob support, one "
+                                   "coarse step inside the worst edge each way, never past the default, to copy "
+                                   "into its file; import RUN...: records from runs of "
+                                   "scripts/2026-11-12-dmasetup-sweep.py, written beside each run.")
+    s.add_argument("what", choices=["table", "csv", "map", "suggest", "import"])
+    s.add_argument("runs", nargs="*", help="import: the run folders")
     s.add_argument("--reports", default="reports", help="where run folders are (default: reports/)")
     s.add_argument("--station", help="only this station's records (suggest needs it)")
     s.add_argument("--knob", help="only this knob's records")
     s.add_argument("--last", type=int, default=5, help="suggest: the records per knob it weighs (default 5)")
+    s.add_argument("--mark", action="append", metavar="KNOB=VALUE",
+                   help="map: a value under review, drawn across the knob's chart (repeatable)")
+    s.add_argument("--mermaid", action="store_true", help="map: print Mermaid gantt blocks instead of the HTML")
+    s.add_argument("--out", help="map: the HTML file (default: <reports>/margin-map.html)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_margins)
 

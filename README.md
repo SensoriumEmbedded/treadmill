@@ -311,6 +311,27 @@ hang on DMA right after a reset), so the `menu` probe is refused for those
 knobs. `--repeat N` takes several samples a point, so an intermittent edge is
 a rate, not a coin toss.
 
+The DMA knobs have probes of their own, all needing a TR+ and DMA:
+`zpattern` runs the firmware's `z###` pattern test (`--z-pages`, a build with
+`Dbg_SerDMA`): host DMA writes and reads at $C000, five patterns, every bit
+swinging both ways. `reuloop` launches `reuclient.a`, which stashes a page to
+the REU and fetches it back in a loop, counting bad rounds: the C64's own
+transfers. It needs Special IO at the REU, so the sweep sets it through the
+Settings page by keys and puts it back after (`treadmill/c64/settings.py`).
+`reuloop-sprites` turns all eight sprites on as well, so the DMA has to wait
+for BA (`nS_DMABAWait`'s edges). `cpuwatch` launches `cpuwatch.a`, which
+writes and checks a page of its own while `z###` starts and stops DMA beside
+it: a `/DMA` asserted late (`nS_DMAAssert`) spoils the CPU's own write.
+`noise` runs beside the first of the others and counts the pixels inside the
+text area that change by more than 48 levels between frames: a DMA drive in
+the VIC's half of the cycle shows on screen 30-50 ns before any count goes
+wrong. A point fails when the worst frame pair is three times the baseline,
+and at least 100 pixels above it; the baseline is one sample of the other
+probe at the defaults, before the first point and again after the last.
+`--grid LO:HI` with `--scan LO:HI` maps `nS_DMASetup` (the rows) by
+`nS_DMADataHold` (the columns) with the latch held, rows running up and down
+in turn, as a map rather than edges (backlog 23).
+
 `nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
 reads fail before ROM reads, since the board drives them only after a call
 into the IO handler; lowered, the select lines are sampled before the
@@ -332,6 +353,18 @@ each way and never past the default, to copy into its file. A test compares
 each edge with the newest earlier record of the same station, knob, edge and
 probes on another build: a shrink of more than twice `--fine` (10 ns at
 least) is a warning, not a failure, since machines drift.
+
+`treadmill margins map` draws every record as `<reports>/margin-map.html`: a
+chart per knob, a row per record labelled by machine model, registry id,
+standard, board, probes and build, the clean window as a bar, the first
+failing values as red ticks, the default across the bar, `--mark
+nS_DMASetup=414` for a value under review, and under each row a cell for
+every value probed, per pass and probe; a grid is a heatmap. `--mermaid`
+prints the same windows as a Mermaid gantt block per knob, for a PR.
+`treadmill margins import <run>...` turns runs of
+`scripts/2026-11-12-dmasetup-sweep.py` into records beside each run, the
+screen noise judged as the `noise` probe judges it, so PR #99's sweeps are
+on the map with the rest.
 
 ## Manufacturing test
 

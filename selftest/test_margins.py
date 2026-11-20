@@ -1,9 +1,11 @@
 """Margin records without hardware: floors per direction, the shrink check
 against an earlier build, the floors a station's runs suggest, the table and
-the CSV."""
+the CSV, PR #99's runs imported, the map and its Mermaid export."""
 
 import json
 from pathlib import Path
+
+import pytest
 
 from treadmill import margins
 from treadmill.margins import Floor
@@ -66,3 +68,72 @@ def test_records_round_trip_and_tabulate(tmp_path: Path):
     lines = margins.to_csv(loaded).splitlines()
     assert lines[0].startswith("when,station") and len(lines) == 3
     assert margins.table([]) == "no margin records"
+
+
+PR99_TEXT = """defaults {'e': 430, 'w': 424, 'y': 404} sums [854, 834] baseline noise {'pairs': 10, 'median': 0, 'max': 5}
+z   {'e': 380, 'w': 474, 'y': 454, 'bad': 0, 'bytes': 1000, 'prefill_bad': 0, 'noise': {'pairs': 9, 'median': 9, 'max': 300000}}
+z   {'e': 400, 'w': 454, 'y': 434, 'bad': 0, 'bytes': 1000, 'prefill_bad': 0, 'noise': {'pairs': 9, 'median': 9, 'max': 3000}}
+z   {'e': 430, 'w': 424, 'y': 404, 'bad': 0, 'bytes': 1000, 'prefill_bad': 0, 'noise': {'pairs': 9, 'median': 9, 'max': 3500}}
+z   {'e': 460, 'w': 394, 'y': 374, 'bad': 0, 'bytes': 1000, 'prefill_bad': 0, 'noise': {'pairs': 9, 'median': 9, 'max': 3000}}
+z   {'e': 480, 'w': 374, 'y': 354, 'bad': 12, 'bytes': 1000, 'prefill_bad': 3, 'noise': {'pairs': 9, 'median': 9, 'max': 3200}}
+reu {'e': 400, 'rounds': 140, 'bad_pages': 0, 'noise': {'pairs': 9, 'median': 0, 'max': 5}}
+reu {'e': 430, 'rounds': 140, 'bad_pages': 0, 'noise': {'pairs': 9, 'median': 0, 'max': 5}}
+"""
+
+
+def _pr99_run(tmp_path: Path) -> Path:
+    run = tmp_path / "20261112-134944"
+    (run / "exec-2026-11-12-dmasetup-sweep").mkdir(parents=True)
+    (run / "exec-2026-11-12-dmasetup-sweep" / "dmasetup-sweep.txt").write_text(PR99_TEXT, encoding="utf-8")
+    meta = {"started": "2026-11-12T13:49:44",
+            "station": {"id": "st", "machine": "002b", "model": "C64", "tr_kind": "tr-plus"},
+            "board": {"image": "main", "version": "TeensyROM+ v0.9-dma.tim*", "tag": "dma.tim", "dirty": True,
+                      "machine_line": "C64 NTSC 60"},
+            "firmware": {"commit": "44960c417a0494f419efa5100ae13f837a725a0a", "dirty": False,
+                         "defines": ["Dbg_SerTimChg", "Dbg_SerDMA"]}}
+    (run / "run.json").write_text(json.dumps(meta), encoding="utf-8")
+    return run
+
+
+def test_a_pr99_run_imports_with_its_noise_judged_as_the_probe_judges_it(tmp_path: Path):
+    z, reu = margins.import_pr99(_pr99_run(tmp_path))
+    assert z["probes"] == ["zpattern", "noise"] and reu["probes"] == ["reuloop", "noise"]
+    assert (z["edges"]["down"]["clean_to"], z["edges"]["down"]["first_fail"]) == (400, 380)
+    assert z["edges"]["down"]["probes"] == ["noise"], "the picture breaks first; the data stayed clean at 380"
+    assert (z["edges"]["up"]["clean_to"], z["edges"]["up"]["first_fail"]) == (460, 480)
+    assert z["held"] == {"release": 854, "latch": 834} and z["machine"]["standard"] == "NTSC"
+    assert z["probe_info"]["noise"]["baseline"] == 3500 and z["points"][-1]["by_probe"]["zpattern"] == [15, 2000]
+    assert margins.build_id(z) == "44960c417a0494f419efa5100ae13f837a725a0a*", "a define-patched build is dirty"
+    with pytest.raises(ValueError):
+        margins.import_pr99(tmp_path)
+
+
+def test_the_map_and_the_mermaid_export(tmp_path: Path):
+    from treadmill.report import margin_map
+    z, reu = margins.import_pr99(_pr99_run(tmp_path))
+    grid = {**z, "mode": "grid", "edges": {}, "points": [
+        {"pass": 1, "value": e, "failures": int(w > 450), "samples": 1, "hung": False, "held": {"w": w, "y": 834 - e},
+         "by_probe": {}, "notes": []} for e in (400, 420) for w in (430, 460)]}
+    out = margin_map.render([z, reu, grid], tmp_path / "map.html", {"nS_DMASetup": [414]})
+    page = out.read_text(encoding="utf-8")
+    assert "nS_DMASetup (ns)" in page and "C64 002b NTSC, tr-plus, zpattern+noise, 44960c41*" in page
+    assert "under review: 414" in page and "nS_DMASetup grid" in page and "400 x 460: 1/1 failed" in page
+    text = margin_map.mermaid([z, reu], {"nS_DMASetup": [414]})
+    assert "dateFormat X" in text and "zpattern+noise 44960c41* 400-460 :400, 460" in text
+    assert "under review 414 :milestone, 414, 0s" in text and "section C64 002b NTSC" in text
+    assert margin_map.render([], tmp_path / "none.html").read_text(encoding="utf-8").count("No margin records") == 1
+
+
+def test_margins_import_and_map_commands(tmp_path: Path, capsys):
+    from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+    run = _pr99_run(tmp_path)
+    assert main(["margins", "import", str(run), "--json"]) == EXIT_OK
+    written = json.loads(capsys.readouterr().out)["written"]
+    assert [Path(w["path"]).parent.name for w in written] == ["import-zpattern", "import-reuloop"]
+    assert main(["margins", "map", "--reports", str(tmp_path), "--mermaid"]) == EXIT_OK
+    assert "400-460" in capsys.readouterr().out
+    assert main(["margins", "map", "--reports", str(tmp_path), "--mark", "e=414"]) == EXIT_OK
+    assert (tmp_path / "margin-map.html").is_file()
+    assert main(["margins", "map", "--reports", str(tmp_path), "--mark", "e414", "--json"]) == EXIT_USAGE
+    assert main(["margins", "table", str(run), "--json"]) == EXIT_USAGE
+    assert main(["margins", "import", "--json"]) == EXIT_USAGE

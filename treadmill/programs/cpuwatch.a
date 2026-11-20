@@ -1,0 +1,60 @@
+; cpuwatch.a: the C64 side of the cpuwatch probe. IRQs off. The loop writes a page
+; at $4000 from a running seed, reads it back, and counts the pass as bad at the
+; first byte that came out wrong. A host runs z### beside it, so DMA starts and
+; stops all through the loop: a /DMA asserted late (nS_DMAAssert) lands in
+; the CPU's own cycle, and the write it was doing goes wrong. The counters sit
+; above $C0FF, which z### overwrites: ready at $C104 ($5A once running), clean
+; passes at $C110 and passes with a wrong byte at $C112, 16 bits each, as
+; reuclient.a keeps its rounds.
+* = $0801
+!word next, 10
+!byte $9e
+!text "2064"
+!byte 0
+next !word 0
+
+ready  = $c104
+passes = $c110
+bad    = $c112
+seed   = $c114
+page   = $4000
+
+* = $0810
+        sei
+        lda #$7f
+        sta $dc0d
+        sta $dd0d
+        lda $dc0d
+        lda $dd0d
+        lda #0
+        sta $d01a
+        sta passes
+        sta passes+1
+        sta bad
+        sta bad+1
+        sta seed
+        lda #$5a
+        sta ready
+
+loop    inc seed
+        ldx #0
+-       txa
+        eor seed
+        sta page,x
+        inx
+        bne -
+        ldx #0
+-       txa
+        eor seed
+        cmp page,x
+        bne wrong
+        inx
+        bne -
+        inc passes
+        bne loop
+        inc passes+1
+        jmp loop
+wrong   inc bad
+        bne loop
+        inc bad+1
+        jmp loop

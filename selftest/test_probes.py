@@ -1,0 +1,209 @@
+"""The DMA-path probes on the fake board: the firmware's z### pattern test,
+the C64's own REU loop with the Settings page that turns the REU on, the
+C64's own writes beside z###, screen noise beside a workload, and what each
+makes of a stall or a crash."""
+
+import time
+from pathlib import Path
+
+import pytest
+
+import treadmill.link.dbgcmds as dbgcmds
+from selftest.fake_board import KNOB_DEFAULTS, start_fake_board
+from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
+from treadmill.board import Board
+from treadmill.c64.keys import KernalKeys
+from treadmill.c64.settings import REU, Settings, SettingsError
+from treadmill.link import DebugCommands, Link
+from treadmill.observe.channels import ScreenChannel
+from treadmill.probes.cpuwatch import CpuWatchProbe
+from treadmill.probes.noise import NoiseProbe
+from treadmill.probes.reuloop import ReuLoopProbe
+from treadmill.probes.zpattern import ZPatternProbe
+from treadmill.station import load_station
+from treadmill.sweeps import KNOBS, Sample, SearchSpec, Sweep, SweepError
+
+DEFINES = {"Dbg_SerTimChg", "Dbg_SerDMA"}
+
+
+@pytest.fixture
+def fake_station(lab, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(dbgcmds, "TEXT_REPLY", (3.0, 0.05, 20.0))
+    monkeypatch.setattr(dbgcmds, "LONG_REPLY_GAP_S", 0.2)
+    fake, stream = start_fake_board(debug_defines=set(DEFINES))
+    board = Board.open(load_station("s1"), link_factory=lambda: Link(stream), fw_defines=tuple(DEFINES))
+    try:
+        yield fake, board, DebugCommands(board.link, DEFINES)
+    finally:
+        board.close()
+
+
+def test_zpattern_finds_the_dmasetup_window_with_the_sums_held(fake_station):
+    fake, board, dbg = fake_station
+    probe = ZPatternProbe(board, dbg, pages=4, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (380, 375, 480, 485)
+    assert up.probes == ["zpattern"] and fake.letters.count("z004") == len(margin.points)
+    bad = next(p for p in margin.points if p.failed)
+    assert bad.samples == 2 * 5 * 4 * 256 and "pre-fill 0" in bad.notes[0] and "$ff over $ff" not in bad.notes[0]
+    assert fake.knobs == KNOB_DEFAULTS and margin.restored
+    assert fake.letters[-1] == "td", "the defaults come back before the reset to the menu"
+
+
+def test_zpattern_counts_a_stall_as_a_hang(fake_station):
+    fake, board, dbg = fake_station
+    fake.faults["z_stall"] = True
+    got = ZPatternProbe(board, dbg, pages=4).sample("e430")
+    assert got.hung and got.failures == 1 and "no pattern write on pass 3" in got.note
+
+
+def test_zpattern_needs_its_define_and_a_sane_page_count(fake_station):
+    fake, board, dbg = fake_station
+    with pytest.raises(SweepError) as e:
+        ZPatternProbe(board, DebugCommands(board.link, {"Dbg_SerTimChg"})).setup()
+    assert "Dbg_SerDMA" in str(e.value)
+    with pytest.raises(SweepError):
+        ZPatternProbe(board, dbg, pages=1000)
+
+
+def _settings(board) -> Settings:
+    screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)
+    return Settings(screen, KernalKeys(board), timeout=10.0, log=lambda m: None)
+
+
+def test_the_settings_page_sets_special_io_and_puts_it_back(fake_station):
+    fake, board, dbg = fake_station
+    settings = _settings(board)
+    assert settings.special_io_now() == "None"
+    with settings.special_io(REU) as was:
+        assert was == "None" and fake.special_io == REU
+        assert fake.menu.settings_page is None, "back at the menu inside the block"
+    assert fake.special_io == "None" and fake.menu.settings_page is None
+    with pytest.raises(SettingsError):
+        settings.set_special_io("Turbo Chameleon")
+
+
+def _reu_program(tmp_path: Path) -> Path:
+    prg = tmp_path / "reuloop.prg"
+    prg.write_bytes(bytes([0x01, 0x08]) + bytes(16))           # the fake runs the name, not the bytes
+    return prg
+
+
+def test_reuloop_finds_the_dmasetup_window_reading_back_at_the_defaults(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    fake.special_io = REU
+    probe = ReuLoopProbe(board, _reu_program(tmp_path), dwell=0.5, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (380, 375, 480, 485)
+    bad = next(p for p in margin.points if p.failed)
+    assert bad.samples > 20 and "bad of" in bad.notes[0]
+    assert fake.c64loop is None and margin.restored, "the C64 is reset to the menu after the sweep"
+
+
+def test_reuloop_wants_an_reu_at_special_io(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    with pytest.raises(SweepError) as e:
+        ReuLoopProbe(board, _reu_program(tmp_path), log=lambda m: None).setup()
+    assert "is Special IO set to an REU" in str(e.value)
+
+
+def test_a_crashed_reu_client_is_relaunched_at_the_defaults(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    fake.special_io = REU
+    fake.faults["reu_collapse_ns"] = 40
+    probe = ReuLoopProbe(board, _reu_program(tmp_path), dwell=0.3, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(scan=(330, 430), step=20), log=lambda m: None).run()
+    first, second = margin.points[0], margin.points[1]
+    assert (first.value, first.hung) == (330, True) and "stopped" in first.notes[0]
+    assert (second.value, second.hung, second.failed) == (350, False, True), "relaunched, then counting again"
+    assert [p.failed for p in margin.points[3:]] == [False, False, False]
+    assert margin.edges["down"].clean_to == 390 and margin.restored
+
+
+class _Workload:
+    """A probe that only takes time, clean, for a companion to run beside."""
+
+    name = "workload"
+
+    def setup(self) -> None:
+        pass
+
+    def sample(self, label: str, setting=None) -> Sample:
+        time.sleep(0.3)
+        return Sample(0, 1)
+
+    def teardown(self) -> None:
+        pass
+
+
+def test_noise_finds_the_edge_the_picture_shows_first(fake_station):
+    fake, board, dbg = fake_station
+    from selftest.synth import calibrated, fake_frame_source
+    work = _Workload()
+    noise = NoiseProbe(fake_frame_source(fake), calibrated(), work, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["e"], [noise, work], SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, down.probes) == (400, 395, ["noise"])
+    assert (up.clean_to, up.first_fail) == (520, None)
+    info = margin.probe_info["noise"]
+    assert info["baseline"] is not None and info["closing_baseline"] is not None and info["limit"] >= 100
+    bad = next(p for p in margin.points if p.failed)
+    assert bad.by_probe["workload"] == [0, 1] and "over the limit" in bad.notes[0]
+
+
+def test_noise_needs_the_picture(fake_station):
+    fake, board, dbg = fake_station
+    with pytest.raises(SweepError) as e:
+        NoiseProbe(None, None, _Workload()).setup()
+    assert "video" in str(e.value)
+
+
+def test_cpuwatch_finds_where_a_late_dma_assert_breaks_the_c64_s_writes(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    prg = tmp_path / "cpuwatch.prg"
+    prg.write_bytes(bytes([0x01, 0x08]) + bytes(16))
+    probe = CpuWatchProbe(board, dbg, prg, pages=4, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["a"], probe, SearchSpec(stop=420, step=40, fine=10), log=lambda m: None).run()
+    assert (margin.last_clean, margin.first_fail) == (300, 310)
+    assert fake.letters.count("z004") >= len(margin.points), "a z### for every sample"
+    with pytest.raises(SweepError) as e:
+        CpuWatchProbe(board, DebugCommands(board.link, {"Dbg_SerTimChg"}), prg).setup()
+    assert "Dbg_SerDMA" in str(e.value)
+
+
+def test_sweep_command_with_the_dma_probes(lab: Path, capsys):  # noqa: F811
+    from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+    import json
+    base = ["sweep", "e", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines",
+            "Dbg_SerTimChg,Dbg_SerDMA", "--json"]
+    code = main(base + ["--probe", "zpattern", "--z-pages", "4", "--both", "--step", "20", "--fine", "5"])
+    out, err = capsys.readouterr()
+    assert code == EXIT_OK, err
+    payload = json.loads(out)
+    assert payload["probes"] == ["zpattern"] and payload["held"] == {"release": 854, "latch": 834}
+    assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (380, 480)
+    assert main(base + ["--probe", "noise"]) == EXIT_USAGE
+    assert "runs beside another" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_a_grid_maps_dmasetup_by_dmadatahold_with_the_latch_held(fake_station):
+    fake, board, dbg = fake_station
+    fake.dma_windows["w"] = (400, 450)
+    probe = ZPatternProbe(board, dbg, pages=2, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(scan=(360, 480), grid=(380, 460), step=20),
+                   log=lambda m: None).run()
+    cells = {(p.value, p.held["w"]): p.failed for p in margin.points}
+    assert all(p.held["y"] == 834 - p.value for p in margin.points), "the latch stays where the defaults put it"
+    assert not cells[(420, 420)] and cells[(360, 420)] and cells[(420, 380)] and cells[(420, 460)]
+    assert (480, 440) not in cells and (460, 460) not in cells, "past the release limit: not probed"
+    rows = [[p.held["w"] for p in margin.points if p.value == e] for e in (360, 380)]
+    assert rows == [[380, 400, 420, 440, 460], [460, 440, 420, 400, 380]], "rows snake"
+    assert margin.edges == {} and margin.held == {"latch": 834} and margin.to_dict()["spec"]["grid"] == [380, 460]
+    text = margin.describe()
+    assert r"nS_DMASetup \ nS_DMADataHold 380 400 420 440 460" in text
+    assert fake.knobs == KNOB_DEFAULTS
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(140, 160), grid=(1, 2)))
+    assert "a grid is nS_DMASetup" in str(e.value)

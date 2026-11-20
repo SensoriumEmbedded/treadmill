@@ -16,6 +16,7 @@ C128s moved 10x between passes).
 
 from __future__ import annotations
 
+import ast
 import csv
 import io
 import json
@@ -228,3 +229,100 @@ def to_csv(records: Iterable[Mapping]) -> str:
     writer.writeheader()
     writer.writerows(rows(records))
     return buf.getvalue()
+
+
+# -- the PR #99 script's runs ------------------------------------------------------
+
+PR99_RESULT = "dmasetup-sweep.txt"
+PR99_PROBES = {"z": "zpattern", "reu": "reuloop"}
+
+
+def _pr99_context(meta: Mapping) -> dict:
+    st, board, fw = meta.get("station") or {}, meta.get("board") or {}, meta.get("firmware") or {}
+    line = (board.get("machine_line") or "").split()
+    return {
+        "station": st.get("id"),
+        "machine": {"id": st.get("machine"), "model": st.get("model"), "standard": line[1] if len(line) > 1 else None,
+                    "c128": bool(line) and line[0] == "C128"},
+        "board": st.get("tr_kind"),
+        "firmware": {"version": board.get("version"), "tag": board.get("tag"),
+                     "dirty": bool(fw.get("dirty")) or bool(board.get("dirty")), "commit": fw.get("commit"),
+                     "describe": fw.get("describe"), "defines": list(fw.get("defines") or []),
+                     "image": board.get("image") or "main"},
+    }
+
+
+def import_pr99(run: Path) -> list[dict]:
+    """Schema-1 records from a run of ``scripts/2026-11-12-dmasetup-sweep.py``
+    (its ``dmasetup-sweep.txt`` and ``run.json``): one per probe it ran, a
+    scan of nS_DMASetup with the sums held. The script measured screen
+    noise beside every point; it is judged here as the noise probe judges
+    it (``treadmill/probes/noise.py``), against the point nearest the
+    default, since the script's own baseline ran with no DMA at all."""
+    from treadmill.knobs import KNOBS
+    from treadmill.probes.noise import FACTOR, FLOOR
+    from treadmill.sweeps import Point, edge_of
+
+    run = Path(run)
+    result = next(run.glob(f"exec-*/{PR99_RESULT}"), None)
+    if result is None:
+        raise ValueError(f"{run}: no {PR99_RESULT} under an exec folder; not a PR #99 sweep run")
+    meta = json.loads((run / "run.json").read_text(encoding="utf-8"))
+    lines = result.read_text(encoding="utf-8").splitlines()
+    head = lines[0]
+    defaults = ast.literal_eval(head.split("defaults ", 1)[1].split(" sums", 1)[0])
+    sums = ast.literal_eval(head.split(" sums ", 1)[1].split(" baseline", 1)[0])
+    rows: dict[str, list[dict]] = {}
+    for line in lines[1:]:
+        kind, _, rest = line.partition(" ")
+        if kind in PR99_PROBES:
+            rows.setdefault(kind, []).append(ast.literal_eval(rest.strip()))
+    knob, context = KNOBS["e"], _pr99_context(meta)
+    default = defaults["e"]
+    records = []
+    for kind, found in rows.items():
+        probe = PR99_PROBES[kind]
+        noisy = [r for r in found if r.get("noise")]
+        base = min(noisy, key=lambda r: abs(r["e"] - default))["noise"]["max"] if noisy else None
+        limit = max(int(FACTOR * base), base + FLOOR) if base is not None else None
+        points = []
+        for r in found:
+            if kind == "z":
+                bad = r.get("bad", 0) + r.get("prefill_bad", 0) if "error" not in r else 1
+                total = 2 * r.get("bytes", 0) or 1
+            else:
+                bad, total = r.get("bad_pages", 0), r.get("rounds", 0) + r.get("bad_pages", 0) or 1
+            by_probe = {probe: [bad, total]}
+            failed_by = [probe] if bad else []
+            notes = [r["error"]] if "error" in r else []
+            if limit is not None and r.get("noise"):
+                over = int(r["noise"]["max"] > limit)
+                by_probe["noise"] = [over, 1]
+                if over:
+                    failed_by.append("noise")
+                    notes.append(f"noise {r['noise']['max']} pixels over the limit {limit}")
+            failures = sum(v[0] for v in by_probe.values())
+            samples = sum(v[1] for v in by_probe.values())
+            held = {k: r[k] for k in ("w", "y") if k in r}
+            points.append(Point(r["e"], failures, samples, 0.0, notes, by_probe, failed_by, bool(r.get("error")),
+                                1, held))
+        values = [p.value for p in points]
+        step = abs(values[1] - values[0]) if len(values) > 1 else 10
+        low, high = min(values), max(values)
+        edges = {way: edge_of(points, default, way, stop, step).to_dict(default)
+                 for way, stop in (("down", low), ("up", high)) if stop != default}
+        probes = [probe] + (["noise"] if limit is not None else [])
+        records.append({
+            "schema": SCHEMA, "when": meta.get("started"), **context,
+            "knob": {"name": knob.name, "letter": knob.letter, "unit": knob.unit, "group": knob.group},
+            "mode": "scan", "probes": probes, "standard": context["machine"]["standard"], "default": default,
+            "start": default, "defaults": defaults, "held": {"release": sums[0], "latch": sums[1]},
+            "limits": None, "spec": {"stop": None, "step": step, "fine": step, "repeat": 1, "scan": [low, high],
+                                     "grid": None},
+            "passes": 1, "restored": True, "seconds": None, "edges": edges,
+            "points": [p.to_dict() for p in points],
+            "probe_info": {"noise": {"baseline": base, "limit": limit, "factor": FACTOR, "floor": FLOOR}}
+            if limit is not None else {},
+            "imported_from": str(result),
+        })
+    return records

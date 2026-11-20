@@ -146,20 +146,13 @@ cost or a wart with a known, small fix.
    add the standard from the board's banner
    (`<class>__<machine>__<PAL|NTSC>`), with the machine's file as the
    fallback where it cannot be the other standard's (`unkeyed_fits()`).
-18. **medium, with item 20** The screen-noise probe has no baseline per
-   capture. The probe (pixels inside the text area that change by more
-   than 48 of 255 between frames, while a DMA probe runs) lives only in
-   `scripts/2026-11-12-dmasetup-sweep.py`; it finds a DMA drive
-   that lands in the VIC's half of the cycle, where the data compares stay
-   clean (PR #99: the Kawari's early edge sat 30-50 ns above the first
-   data error). With no DMA running, the Kawari C64 reads a median of 0
-   and C128 #29's capture about 1,500; on C64 #14 the menu reads 600-1,000
-   while the REU client's plain screen reads 0, so the baseline depends on
-   the capture and on what the screen shows, and one threshold cannot
-   serve them all.
-   Fix: measure the baseline at the defaults on each run and judge against
-   it; use the median for a continuous probe (the REU loop) and the max
-   for a burst (`z`).
+18. **closed 2026-11-19, with the DMA probes and the margin map.** The
+   screen-noise probe had no baseline per capture. The `noise` probe
+   (`treadmill/probes/noise.py`) now measures one sample of the probe it
+   runs beside at the defaults, before the first point and after the last,
+   and fails a point whose worst frame pair is three times that and 100
+   pixels above it. It judges the max for every workload: over the PR #99
+   runs the median missed C64 #14's REU failure (11 pixels against 0).
 32. **medium** A link-less session reads with no standard's files.
    `open_linkless()` in `treadmill/session.py` has no TR banner, so the
    station's standard stays None and `find_calibration()`/`find_bank()`
@@ -213,17 +206,11 @@ cost or a wart with a known, small fix.
    EasyFlash cartridge that counts wrong reads of its own ROM and of the
    EasyFlash IO2 page apart, since the two paths have different edges, and
    the margin test sweeps both ways.
-20. **medium** The DMA write knobs have no sweep command. `treadmill sweep`
-   (`treadmill/sweeps.py`) walks one knob at a time against a read probe,
-   so the PR #99 sweeps of `nS_DMASetup` ran from
-   `scripts/2026-11-12-dmasetup-sweep.py`: `nS_DMADataHold` and
-   `nS_DMADataSetup` move with it to hold the board's own release and
-   latch sums (884/844 PAL, 854/834 NTSC on #99's values), the `z` pattern
-   test and the REU loop are the probes, and the noise probe (item 18)
-   runs beside each. Factory NTSC C128s drift by up to 100x between passes
-   at one value, so a pass up and a pass down both count. Fix: a `sweep e`
-   with held sums, the three probes, and `--passes` with alternating
-   direction.
+20. **closed 2026-11-19, with the DMA probes and the margin map.** The
+   DMA write knobs had no sweep command. `treadmill sweep e` holds the
+   release and latch sums (`--free` drops them), `--probe` takes
+   `zpattern`, `reuloop`, `reuloop-sprites`, `cpuwatch` and `noise`, and
+   `--passes` alternates the order.
 21. **medium, before soak runs** No DMA soak runs under the suite.
    `tools/bench/reuspans.py` (the REU loop beside host write jobs, 600 s a
    phase) is the quickest check of a DMA timing change, but the bench
@@ -233,23 +220,15 @@ cost or a wart with a known, small fix.
    16-bit counters wrapped once in each 600 s phase (about 67,000 rounds),
    which reuspans prints modulo 65,536. Fix: a soak test that samples the
    counters often enough to unwrap them, and WriteC64Spans in `Link`.
-22. **medium, with item 20** No view compares a knob's margins across
-   machines. Each sweep stands alone: `treadmill sweep` writes `sweep.json`
-   (`treadmill/cli.py`) and the DMA sweep script a text file, and
-   `render_report()` (`treadmill/report/html.py`) draws one run. The PR #99
-   comparisons (F245 against LS245, Kawari against a real VIC-II, all of
-   our C64 numbers coming from one TR+ board) were charted by hand.
-   Fix: a margin map built from the stored sweeps, one chart per knob, a
-   row per machine, board and probe, clean windows as bars and the default
-   (plus any value under review) as vertical lines, so a change that eats
-   one machine's margin shows before it fails. Needs item 20's sweeps in
-   the same results format as `sweep.json`.
-23. **low, with item 20** The DMA write window is swept along one line.
-   Holding the release and latch sums walks `nS_DMASetup` against
-   `nS_DMADataHold` on a single diagonal, while the safe region is two-
-   dimensional. Fix: a setup by data hold grid sweep with a heatmap in
-   `report.html`, the chart an auto-calibration would choose its point
-   from.
+22. **closed 2026-11-19, with the DMA probes and the margin map.** No
+   view compared a knob's margins across machines. `treadmill margins map`
+   draws every stored `margins.json` (`treadmill/report/margin_map.py`),
+   `--mermaid` gives the PR form, and `treadmill margins import` brings the
+   PR #99 script's runs onto the map.
+23. **closed 2026-11-19, with the DMA probes and the margin map.** The
+   DMA write window was swept along one line. `--scan LO:HI --grid LO:HI`
+   maps `nS_DMASetup` by `nS_DMADataHold` with the latch held, drawn as a
+   heatmap on the margin map rather than in `report.html`.
 24. **medium** MinimalBoot's read errors under USB traffic have no
    regression test. `scripts/2026-11-15-minimalboot-usb.py` hands an
    EasyFlash image with a bank-64 chip to MinimalBoot, asks it for its

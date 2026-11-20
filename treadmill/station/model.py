@@ -154,10 +154,11 @@ class Station:
         st = replace(self, tr=tr, standard=standard or self.standard)
         return replace(st, caps=capabilities(st, listener_on=listener_on, fw_defines=fw_defines))
 
-    def with_keyboard(self, fitted: frozenset[str]) -> "Station":
+    def with_keyboard(self, fitted: frozenset[str] | None) -> "Station":
         """The station once its keyboard board answered: what it has fitted
-        decides the keyboard caps; the probe's caps stay as they were."""
-        st = replace(self, kbd_fitted=frozenset(fitted))
+        decides the keyboard caps; the probe's caps stay as they were. None:
+        the keyboard board is gone, and its caps with it."""
+        st = replace(self, kbd_fitted=None if fitted is None else frozenset(fitted))
         defines = tuple(c[len("fw:"):] for c in self.caps if c.startswith("fw:"))
         return replace(st, caps=capabilities(st, listener_on="tcp" in self.caps, fw_defines=defines))
 

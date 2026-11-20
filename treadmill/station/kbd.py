@@ -448,7 +448,7 @@ class KeyboardBoard:
         """Text as the protocol's ``S`` types it: ``{return}`` and friends in braces."""
         if hold_ms is None and gap_ms is None:
             return self.ok(f"S {text}")
-        return self.ok(f"ST {hold_ms or 50} {gap_ms or 50} {text}")
+        return self.ok(f"ST {50 if hold_ms is None else hold_ms} {50 if gap_ms is None else gap_ms} {text}")
 
     def restore(self, ms: int | None = None) -> Reply:
         return self.ok(_join("N", ms))

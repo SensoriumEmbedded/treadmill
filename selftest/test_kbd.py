@@ -124,6 +124,14 @@ def test_blank_line_gets_no_reply(board):
         board.start("")
 
 
+def test_type_sends_a_zero_hold_or_gap_as_asked(board):
+    """0 is below the protocol's 20 ms, so the board refuses it; it is never
+    quietly typed at the default rate."""
+    with pytest.raises(kbd.KbdRefused, match="range"):
+        board.type("a", gap_ms=0)
+    assert board.sent[-1][1] == "ST 50 0 a\n"
+
+
 def test_typed_commands(fake, board):
     assert board.tod(60) == "60" and board.tod() == "60"
     width = board.reset(100)

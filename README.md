@@ -450,7 +450,8 @@ keyboard board's own script.
 From Python, `treadmill.session.open_station("<id>")` returns the same
 session (`board`, `link`, `screen_channel()`, `menu()`, `keys()`, `dbg()`,
 `kbd`), `open_linkless("<id>")` the one `--no-link` opens, and
-`treadmill.driver.run_tests(RunOptions(...))` is what `treadmill run` does.
+`treadmill.driver.run_regions(RunOptions(...))` is what `treadmill run` does
+(`run_tests` for one run; `region="both"` needs `run_regions`).
 
 ## Reports
 

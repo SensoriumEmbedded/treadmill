@@ -313,9 +313,9 @@ def test_a_board_under_test_on_at_the_start_is_taken_after_its_c64_is_switched_o
     under test, and is taken when it comes back. The other machine's board,
     which left USB on its own earlier, stays skipped."""
     other, early = ("COM3", "TEENSYROM-SERIAL-11111111"), ("COM4", "TEENSYROM-SERIAL-22222222")
-    kbd = ("COM9", "C64USBKEYBOARD_2262330")
+    kbd = ("COM9", "C64USBKEYBOARD_14470230")
     bench, out = _bench_on(monkeypatch, [[other, early, kbd], [other, early, kbd], [early, kbd],
-                                         [other, early, kbd], [other], [other, early, kbd]], keyboard="2262330")
+                                         [other, early, kbd], [other], [other, early, kbd]], keyboard="14470230")
     assert bench.wait_for_board() == ("COM4", "22222222")
     text = out.getvalue()
     assert "COM3 (chip id 11111111), COM4 (chip id 22222222). A board under test among them is taken once " \

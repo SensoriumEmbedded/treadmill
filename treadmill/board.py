@@ -127,11 +127,23 @@ class Board:
             if board.kbd is not None:
                 board.station = board.station.with_keyboard(board.kbd.fitted).masked(board.caps_mask)
             board.probe()
-            board.apply_tod()
+            try:
+                board.apply_tod()
+            except KbdError as e:
+                board.drop_keyboard(f"its TOD line was not set: {e}")
         except BaseException:
             board.close()
             raise
         return board
+
+    def drop_keyboard(self, why: str) -> None:
+        """Go on without the keyboard board, as when it does not answer at
+        open: its capabilities off, and the tests that need them skipping
+        with ``why``."""
+        kbd, self.kbd, self.kbd_problem = self.kbd, None, why
+        self.station = self.station.with_keyboard(None).masked(self.caps_mask)
+        if kbd is not None:
+            kbd.close()
 
     def attach_recovery(self, firmware: "FirmwareRun | None") -> None:
         """The ladder's rungs above a reset, for a board on a real port."""

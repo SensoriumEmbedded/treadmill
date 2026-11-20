@@ -111,6 +111,16 @@ cost or a wart with a known, small fix.
    whole 2 s waiting. A shorter settle, set from more boards'
    `reu_last_change`, saves about 1.5 s a board; a checker that changes its
    map again after a pause would then be judged early, so measure first.
+33. **low** The Kawari switch is two algorithms. `set_standard()` in
+   `treadmill/station/kawari.py` (`--region`) maps the standard to J1
+   through the station's `kawari_open` and flips once on a wrong result,
+   while `KeyboardSwitch` in `treadmill/mfg.py` reads J1 from the keyboard
+   board's `?` and sets the other position. On a Kawari whose saved model
+   changed, `--region` spends a wasted `V` (about 5 s) each switch, and a
+   station without `kawari_open` has no `region_switch` though mfg switches
+   the same hardware. Fix: one helper in `kawari.py` that reads J1 and
+   flips it from the standard the banner shows, used by both, with
+   `kawari_open` dropped from the `region_switch` rule.
 
 ## Video
 
@@ -135,7 +145,7 @@ cost or a wart with a known, small fix.
    its PAL bank and grid (cells 24.8x25.2 px against 25.7x21.0). Both now
    add the standard from the board's banner
    (`<class>__<machine>__<PAL|NTSC>`), with the machine's file as the
-   fallback.
+   fallback where it cannot be the other standard's (`unkeyed_fits()`).
 18. **medium, with item 20** The screen-noise probe has no baseline per
    capture. The probe (pixels inside the text area that change by more
    than 48 of 255 between frames, while a DMA probe runs) lives only in
@@ -150,6 +160,17 @@ cost or a wart with a known, small fix.
    Fix: measure the baseline at the defaults on each run and judge against
    it; use the median for a continuous probe (the REU loop) and the max
    for a burst (`z`).
+32. **medium** A link-less session reads with no standard's files.
+   `open_linkless()` in `treadmill/session.py` has no TR banner, so the
+   station's standard stays None and `find_calibration()`/`find_bank()`
+   look only for the names from before files were kept per standard. Once
+   a Kawari station has only its `__PAL` and `__NTSC` files, `exec
+   --no-link` logs "no stored calibration fits" and reads no screen; on the
+   Kawari C64 (registry 002b) today it reads with the old PAL calibration
+   in either standard. Needs a way to tell the standard without the TR: a
+   fixed-standard machine's registry region, else the keyboard board's J1
+   with `kawari_open`, or the picture's geometry against both stored
+   calibrations.
 
 ## Firmware builds
 
@@ -271,3 +292,10 @@ cost or a wart with a known, small fix.
    (its `menu` output; the Kawari C64's board has none fitted) it can press
    the button (`kbd.button`). Fix: use each when the station has it, and keep
    `--attended` for what is left.
+34. **low** The region test's switch back can hide its failure.
+   `tests/keyboard/test_region_switch.py` switches back with
+   `set_standard()` in a `finally`; if that raises, its error replaces the
+   test's own assertion, and the rest of the run reads the other standard's
+   picture with the session's calibration and bank. Fix: catch the switch
+   back's error and report both, and mark the station so later video tests
+   skip instead of misreading.

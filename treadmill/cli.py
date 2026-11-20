@@ -263,6 +263,8 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     """Find the text area: on a saved frame, or on the station's live picture
     at the menu (refined against DMA where allowed), saved per capture class
     and machine."""
+    from dataclasses import replace
+
     import cv2
 
     from treadmill.observe.calibrate import Calibration, CalibrationError, find_text_area
@@ -278,6 +280,12 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
             saved = None
             if args.station and not args.no_save:
                 st = load_station(args.station)
+                region = st.machine.region.upper()
+                if region not in ("PAL", "NTSC"):
+                    raise CommandError(f"a saved frame does not say which standard it shows, and machine "
+                                       f"{st.machine.id} switches standards: calibrate from the live menu "
+                                       f"(treadmill calibrate --station {st.id}), or add --no-save", EXIT_USAGE)
+                st = replace(st, standard=region)
                 cal = Calibration(**{**cal.__dict__, "capture_class": st.rig.capture.capture_class,
                                      "machine_id": st.machine.id})
                 saved = cal.save(station_calibration_path(st))

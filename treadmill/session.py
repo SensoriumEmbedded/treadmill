@@ -54,15 +54,26 @@ def bank_path(station: Station, root: Path | None = None) -> Path:
             / f"{station.rig.capture.capture_class}__{station.machine.id}{std}.npz")
 
 
+def unkeyed_fits(station: Station) -> bool:
+    """Whether the machine's file from before files were kept per standard
+    can be this station's. It names no standard, so it is only taken when
+    the station's is unknown or is the machine's one fixed standard: on a
+    machine that switches, it may be the other standard's, whose cells are a
+    different shape (25.7x21.0 px PAL against 24.8x25.2 NTSC on one Kawari
+    C64), and the frame size does not tell them apart."""
+    return station.standard is None or station.machine.region.upper() == station.standard
+
+
 def find_bank(station: Station, root: Path | None = None) -> Path:
     """The bank a station reads with: its own for the standard it runs when
     one was harvested; else the one harvested on its machine before banks
-    were kept per standard; else the one for the rig's capture class. With
-    none of them, where its own goes."""
+    were kept per standard, when it fits (``unkeyed_fits``); else the one
+    for the rig's capture class. With none of them, where its own goes."""
     own = bank_path(station, root)
     machine = bank_path(replace(station, standard=None), root)
     shared = own.with_name(f"{station.rig.capture.capture_class}.npz")
-    return next((p for p in (own, machine, shared) if p.is_file()), own)
+    candidates = (own, machine, shared) if unkeyed_fits(station) else (own, shared)
+    return next((p for p in candidates if p.is_file()), own)
 
 
 def station_calibration_path(station: Station, root: Path | None = None) -> Path:
@@ -75,10 +86,10 @@ def station_calibration_path(station: Station, root: Path | None = None) -> Path
 def find_calibration(station: Station, root: Path | None = None) -> Path:
     """The calibration a station reads with: its own for the standard it
     runs, else the one saved for its machine before calibrations were kept
-    per standard."""
+    per standard, when it fits (``unkeyed_fits``)."""
     own = station_calibration_path(station, root)
     machine = calibration_path(root or data_dir(), station.rig.capture.capture_class, station.machine.id)
-    return own if own.is_file() or not machine.is_file() else machine
+    return machine if not own.is_file() and machine.is_file() and unkeyed_fits(station) else own
 
 
 def open_video(station: Station, log=print) -> FrameSource | None:

@@ -49,6 +49,32 @@ def test_board_opens_the_keyboard_board_and_folds_in_what_is_fitted(kb_lab: Path
     assert kbd.closed
 
 
+def test_a_keyboard_board_that_refuses_its_tod_rate_leaves_the_station_open_without_it(kb_lab: Path):
+    """A board that answers '?' but refuses T costs the keyboard tests, as one
+    that does not answer at all does, not the whole station."""
+    from selftest.fake_kbd import FakeKeyboard
+    from treadmill.station.kbd import KbdError, KeyboardBoard
+
+    station, made = load_station("kb"), []
+
+    def refusing():
+        kbd = KeyboardBoard.attach(FakeKeyboard(chip=station.keyboard.chip).connect(), port="fake-keyboard")
+
+        def tod(rate=None):
+            raise KbdError("keyboard board refused 'T 60': ERR T busy")
+        kbd.tod = tod
+        made.append(kbd)
+        return kbd
+
+    b = Board.open(station, link_factory=_fake_link(), kbd_factory=refusing)
+    try:
+        assert b.kbd is None and b.kbd_problem == "its TOD line was not set: keyboard board refused 'T 60': ERR T busy"
+        assert b.station.has("dma") and not b.station.has("keys_hw") and not b.station.has("tod_select")
+        assert made[0].closed
+    finally:
+        b.close()
+
+
 def test_caps_mask_takes_keyboard_caps_away(kb_lab: Path):
     with open_station("kb", video=False, caps_mask={"keys_hw", "ext_reset"}) as s:
         assert s.board.kbd is not None

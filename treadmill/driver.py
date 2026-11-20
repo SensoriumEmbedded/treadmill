@@ -157,7 +157,10 @@ def pytest_command(opts: RunOptions, run_dir: Path) -> list[str]:
 def run_tests(opts: RunOptions, *, sink=None, log=print) -> RunResult:
     """Run the hardware tests against a station in a child pytest and read
     back its record. The station file and the firmware spec are checked
-    first, so a typo fails before anything is built."""
+    first, so a typo fails before anything is built. ``region="BOTH"`` is
+    two runs: ``run_regions``."""
+    if (opts.region or "").upper() == "BOTH":
+        raise HarnessUsage("region BOTH is two runs, one per standard: call run_regions, not run_tests")
     load_station(opts.station)
     opts.firmware.spec()
     # A standard's run is named for it: --region both starts two runs, perhaps within one second.

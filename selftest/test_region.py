@@ -7,14 +7,17 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import cv2
 import pytest
 
 from selftest.fake_board import start_fake_board
+from selftest.synth import frame_of, menu_like_screen
 from selftest.fake_kbd import FakeKeyboard
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
 from selftest.test_station_keyboard import QUIET, kb_lab  # noqa: F401  (a station with a keyboard board)
 from treadmill.board import Board
-from treadmill.cli import EXIT_OK, main
+from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+from treadmill.driver import HarnessUsage, RunOptions, run_tests
 from treadmill.link import Link
 from treadmill.link.trlink import NotAllowed
 from treadmill.session import (
@@ -50,7 +53,27 @@ def test_a_station_s_files_are_kept_per_standard_with_today_s_names_as_the_fallb
         path.write_text("{}")
     assert find_calibration(ntsc, lab / "data").name == "svideo-generic__bench__NTSC.json"
     assert find_bank(ntsc, lab / "data").name == "svideo-generic__bench__NTSC.npz"
-    assert find_calibration(replace(st, standard="PAL"), lab / "data").name == "svideo-generic__bench.json"
+    # The machine is NTSC, so its unnamed files are NTSC's: never PAL's, which reads its own or none.
+    pal = replace(st, standard="PAL")
+    assert find_calibration(pal, lab / "data").name == "svideo-generic__bench__PAL.json"
+    assert find_bank(pal, lab / "data").name == "svideo-generic.npz"
+    assert find_calibration(replace(st, standard=None), lab / "data").name == "svideo-generic__bench.json"
+
+
+def test_a_switchable_machine_never_reads_a_file_with_no_standard(lab):  # noqa: F811
+    """On a Kawari C64 the old unnamed file may be either standard's: a
+    standard without its own reads the capture class's bank and calibrates
+    afresh, rather than reading with the other standard's cell shape."""
+    st = load_station("s1")
+    kawari = replace(st, machine=replace(st.machine, region="switchable"), standard="NTSC")
+    calib, glyphs = lab / "data" / "calib", lab / "data" / "glyphs"
+    calib.mkdir()
+    glyphs.mkdir()
+    for path in (calib / "svideo-generic__bench.json", glyphs / "svideo-generic__bench.npz",
+                 glyphs / "svideo-generic.npz"):
+        path.write_text("{}")
+    assert find_calibration(kawari, lab / "data").name == "svideo-generic__bench__NTSC.json"
+    assert find_bank(kawari, lab / "data").name == "svideo-generic.npz"
 
 
 def test_a_station_opened_with_its_tr_knows_its_standard_and_sets_its_tod(kb_lab):  # noqa: F811
@@ -127,6 +150,28 @@ def test_the_keyboard_hardware_tests_pass_against_the_fakes(kb_lab: Path, capsys
     out, err = capsys.readouterr()
     run = json.loads(out)
     assert code == EXIT_OK and run["summary"] == {"passed": 4}, run["tests"]
+
+
+def test_run_tests_sends_region_both_to_run_regions(lab: Path):  # noqa: F811
+    with pytest.raises(HarnessUsage, match="call run_regions") as e:
+        run_tests(RunOptions(station="s1", region="both"))
+    assert e.value.code == EXIT_USAGE
+
+
+def test_calibrate_from_a_frame_saves_under_the_machine_s_standard(lab: Path, capsys):  # noqa: F811
+    """A saved frame names no standard: a fixed-standard machine's is its
+    own, and a machine that switches has none to save under."""
+    codes, colors = menu_like_screen(2)
+    png = lab / "menu.png"
+    cv2.imwrite(str(png), frame_of(codes, colors, seed=2))
+    assert main(["calibrate", "--frame", str(png), "--station", "s1", "--json"]) == EXIT_OK
+    assert Path(json.loads(capsys.readouterr().out)["saved"]).name == "svideo-generic__bench__NTSC.json"
+    station = (lab / "data" / "stations" / "s1.toml").read_text(encoding="utf-8")
+    (lab / "data" / "stations" / "sw.toml").write_text(
+        station.replace('id = "s1"', 'id = "sw"').replace('model = "C64"', 'model = "C64"\nregion = "switchable"'),
+        encoding="utf-8")
+    assert main(["calibrate", "--frame", str(png), "--station", "sw", "--json"]) == EXIT_USAGE
+    assert "switches standards" in json.loads(capsys.readouterr().err)["error"]
 
 
 def test_run_region_stops_a_station_that_cannot_switch(lab: Path, capsys):  # noqa: F811

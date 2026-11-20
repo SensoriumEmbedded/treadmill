@@ -29,7 +29,7 @@ def test_vic_margin(letter, at_menu, dbg, video, calibration, programs, request,
     board = at_menu
     knob = KNOBS[letter]
     request.getfixturevalue("sd_card")
-    probe = VicRomProbe(board, video, calibration, programs("vicrom"), dwell=pace.vic_dwell, log=print)
+    probe = VicRomProbe(board, video, calibration, programs("vicrom"), dwell=pace.video_dwell, log=print)
     spec = SearchSpec(both=True, step=pace.slow_step, fine=pace.slow_fine)
     margin = Sweep(dbg, knob, probe, spec, log=print).run()
     print(margin.describe())

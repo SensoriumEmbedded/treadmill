@@ -68,7 +68,7 @@ def wait_minimal() -> str:
         time.sleep(0.1)
     if not board.link.stream.ended:
         raise AssertionError(f"the port did not drop within {DROP_S:.0f} s: the main image kept the launch")
-    board._reconnect()
+    board.reconnect()
     deadline = time.monotonic() + MINIMAL_S
     while time.monotonic() < deadline:
         if board.link.fw_check() == "minimal":

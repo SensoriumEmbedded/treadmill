@@ -282,6 +282,8 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
                        fw_defines=firmware.defines, caps_mask=mask, firmware=firmware, kbd_factory=kbd_factory)
     except Exception as e:
         pytest.exit(f"station {station.id}: {e}", returncode=4)
+    if fake_requested():
+        b.reconnect_hook = lambda: Link(fake.host_stream)       # the fake's USB coming back
     line = keyboard_line(b.kbd, b.kbd_problem)
     if line:
         _log(line)

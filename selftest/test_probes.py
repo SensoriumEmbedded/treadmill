@@ -294,3 +294,16 @@ def test_sweep_command_with_vicrom_and_krread(lab: Path, capsys):  # noqa: F811
     assert main(["sweep", "n", "--probe", "krread", *base]) == EXIT_OK, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["probes"] == ["krread"] and payload["edges"]["up"]["clean_to"] == 330
+
+
+def test_sweep_command_under_minimalboot(lab: Path, capsys):  # noqa: F811
+    from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+    import json
+    base = ["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
+            "--json", "--image", "minimal", "--dwell", "0.2", "--both", "--step", "20", "--fine", "10"]
+    assert main(base) == EXIT_OK, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["probes"] == ["idread-minimal"] and payload["firmware"]["image"] == "minimal"
+    assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (142, 210)
+    assert main(base + ["--probe", "menu"]) == EXIT_USAGE
+    assert "idread, read by video" in json.loads(capsys.readouterr().err)["error"]

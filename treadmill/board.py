@@ -256,7 +256,7 @@ class Board:
             except (LinkError, TransportError) as e:
                 last = str(e)
                 if self.link.stream.ended and self.reconnect_hook:
-                    self._reconnect()
+                    self.reconnect()
                 time.sleep(BOOT_POLL_S)
                 continue
             if st.kind == MENU_READY:
@@ -307,12 +307,12 @@ class Board:
         self.link.close()                    # the hook opens the port itself, at 134 baud
         self.reboot_hook()
         if self.reconnect_hook:
-            self._reconnect()
+            self.reconnect()
 
     def _rung_power(self) -> None:
         self.power.cycle(self.station.rig.power.off_seconds if self.station.rig.power else 5.0)
         if self.reconnect_hook:
-            self._reconnect()
+            self.reconnect()
 
     def reopen(self, away: float) -> None:
         """Close the port for ``away`` seconds, then open it again: the host
@@ -322,9 +322,21 @@ class Board:
         assert self.reconnect_hook is not None
         self.link.close()
         time.sleep(away)
-        self._reconnect()
+        self.reconnect()
 
-    def _reconnect(self) -> None:
+    def reconnect_after_drop(self, timeout: float) -> None:
+        """The port dropping because the caller made it (a launch the main
+        image hands to the minimal one): wait up to ``timeout`` for it, then
+        reconnect. Not a recovery, so not counted as one."""
+        assert self.reconnect_hook is not None
+        deadline = time.monotonic() + timeout
+        while not self.link.stream.ended:
+            if time.monotonic() > deadline:
+                raise LinkError(f"the port did not drop within {timeout:g} s")
+            time.sleep(0.1)
+        self.reconnect()
+
+    def reconnect(self) -> None:
         """A new link after the board's USB went away (a reboot, a power
         cycle, a reset out of the minimal image). The new link starts with
         DMA refused and the board is probed again once the menu is up, since

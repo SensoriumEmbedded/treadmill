@@ -31,9 +31,11 @@ def test_the_hardware_tests_pass_against_the_fake_board(pytester: pytest.Pyteste
 
 def test_the_baseline_tier_runs_without_dma(pytester: pytest.Pytester, lab: Path):  # noqa: F811
     """With DMA and keys masked, the tier-0 tests (identity, reset, files,
-    launch, the root listing) pass on video alone and the key-driven ones skip."""
+    launch, the root listing) pass on video alone and the key-driven ones skip.
+    The MinimalBoot margins read by video whatever the tier, so the full run
+    covers them."""
     result = _run(pytester, lab, "--caps-mask", "dma,screen_dma,reset_sense,keys_kernal",
-                  "-k", "identity or reset or files or hello or root_listing or timing")
+                  "-k", "(identity or reset or files or hello or root_listing or timing) and not minimalboot")
     outcomes = result.parseoutcomes()
     assert outcomes.get("failed", 0) == 0 and outcomes.get("errors", 0) == 0, result.stdout.str()
     assert outcomes.get("passed", 0) >= 10, outcomes

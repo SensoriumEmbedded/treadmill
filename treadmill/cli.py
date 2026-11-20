@@ -183,7 +183,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     from treadmill.c64.settings import REU, Settings
     from treadmill.driver import Harness
     from treadmill.observe.golden import Golden
+    from treadmill.knobs import standard_of
     from treadmill.probes import IdReadProbe, MenuProbe
+    from treadmill.probes.idread import MinimalIdReadProbe
     from treadmill.c64.menu import MenuDriver
     from treadmill.c64.settings import KERNAL_REPLACE
     from treadmill.probes.cpuwatch import CpuWatchProbe
@@ -215,6 +217,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                                f"or name the defines a build flashed by other means carries with --fw-defines",
                                EXIT_USAGE)
         names = list(dict.fromkeys(args.probe or ["idread"]))
+        if args.image == "minimal" and names != ["idread"]:
+            raise CommandError("under MinimalBoot the probe is idread, read by video: leave out --probe or give "
+                               "only --probe idread", EXIT_USAGE)
         if names == ["noise"]:
             raise CommandError("the noise probe runs beside another: add --probe idread, zpattern, reuloop, "
                                "reuloop-sprites or cpuwatch", EXIT_USAGE)
@@ -227,8 +232,17 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
         probes = []
         for name in names:
-            if name == "idread":
-                probes.append(IdReadProbe(board, program("idread"), dwell=args.dwell, log=log))
+            if name == "idread" and args.image == "minimal":
+                try:
+                    shown = assemble("idread", primary=h.firmware.primary if h.firmware else None,
+                                     extra={"SHOW": 1})
+                except AssembleError as e:
+                    raise CommandError(str(e), EXIT_USAGE) from e
+                probes.append(MinimalIdReadProbe(board, ns["screen"], shown, dwell=args.dwell,
+                                                 usb_load=args.usb_load, log=log))
+            elif name == "idread":
+                probes.append(IdReadProbe(board, program("idread"), dwell=args.dwell, usb_load=args.usb_load,
+                                          log=log))
             elif name == "menu":
                 golden_dir = Path(args.golden_dir) if args.golden_dir else repo_root() / "tests" / "golden"
                 probes.append(MenuProbe(board, ns["screen"], Golden.load(golden_dir / "menu" / "root.screen.txt"),
@@ -264,8 +278,12 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                                                          "SD:" + KRREAD_KERNAL))
                 stack.enter_context(settings.special_io(KERNAL_REPLACE))
                 stack.enter_context(ksense_mode(dbg, SKOE if knob.letter == "k" else DMA))
-            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, log=log).run()
-        record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None))
+            # MinimalBoot's td names no standard: the main image's banner gives it before the hand-off.
+            standard = (standard_of(board.banner.machine, board.banner.video)
+                        if args.image == "minimal" and board.banner else None)
+            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, standard=standard, log=log).run()
+        record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None,
+                                                                     image=args.image))
         h.run_dir.write_json(margins.NAME, record, h.folder)
         payload = {**record, "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
     _emit(payload, args.json, margin.describe() + f"\n{margins.NAME} in {h.folder}")
@@ -774,6 +792,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "HIRAM sense: the probe KERNAL, Special IO and KSenseMode are set for the sweep and put "
                         "back); repeat it for several probes at each point")
     s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")
+    s.add_argument("--image", choices=["main", "minimal"], default="main",
+                   help="minimal: sweep MinimalBoot's knobs (m r p s h v): idread with a bank-64 chip, which the "
+                        "main image hands to MinimalBoot, its counters read by video")
+    s.add_argument("--usb-load", action="store_true",
+                   help="idread: version requests as fast as the board answers while it counts (nS_MaxAdj's "
+                        "upper edge needs interrupts that arrive late)")
     s.add_argument("--golden-dir", help="menu probe: where the screen goldens live (default: tests/golden)")
     s.add_argument("--from", dest="start", type=int, help="the first value; default: the knob's default")
     s.add_argument("--to", type=int, help="one edge: the last value to try; default: the knob's upper limit")

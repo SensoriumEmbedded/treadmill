@@ -46,7 +46,8 @@ def test_a_shrink_against_another_build_is_a_warning():
 
 def test_suggest_takes_a_step_inside_the_worst_edge_and_never_past_the_default():
     rs = [_record(up=(230, 235), down=(140, 139)), _record(up=(210, 215), down=(135, 134)),
-          _record(knob="nS_DataHold", up=(155, 160), down=None, default=150), _record(station="s2", up=(100, 101))]
+          _record(knob="nS_DataHold", up=(155, 160), down=None, default=150), _record(station="s2", up=(100, 101)),
+          _record(up=(160, 165), probes=("idread-usbload",))]                # under load: not a floor's
     floors = margins.suggest(rs, "s1")
     assert floors == {"nS_DataHold": Floor(up=150, down=None), "nS_PLAprop": Floor(up=200, down=150)}
     toml = margins.floors_toml(floors)

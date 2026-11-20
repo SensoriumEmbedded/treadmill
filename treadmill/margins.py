@@ -153,12 +153,19 @@ def shrinks(record: Mapping, earlier: Iterable[Mapping]) -> list[str]:
     return warnings
 
 
+def under_load(record: Mapping) -> bool:
+    """A sweep made under USB load (a probe named ``...-usbload``)."""
+    return any(p.endswith("-usbload") for p in record.get("probes") or [])
+
+
 def suggest(records: Iterable[Mapping], station: str, *, last: int = 5) -> dict[str, Floor]:
     """Floors a station's last ``last`` records of each knob support: one
-    coarse step inside the worst edge each way, never past the default."""
+    coarse step inside the worst edge each way, never past the default. A
+    station's floors are for its knobs without load, so sweeps made under
+    USB load are left out."""
     by_knob: dict[str, list[Mapping]] = {}
     for r in records:
-        if r.get("station") == station:
+        if r.get("station") == station and not under_load(r):
             by_knob.setdefault((r.get("knob") or {}).get("name"), []).append(r)
     floors: dict[str, Floor] = {}
     for name, rs in sorted(by_knob.items()):

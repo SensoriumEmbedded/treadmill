@@ -646,16 +646,38 @@ class Sweep:
                 break
         return points
 
-    def spot(self, values: Sequence[int]) -> list[Point]:
-        """Each value once (``spec.repeat`` samples a probe), within the
-        limits, and the defaults back after: a floor checked directly."""
-        self.prepare()
-        for value in values:
-            self.check(value, "a spot value")
-        points: list[Point] = []
+    def _early(self, checks: Callable[[], None]) -> list[Probe]:
+        """The probes that change the image the knobs belong to (a hand-off
+        to MinimalBoot) set up first, then the defaults read and ``checks``
+        run on them; if any of that fails, those probes are torn down again,
+        so nothing is left in the other image."""
         started: list[Probe] = []
         try:
             for probe in self.ordered():
+                if getattr(probe, "changes_image", False):
+                    probe.setup()
+                    started.append(probe)
+            self.prepare()
+            checks()
+        except BaseException:
+            for probe in reversed(started):
+                probe.teardown()
+            raise
+        return started
+
+    def spot(self, values: Sequence[int]) -> list[Point]:
+        """Each value once (``spec.repeat`` samples a probe), within the
+        limits, and the defaults back after: a floor checked directly."""
+        def checks() -> None:
+            for value in values:
+                self.check(value, "a spot value")
+
+        started = self._early(checks)
+        points: list[Point] = []
+        try:
+            for probe in self.ordered():
+                if probe in started:
+                    continue
                 probe.setup()
                 started.append(probe)
             points = [self.probe_at(value) for value in values]
@@ -667,16 +689,14 @@ class Sweep:
                     probe.teardown()
         return points
 
-    def run(self) -> Margin:
-        t0 = time.monotonic()
+    def _checks(self) -> None:
+        """The spec against the limits the defaults give."""
         spec = self.spec
-        self.prepare()
         default = self.defaults[self.knob.letter]
-        start = default if spec.start is None else spec.start
-        self.check(start, "the start")
+        self.check(default if spec.start is None else spec.start, "the start")
         if spec.mode == "one":
             if spec.stop is None:
-                spec = self.spec = replace(spec, stop=self.high)
+                self.spec = spec = replace(spec, stop=self.high)
             self.check(spec.stop, "the stop")
         elif spec.mode == "grid":
             self.check(spec.scan[0], "the grid's first row")
@@ -692,11 +712,19 @@ class Sweep:
             if not spec.scan[0] <= default <= spec.scan[1]:
                 raise usage_error(f"the scan {spec.scan[0]}:{spec.scan[1]} must take in the default {default}: "
                                   f"the edges are measured from it")
+
+    def run(self) -> Margin:
+        t0 = time.monotonic()
+        started = self._early(self._checks)
+        spec = self.spec
+        default = self.defaults[self.knob.letter]
+        start = default if spec.start is None else spec.start
         points: list[Point] = []
         restored = False
-        started: list[Probe] = []
         try:
             for probe in self.ordered():
+                if probe in started:
+                    continue
                 probe.setup()
                 started.append(probe)
             if spec.mode == "one":

@@ -48,6 +48,7 @@ KNOB_DEFAULTS = {k.letter: k.default("NTSC") for k in KNOBS.values()}
 IDREAD_RESULTS = 0xC000
 IDREAD_PASSES_PER_S = 1500.0
 IDREAD_WRONG_PER_NS = 0.02
+MINIMAL_BANK = 64                 # a chip in this EasyFlash bank or above makes the main image hand off
 REU_ROUNDS_PER_S = 142.0          # the bench's rate: about 1,420 rounds in 10 s
 REU_NAMES = ("512KB REU", "REU+USB Mouse/Disk")
 # The built-in programs the manufacturing test launches, by the name ending their path.
@@ -186,6 +187,9 @@ class FakeBoard:
     vic_windows: dict = field(default_factory=lambda: {"v": (150, 290), "i": (300, 430)})
     ultimax_since: float | None = None
     idread: IdRead | None = field(default=None, repr=False)
+    idread_show: bool = False            # idread built with SHOW: its counters in hex on the top row
+    host_stream: object = field(default=None, repr=False)   # the host's side of the pipe now (a re-enumeration
+                                                            # makes a new one)
     c64loop: C64Loop | None = field(default=None, repr=False)
     special_io: str = "None"             # the Settings page's Special IO: what a launched PRG runs beside
     kernal_file: str | None = None       # the Kernal Replace file the menu's K chose ("SD:/path")
@@ -231,6 +235,14 @@ class FakeBoard:
             self.program.start()
             return
         name = path.lower().rpartition("/")[2]
+        if name.endswith(".crt") and self._top_bank(path) >= MINIMAL_BANK:
+            # FileParsers.ino: an EasyFlash image with a chip this high goes to MinimalBoot, which
+            # restarts the board's USB; MinimalBoot then refuses DMA, so idread shows its counters.
+            self.image = "minimal"
+            self.idread = IdRead(time.monotonic())
+            self.idread_show = True
+            self.usb_restart()
+            return
         if name.endswith("idread.crt"):
             self.idread = IdRead(time.monotonic())
         if name.startswith("krread"):
@@ -404,6 +416,40 @@ class FakeBoard:
         letter = "n" if dma else "k"
         lo, hi = self.sense_windows[letter]
         return max(0, lo - self.knobs[letter], self.knobs[letter] - hi)
+
+    def _top_bank(self, path: str) -> int:
+        """The highest bank among a CRT's CHIP packets on the card."""
+        data, at, top = self.files.get(path, b""), 0x40, -1
+        while data[at:at + 4] == b"CHIP":
+            top = max(top, int.from_bytes(data[at + 10:at + 12], "big"))
+            at += int.from_bytes(data[at + 4:at + 8], "big")
+        return top
+
+    def usb_restart(self, delay: float = 0.3) -> None:
+        """The board re-enumerating, as a hand-off between images does: the
+        host's stream ends and a new one comes up for the reconnect."""
+        def restart() -> None:
+            time.sleep(delay)
+            stream, far = open_pipe("fake-board")
+            old, self.host_stream = self.end, stream
+            if old is not None:
+                old.close()
+            threading.Thread(target=self.serve, args=(far,), name="fake-board", daemon=True).start()
+        threading.Thread(target=restart, name="fake-board-usb", daemon=True).start()
+
+    def show_counters(self) -> None:
+        """idread.a with SHOW: passes, wrong ROM and wrong IO2 reads in hex on
+        the top row (cells 0-3, 5-10 and 12-17), digits as screen codes."""
+        if self.idread is None or not self.idread_show:
+            return
+        self.accrue()
+        b = self.idread.bytes()
+        values = ((b[0] | b[1] << 8, 4, 0), (b[2] | b[3] << 8 | b[4] << 16, 6, 5),
+                  (b[5] | b[6] << 8 | b[7] << 16, 6, 12))
+        for value, width, cell in values:
+            for i, ch in enumerate(f"{value:0{width}x}"):
+                code = 0x30 + int(ch) if ch.isdigit() else 0x01 + ord(ch) - ord("a")
+                self.memory[SCREEN_RAM_DEFAULT + cell + i] = code
 
     def vic_outside(self) -> int:
         """How far, in ns, the VIC knobs lie outside their windows while vicrom runs."""
@@ -644,6 +690,10 @@ class FakeBoard:
         end.write(text.encode("latin-1"))
 
     def _reset(self, end: PipeEnd) -> None:
+        if self.image == "minimal":      # a reset out of MinimalBoot restarts the board in its main image
+            self.image = "main"
+            self.idread_show = False
+            self.usb_restart()
         self.flooding = False            # the C64's reset ends what it was looping on
         self.booting_for = self.boot_polls
         self.startup_sid = True
@@ -857,6 +907,7 @@ def start_fake_board(**overrides):
     """A fake board on its own thread and the host-side ByteStream to it."""
     board = FakeBoard(**overrides)
     stream, far_end = open_pipe("fake-board")
+    board.host_stream = stream
     thread = threading.Thread(target=board.serve, args=(far_end,), name="fake-board", daemon=True)
     thread.start()
     return board, stream

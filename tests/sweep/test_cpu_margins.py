@@ -14,7 +14,17 @@ each reset. Where the station names a floor, the menu probe also runs at
 it, so ``nS_PLAprop``'s floor covers the IO1 item-type read the NTSC
 misread broke (fixed by ``UpdateItemTypeReg``). The machine is the point:
 a Reloaded MKII, a Mega65 and a Kawari each have their own edges, PAL and
-NTSC apart."""
+NTSC apart.
+
+USB load (version requests as fast as the board answers, while idread
+counts) makes the board's interrupts arrive late, which ``nS_MaxAdj``'s
+upper edge needs and which PR #103's MinimalBoot errors came with. So
+``nS_MaxAdj`` is swept twice, without load and under it, and each other
+knob's default is checked once more under load after its sweep. The load
+runs beside idread, so on a plain TR those parts skip. The loaded sweep is
+recorded (its probe is idread-usbload, so its shrink check compares like
+with like) but not held to the station's floor, which is for the knob
+without load."""
 
 import pytest
 
@@ -26,18 +36,22 @@ pytestmark = [pytest.mark.needs_fw("Dbg_SerTimChg"), pytest.mark.timing_sensitiv
 
 FINE = 5
 STEPS = {"r": 10, "p": 10, "s": 10, "h": 10, "m": 20}   # nS_MaxAdj's range is about 350 ns wide
-CPU_KNOBS = list(STEPS)
+CASES = [(letter, False) for letter in STEPS] + [("m", True)]
 
 
-@pytest.mark.parametrize("letter", CPU_KNOBS, ids=[KNOBS[letter].name for letter in CPU_KNOBS])
-def test_cpu_margin(letter, at_menu, dbg, screen, programs, goldens, artifacts, station, request, pace,
+@pytest.mark.parametrize("letter, load", CASES,
+                         ids=[KNOBS[l].name + ("-usbload" if load else "") for l, load in CASES])
+def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artifacts, station, request, pace,
                     margin_check):
     board = at_menu
     knob = KNOBS[letter]
+    dma = board.station.has("dma")
+    if load and not dma:
+        pytest.skip("USB load runs beside idread, which needs a TR+")
     menu = MenuProbe(board, screen, goldens.load("menu/root"), artifacts)
-    if board.station.has("dma"):
+    if dma:
         request.getfixturevalue("sd_card")
-        probe = IdReadProbe(board, programs("idread"), dwell=pace.dwell, log=print)
+        probe = IdReadProbe(board, programs("idread"), dwell=pace.dwell, usb_load=load, log=print)
     else:
         probe = menu
     spec = SearchSpec(both=True, step=STEPS[letter], fine=FINE, repeat=pace.repeat)
@@ -45,8 +59,12 @@ def test_cpu_margin(letter, at_menu, dbg, screen, programs, goldens, artifacts, 
     print(margin.describe())
     assert not margin.points[0].failed, f"the default {knob.name} {margin.default} fails the {probe.name} probe"
     floor = station.margins.get(knob.name)
-    if floor is not None and probe is not menu:
+    if floor is not None and probe is not menu and not load:
         values = [v for v in (floor.down, floor.up) if v is not None]
         bad = [p for p in Sweep(dbg, knob, menu, SearchSpec(), log=print).spot(values) if p.failed]
         assert not bad, "the menu probe fails at the floor: " + "; ".join(f"{p.value}: {p.notes}" for p in bad)
-    margin_check(margin, board)
+    if dma and letter != "m":
+        loaded = IdReadProbe(board, programs("idread"), dwell=pace.dwell, usb_load=True, log=print)
+        point, = Sweep(dbg, knob, loaded, SearchSpec(repeat=pace.repeat), log=print).spot([margin.default])
+        assert not point.failed, f"the default {knob.name} {margin.default} fails under USB load: {point.notes}"
+    margin_check(margin, board, floor=not load)

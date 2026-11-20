@@ -5,7 +5,8 @@
 commit, the dirty hash, the target, the defines, the tag and the builder's
 own version, so an unchanged request is a hit and costs nothing. Until the
 builder has ``--define`` (plan item 6.1), the requested defines are switched
-on by editing the worktree's ``TeensyROM.h``, which the dirty hash records.
+on by editing the worktree's ``TeensyROM.h``, and MinimalBoot's
+``Min_TeensyROM.h`` for those it has too, which the dirty hash records.
 """
 
 from __future__ import annotations
@@ -60,10 +61,13 @@ def builder_version(checkout: Path) -> str:
         return "unknown"
 
 
-def enable_defines_in_header(checkout: Path, defines: tuple[str, ...]) -> list[str]:
-    """Uncomment ``// #define <NAME>`` lines in the worktree's TeensyROM.h for
-    the defines asked for. Returns the names it could not find."""
-    header = Path(checkout) / "Source" / "Teensy" / "TeensyROM.h"
+MAIN_HEADER = Path("Source") / "Teensy" / "TeensyROM.h"
+MINIMAL_HEADER = Path("Source") / "Teensy" / "MinimalBoot" / "Min_TeensyROM.h"
+
+
+def _uncomment(header: Path, defines: tuple[str, ...]) -> list[str]:
+    """Uncomment ``// #define <NAME>`` in ``header`` for each define; returns
+    the names it has no line for."""
     text = header.read_text(encoding="latin-1")
     missing = []
     for name in defines:
@@ -72,6 +76,19 @@ def enable_defines_in_header(checkout: Path, defines: tuple[str, ...]) -> list[s
         if n == 0 and not re.search(rf"^\s*#define\s+{re.escape(name)}\b", text, re.M):
             missing.append(name)
     header.write_text(text, encoding="latin-1", newline="")
+    return missing
+
+
+def enable_defines_in_header(checkout: Path, defines: tuple[str, ...]) -> list[str]:
+    """Uncomment ``// #define <NAME>`` lines for the defines asked for, in the
+    worktree's TeensyROM.h and, for the ones it has as well (Dbg_SerTimChg,
+    Dbg_SerLog, Dbg_SerMem), in MinimalBoot's Min_TeensyROM.h, so the minimal
+    image takes the same debug letters. Returns the names TeensyROM.h lacks;
+    one only the main image has is no fault in MinimalBoot's."""
+    missing = _uncomment(Path(checkout) / MAIN_HEADER, defines)
+    minimal = Path(checkout) / MINIMAL_HEADER
+    if minimal.is_file():
+        _uncomment(minimal, defines)
     return missing
 
 

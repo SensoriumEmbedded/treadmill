@@ -262,8 +262,10 @@ defines and tag), `path=<checkout>` builds a tree as it is, `hex=<file>` uses
 a prebuilt image, and `none` (the default) tests whatever the board carries.
 `--define NAME` (repeatable) compiles a debug define in; the build is tagged
 with the define's mark (`Dbg_SerTimChg` gives `v0.9-tim`) so the banner and
-every version reply say what the build is, and `--tag` names it otherwise. A
-checkout with uncommitted changes needs `--allow-dirty` and its build carries
+every version reply say what the build is, and `--tag` names it otherwise.
+MinimalBoot's own header gets a define too where it has a line for it
+(`Dbg_SerTimChg`, `Dbg_SerLog`, `Dbg_SerMem`), so the minimal image takes the
+same letters. A checkout with uncommitted changes needs `--allow-dirty` and its build carries
 the `*` the firmware's builder puts on a dirty tree. The flash is skipped
 when the board already runs that exact build; `--no-flash` builds without
 flashing. Any build with defines, a tag or a dirty tree is a variant and is
@@ -352,6 +354,25 @@ counts the reads that came back wrong each way. `tests/sweep/test_vic_margins.py
 and `tests/sweep/test_kernal_margins.py` sweep them both ways; the latter sets
 Special IO and `KSenseMode` and puts them back, and skips `Cyc_KernProp` on a
 C128, whose transceiver hides the address the Skoe sense drives.
+
+MinimalBoot, the small image the main one hands an EasyFlash cartridge with
+a chip in bank 64 or above, times its cycles with its own copies of
+`nS_MaxAdj`, `nS_RWnReady`, `nS_PLAprop`, `nS_DataSetup`, `nS_DataHold` and
+`nS_VICStart`. `--image minimal` sweeps them: idread built with `SHOW` and an
+erased bank-64 chip added, the board's USB followed as it restarts in
+MinimalBoot (`Board.reconnect_after_drop`), and its counters read off the top
+row by video, since MinimalBoot refuses DMA; the knobs' defaults are read
+after the hand-off, and the standard comes from the main image's banner,
+since MinimalBoot's `td` names none. `--usb-load` keeps the board's USB busy
+while idread counts, version requests as fast as the board answers, so
+interrupts arrive late: `nS_MaxAdj`'s upper edge shows only then.
+`tests/sweep/test_minimalboot_margins.py` sweeps the five CPU-cycle knobs
+under MinimalBoot on any TR with video, and `tests/sweep/test_cpu_margins.py`
+under the main image: in both, `nS_MaxAdj` twice, without load and under it,
+and every other knob's default once more under load. A sweep under load is
+recorded (its probe is `idread-usbload`, so its shrink check compares like
+with like) but not held to the station's floor, and `margins suggest` leaves
+it out: a station's floors are for its knobs without load.
 
 `nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
 reads fail before ROM reads, since the board drives them only after a call

@@ -38,12 +38,19 @@ LONG_REPLY_GAP_S = 2.0        # the most run() waits for a first byte before it 
 
 
 class DebugCommands:
-    def __init__(self, link: Link, defines: set[str] | frozenset[str],
+    def __init__(self, link: Link | Callable[[], Link], defines: set[str] | frozenset[str],
                  allow_eeprom_reset: bool = False):
-        self._link = link
+        # A link, or what gives the link now: a board's changes when it reconnects (a hand-off to the
+        # minimal image), and the letters must reach the image that answers.
+        self._source = link if callable(link) else (lambda: link)
         self.defines = set(defines)
         self.allow_eeprom_reset = allow_eeprom_reset
         self._listed: set[str] | None = None     # the knob letters the last 't' reply listed
+        self._listed_on: Link | None = None      # ... and the link it came over
+
+    @property
+    def _link(self) -> Link:
+        return self._source()
 
     def available(self, letter: str) -> bool:
         need = LETTERS.get(letter)
@@ -70,7 +77,7 @@ class DebugCommands:
         self._link._send(command.encode("latin-1"))
         reply = self._link.stream.read_idle(*TEXT_REPLY).decode("latin-1")
         if letter == "t":
-            self._listed = set(parse_listing(reply))
+            self._listed, self._listed_on = set(parse_listing(reply)), self._link
         return reply
 
     def run(self, command: str, done: Callable[[str], bool], timeout: float) -> str:
@@ -102,7 +109,7 @@ class DebugCommands:
     def listed(self) -> set[str]:
         """The knob letters the board's last 't' reply listed, asking for a
         listing if nothing has been sent yet."""
-        if self._listed is None:
+        if self._listed is None or self._listed_on is not self._link:
             self.listing()
         return self._listed or set()
 

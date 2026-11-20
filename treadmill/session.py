@@ -233,7 +233,7 @@ def menu_for(board: Board, screen: ScreenChannel) -> MenuDriver:
 def dbg_for(board: Board) -> DebugCommands:
     """The single-letter debug commands, gated on the flashed build's defines."""
     defines = {c[len("fw:"):] for c in board.station.caps if c.startswith("fw:")}
-    return DebugCommands(board.link, defines, allow_eeprom_reset=board.station.allow_eeprom_reset)
+    return DebugCommands(lambda: board.link, defines, allow_eeprom_reset=board.station.allow_eeprom_reset)
 
 
 @dataclass
@@ -298,6 +298,7 @@ def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...],
     fake, stream = start_fake_board(debug_defines=set(fw_defines))
     board = Board.open(station, attended=attended, link_factory=lambda: Link(stream),
                        fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station, fake))
+    board.reconnect_hook = lambda: Link(fake.host_stream)       # the fake's USB coming back
     if not video:
         board.mask({"video"})
         return Session(board, None, None, None)

@@ -108,3 +108,15 @@ def test_worktree_for_puts_a_reused_worktree_back(tmp_path: Path):
     assert describe(wt).dirty
     assert worktree_for(repo, "main", tmp_path / "work") == wt
     assert not describe(wt).dirty and not (wt / "stray.txt").exists()
+
+
+def test_a_define_build_patches_minimalboot_s_header_too(tmp_path: Path):
+    from treadmill.firmware.build import MAIN_HEADER, MINIMAL_HEADER, enable_defines_in_header
+    main, minimal = tmp_path / MAIN_HEADER, tmp_path / MINIMAL_HEADER
+    minimal.parent.mkdir(parents=True)
+    main.write_text("  // #define Dbg_SerDMA    //DMA\n  // #define Dbg_SerTimChg //timing\n", encoding="latin-1")
+    minimal.write_text("  // #define Dbg_SerTimChg //timing\n  // #define Dbg_SerLog\n", encoding="latin-1")
+    assert enable_defines_in_header(tmp_path, ("Dbg_SerTimChg", "Dbg_SerDMA")) == []
+    assert main.read_text(encoding="latin-1") == "  #define Dbg_SerDMA    //DMA\n  #define Dbg_SerTimChg //timing\n"
+    assert minimal.read_text(encoding="latin-1") == "  #define Dbg_SerTimChg //timing\n  // #define Dbg_SerLog\n"
+    assert enable_defines_in_header(tmp_path, ("Dbg_Nope",)) == ["Dbg_Nope"]

@@ -14,7 +14,9 @@ to Kernal Replace and KSenseMode to the method under test, and puts all three
 back after; td leaves KSenseMode, so ksense_mode restores it itself. Each
 knob walks down and up to the knob table's limits (nS_KSenseSample stays 20
 below nS_DMADataSetup), the defaults come back, and the edges go through
-margin_check."""
+margin_check. The edges come from the sense's verdict, the reads after the
+first; the first read after each write to $01, the Skoe sense's own cycle,
+is held to none wrong at the default on its own, after the margin is kept."""
 
 import pytest
 
@@ -50,3 +52,7 @@ def test_kernal_sense_margin(letter, at_menu, dbg, screen, keys, menu, programs,
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails: "
                                          f"{'; '.join(margin.points[0].notes)}")
     margin_check(margin, board)
+    rom_first, ram_first, passes = probe.first_reads[f"{letter}={margin.default}"]
+    assert not (rom_first or ram_first), (
+        f"at the default {knob.name} {margin.default}, the first KERNAL read after a write to $01 came wrong: "
+        f"{rom_first} of {passes} without the replacement, {ram_first} with it over RAM")

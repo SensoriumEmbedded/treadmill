@@ -14,8 +14,13 @@ one filler byte inverted (``probe_kernal``), so the C64 can tell the two
 apart: ``krread.a`` toggles HIRAM and reads the run each way, counting reads
 without the inverted bytes with HIRAM set and reads without its own RAM
 pattern with HIRAM clear. Its counters are read by DMA, at the defaults when
-the knob under test times DMA. The image is chosen as the Kernal file and
-Special IO set to Kernal Replace by the caller (``Settings.kernal_file``,
+the knob under test times DMA; the loop is never written to while it runs (a
+host write into it under the DMA sense came back with counts no loop could
+make, BACKLOG 40). The first read after
+each write to $01 is counted apart (``first_reads``): under Skoe it is the
+sense's own cycle, while the rest show whether the verdict was right, which is
+what a point is judged on. The image is chosen as the Kernal file and Special
+IO set to Kernal Replace by the caller (``Settings.kernal_file``,
 ``Settings.special_io``), and ``KSenseMode`` set (``ksense_mode``), since
 ``td`` leaves it alone.
 """
@@ -33,7 +38,7 @@ from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
 
 KERNAL, KERNAL_SIZE = 0xE000, 0x2000
 READY, READY_VALUE = 0xC104, 0x5A
-COUNTERS = 0xC110                 # passes, wrong with HIRAM set, wrong with it clear (16-bit each)
+COUNTERS = 0xC110                 # passes; the rest wrong with HIRAM set, with it clear; the first reads (16-bit)
 MIN_RUN, MAX_RUN = 16, 64         # the marker run: long enough to count, short enough to read every pass
 RAM_PATTERN = 0x0F
 START_S = 15.0
@@ -93,10 +98,13 @@ class KrReadProbe:
         self.remote = remote
         self.log = log
         self._stalled = False
+        # per value under test ("k=35"): first reads missed with HIRAM set, with it clear, and passes
+        self.first_reads: dict[str, list[int]] = {}
 
-    def counters(self) -> tuple[int, int, int]:
-        b = self.board.link.read_memory(COUNTERS, 6)
-        return b[0] | b[1] << 8, b[2] | b[3] << 8, b[4] | b[5] << 8
+    def counters(self) -> tuple[int, ...]:
+        """Passes and the four miss counts."""
+        b = self.board.link.read_memory(COUNTERS, 10)
+        return tuple(b[i] | b[i + 1] << 8 for i in range(0, 10, 2))
 
     def setup(self) -> None:
         if not self.board.dma_allowed():
@@ -113,15 +121,11 @@ class KrReadProbe:
                 break
         else:
             raise SweepError("krread never reported ready")
-        p0, r0, m0 = self.counters()
+        before = self.counters()
         time.sleep(CHECK_S)
-        p1, r1, m1 = self.counters()
-        passes, rom, ram = (p1 - p0) & 0xFFFF, (r1 - r0) & 0xFFFF, (m1 - m0) & 0xFFFF
-        if not passes:
+        after = self.counters()
+        if after[0] == before[0]:
             raise SweepError("krread is not looping")
-        if rom or ram:
-            raise SweepError(f"krread at the defaults: {rom} reads without the probe KERNAL, {ram} with it over "
-                             f"RAM: is Special IO Kernal Replace, with the probe KERNAL as its file?")
         self._stalled = False
 
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
@@ -132,17 +136,29 @@ class KrReadProbe:
                 self.board.wait_for_menu()
                 self.setup()
         with at_defaults(setting):
-            p0, r0, m0 = self.counters()
+            before = self.counters()
         time.sleep(self.dwell)
         with at_defaults(setting):
-            p1, r1, m1 = self.counters()
-        passes, rom, ram = (p1 - p0) & 0xFFFF, (r1 - r0) & 0xFFFF, (m1 - m0) & 0xFFFF
+            after = self.counters()
+        passes, rom, ram, rom_first, ram_first = ((a - b) & 0xFFFF for a, b in zip(after, before))
         if not passes:
             self._stalled = True
             return Sample(1, 1, "krread stopped: the C64 hung", hung=True)
-        reads = passes * self.length
-        note = f"HIRAM set: {rom}/{reads} without the replacement; clear: {ram}/{reads} with it" if rom or ram else None
-        return Sample(rom + ram, 2 * reads, note)
+        key = ",".join(f"{k}={v}" for k, v in sorted(setting.values.items())) if setting else label
+        seen = self.first_reads.setdefault(key, [0, 0, 0])
+        for i, n in enumerate((rom_first, ram_first, passes)):
+            seen[i] += n
+        reads = passes * (self.length - 1)
+        notes = []
+        if rom or ram:
+            notes.append(f"HIRAM set: {rom}/{reads} without the replacement; clear: {ram}/{reads} with it")
+        if rom_first or ram_first:
+            notes.append(f"the first read after the write: {rom_first}/{passes} without the replacement, "
+                         f"{ram_first}/{passes} with it over RAM")
+        return Sample(rom + ram, 2 * reads, "; ".join(notes) or None)
+
+    def info(self) -> dict:
+        return {"first_reads": self.first_reads}
 
     def teardown(self) -> None:
         self.board.reset()

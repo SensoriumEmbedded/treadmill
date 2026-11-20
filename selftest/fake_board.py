@@ -94,15 +94,21 @@ class C64Loop:
 
 @dataclass
 class KrLoop:
-    """krread.a's counters at $C110 (passes, reads without the replacement
-    with HIRAM set, reads with it over RAM), advanced by the clock: all of
-    them wrong when Kernal Replace is not serving the probe KERNAL, a share
-    while the sense knob in use lies outside its window."""
+    """krread.a's counters at $C110 (passes; the rest of the reads without
+    the replacement with HIRAM set, with it over RAM; the first reads after
+    the write, the same two ways), advanced by the clock: all of them wrong
+    when Kernal Replace is not serving the probe KERNAL, a share while the
+    sense knob in use lies outside its window. ``first_miss``: every pass's
+    first read with HIRAM set misses whatever the knob, as 002b's Skoe sense
+    did on NTSC."""
     last: float
     serving: bool
+    first_miss: bool = False
     passes: float = 0.0
     rom: float = 0.0
     ram: float = 0.0
+    rom_first: float = 0.0
+    ram_first: float = 0.0
 
     def advance(self, now: float, outside_ns: int) -> None:
         dt = max(0.0, now - self.last)
@@ -112,9 +118,12 @@ class KrLoop:
         self.passes += n
         self.rom += n * share
         self.ram += n * share / 2
+        self.rom_first += n if self.first_miss else n * share / 28
+        self.ram_first += n * share / 56
 
     def bytes(self) -> bytes:
-        return b"".join((int(v) & 0xFFFF).to_bytes(2, "little") for v in (self.passes, self.rom, self.ram))
+        return b"".join((int(v) & 0xFFFF).to_bytes(2, "little")
+                        for v in (self.passes, self.rom, self.ram, self.rom_first, self.ram_first))
 
 
 @dataclass
@@ -246,7 +255,8 @@ class FakeBoard:
         if name.endswith("idread.crt"):
             self.idread = IdRead(time.monotonic())
         if name.startswith("krread"):
-            self.krloop = KrLoop(time.monotonic(), self.special_io == "Kernal Replace" and self.kernal_file is not None)
+            self.krloop = KrLoop(time.monotonic(), self.special_io == "Kernal Replace" and self.kernal_file is not None,
+                                 first_miss=bool(self.faults.get("kr_first_read_miss")))
             self.memory[0xC104] = 0x5A
         if path.lower().endswith("vicrom.crt"):
             screen = bytes(i & 0xFF for i in range(SCREEN_BYTES))
@@ -724,7 +734,7 @@ class FakeBoard:
         if self.c64loop is not None:
             self.memory[0xC110:0xC114] = self.c64loop.bytes()
         if self.krloop is not None:
-            self.memory[0xC110:0xC116] = self.krloop.bytes()
+            self.memory[0xC110:0xC11A] = self.krloop.bytes()
         if self.ultimax_since is not None and not self.vic_outside() > self.faults.get("vic_hang_ns", 10 ** 6):
             frames = int((time.monotonic() - self.ultimax_since) * 60) & 0xFFFF
             self.memory[0x0F00:0x0F02] = frames.to_bytes(2, "little")

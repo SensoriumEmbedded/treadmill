@@ -327,3 +327,19 @@ cost or a wart with a known, small fix.
    step on video) to tell the two apart; then set both caps from what it
    shows, per standard if PAL has more room. A station without power
    control cannot recover from such a hang: the run ends there.
+40. **medium** Host writes into the C64's memory may go astray under Kernal
+   Replace's DMA sense. On the Kawari C64 (002b) in NTSC, a TR+ on main
+   a1dbf5e3, `KSenseMode` 2, krread with a hold handshake (the host wrote a
+   flag by DMA before and after each counter read, the loop waited between
+   passes while it was set) gave counts no loop could make: 30550 first-read
+   misses in 369 passes, at most one each, and 369 passes in 2 s where Skoe
+   made about 2344, as if it sat held (`reports/20261120-094916-ntsc`). The
+   same probe reading its counters without writing had been clean from 55 to
+   384 an hour before. `KDS_Begin` (`IOH_KernalReplace.c`) defers to another
+   DMA user that already holds the line, but nothing shown here keeps a
+   remote write from starting while a sense's own DMA cycle is in flight,
+   and a remote write is what the TeensyROM Suite does to a running C128
+   program. krread no longer writes into its loop. Fix: an exec script that
+   runs krread under each sense and, beside it, writes and reads back a
+   pattern in a free page by DMA, counting mismatches; if the DMA sense's
+   count is not zero, it goes to the firmware with that script.

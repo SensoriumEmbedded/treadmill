@@ -293,6 +293,25 @@ def test_several_probes_at_a_point(fake_station):
     assert bad.by_probe["wide"] == [0, 1] and bad.by_probe["narrow"] == [1, 1]
 
 
+def test_a_probe_whose_setup_fails_is_torn_down(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+
+    class LaunchedThenFailed(Window):
+        torn_down = 0
+
+        def setup(self) -> None:
+            raise SweepError("its program is running, but it is not looping")
+
+        def teardown(self) -> None:
+            self.torn_down += 1
+
+    first, failing = Window(fake, "p", (100, 260), name="first"), LaunchedThenFailed(fake, "p", (0, 999))
+    with pytest.raises(SweepError, match="not looping"):
+        Sweep(dbg, KNOBS["p"], [first, failing], SearchSpec(stop=250, step=20), log=lambda m: None).run()
+    assert failing.torn_down == 1 and fake.knobs == KNOB_DEFAULTS
+
+
 def test_menu_probe_sees_the_misread_marks(fake_station, tmp_path: Path):
     fake, board = fake_station
     screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)

@@ -18,7 +18,7 @@ from treadmill.c64.settings import REU, Settings, SettingsError
 from treadmill.link import DebugCommands, Link
 from treadmill.observe.channels import ScreenChannel
 from treadmill.probes.cpuwatch import CpuWatchProbe
-from treadmill.probes.krread import ksense_mode, probe_kernal
+from treadmill.probes.krread import KrReadProbe, ksense_mode, probe_kernal
 from treadmill.probes.noise import NoiseProbe
 from treadmill.probes.reuloop import ReuLoopProbe
 from treadmill.probes.vicrom import VicRomProbe
@@ -291,6 +291,39 @@ def test_the_kernal_file_is_chosen_with_k_and_put_back(fake_station):
     assert fake.kernal_file == "SD://treadmill/krprobe.bin" and "not a path to put back" in logged[-1]
     with pytest.raises(SettingsError):
         settings.set_kernal_file(menu, "TR:/whatever.bin")
+
+
+def test_krread_counts_a_failing_default_as_the_sweep_s_result(fake_station, tmp_path: Path):
+    """Kernal Replace not serving the probe KERNAL: krread runs, and the
+    default's point fails with the reads it missed instead of the setup
+    refusing."""
+    fake, board, dbg = fake_station
+    program = tmp_path / "krread.prg"
+    program.write_bytes(bytes(16))
+    probe = KrReadProbe(board, program, 28, dwell=0.3, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["k"], probe, SearchSpec(both=True, step=20, fine=10), log=lambda m: None).run()
+    assert len(margin.points) == 1 and margin.points[0].failed
+    assert "without the replacement" in margin.points[0].notes[0]
+    assert fake.krloop is None and fake.knobs == KNOB_DEFAULTS, "torn down, at the menu, at the defaults"
+
+
+def test_krread_keeps_the_first_read_apart_from_the_verdict(fake_station, tmp_path: Path):
+    """Every pass's first read with HIRAM set missing (002b's Skoe sense on
+    NTSC) leaves the points clean, so the verdict's edges are found, and the
+    misses are kept per value."""
+    fake, board, dbg = fake_station
+    fake.faults["kr_first_read_miss"] = True
+    fake.special_io, fake.kernal_file = "Kernal Replace", "SD://treadmill/krprobe.bin"
+    fake.knobs["x"] = 0
+    program = tmp_path / "krread.prg"
+    program.write_bytes(bytes(16))
+    probe = KrReadProbe(board, program, 28, dwell=0.3, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["k"], probe, SearchSpec(both=True, step=10, fine=5), log=lambda m: None).run()
+    assert (margin.edges["down"].clean_to, margin.edges["up"].clean_to) == (20, 60)
+    rom_first, ram_first, passes = probe.first_reads["k=35"]
+    assert passes > 0 and rom_first == passes and ram_first == 0
+    assert margin.probe_info["krread"]["first_reads"]["k=35"] == [rom_first, ram_first, passes]
+    assert "the first read after the write" in next(n for p in margin.points for n in p.notes if "first" in n)
 
 
 def _pet(char: str) -> int:

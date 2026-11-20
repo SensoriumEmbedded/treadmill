@@ -5,14 +5,18 @@
 ; the same addresses, where the C64 must see its own RAM (PAT, written there first).
 ; Every write to $01 makes the TeensyROM sense HIRAM again, on the next KERNAL read
 ; (Cyc_KernProp, Skoe) or in a stolen cycle right after the write (nS_KSenseSample,
-; DMA), so every pass is two senses. Counters at $C110: passes, reads where the
-; replacement was missing (ROM side) and reads where it came over RAM (RAM side),
-; 16 bits each; $5A at $C104 once running.
+; DMA), so every pass is two senses. The first read of each half is counted apart
+; from the rest: under Skoe it is the sense's own cycle, and the rest show the
+; verdict. Counters at $C110, 16 bits each: passes; the rest of the reads where the
+; replacement was missing (ROM side) and where it came over RAM (RAM side); the
+; first reads, the same two ways. $5A at $C104 once running.
 
-ready   = $c104
-passes  = $c110
+ready    = $c104
+passes   = $c110
 romwrong = $c112
 ramwrong = $c114
+romfirst = $c116
+ramfirst = $c118
 
 * = $0801
 !word next, 10
@@ -30,7 +34,7 @@ next !word 0
         lda $dd0d
         lda #0
         sta $d01a
-        ldx #5
+        ldx #9
 -       sta passes,x
         dex
         bpl -
@@ -46,7 +50,13 @@ next !word 0
 
 loop    lda #$37                ; KERNAL in: the replacement's bytes
         sta $01
-        ldx #LEN - 1
+        lda MARK + LEN - 1
+        cmp #FILL XOR $ff
+        beq +
+        inc romfirst
+        bne +
+        inc romfirst+1
++       ldx #LEN - 2
 -       lda MARK,x
         cmp #FILL XOR $ff
         beq +
@@ -57,7 +67,13 @@ loop    lda #$37                ; KERNAL in: the replacement's bytes
         bpl -
         lda #$35                ; KERNAL out: RAM
         sta $01
-        ldx #LEN - 1
+        lda MARK + LEN - 1
+        cmp #PAT
+        beq +
+        inc ramfirst
+        bne +
+        inc ramfirst+1
++       ldx #LEN - 2
 -       lda MARK,x
         cmp #PAT
         beq +
@@ -67,6 +83,6 @@ loop    lda #$37                ; KERNAL in: the replacement's bytes
 +       dex
         bpl -
         inc passes
-        bne loop
+        bne +
         inc passes+1
-        jmp loop
++       jmp loop

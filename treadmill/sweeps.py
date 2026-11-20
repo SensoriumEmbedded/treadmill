@@ -646,6 +646,20 @@ class Sweep:
                 break
         return points
 
+    def _start(self, probe: Probe, started: list[Probe]) -> None:
+        """``probe`` set up and added to ``started``. A setup can fail with
+        its program already launched, so a failed one is torn down at once:
+        the caller then puts its settings back through the menu."""
+        try:
+            probe.setup()
+        except BaseException:
+            try:
+                probe.teardown()
+            except Exception as e:  # noqa: BLE001 - the setup's failure is the one to report
+                self.log(f"[sweep] {probe.name}: teardown after its failed setup: {e}")
+            raise
+        started.append(probe)
+
     def _early(self, checks: Callable[[], None]) -> list[Probe]:
         """The probes that change the image the knobs belong to (a hand-off
         to MinimalBoot) set up first, then the defaults read and ``checks``
@@ -655,8 +669,7 @@ class Sweep:
         try:
             for probe in self.ordered():
                 if getattr(probe, "changes_image", False):
-                    probe.setup()
-                    started.append(probe)
+                    self._start(probe, started)
             self.prepare()
             checks()
         except BaseException:
@@ -676,10 +689,8 @@ class Sweep:
         points: list[Point] = []
         try:
             for probe in self.ordered():
-                if probe in started:
-                    continue
-                probe.setup()
-                started.append(probe)
+                if probe not in started:
+                    self._start(probe, started)
             points = [self.probe_at(value) for value in values]
         finally:
             try:
@@ -723,10 +734,8 @@ class Sweep:
         restored = False
         try:
             for probe in self.ordered():
-                if probe in started:
-                    continue
-                probe.setup()
-                started.append(probe)
+                if probe not in started:
+                    self._start(probe, started)
             if spec.mode == "one":
                 points, _, _ = search(lambda v: self.probe_at(v, 1), start, spec)
             elif spec.mode == "both":

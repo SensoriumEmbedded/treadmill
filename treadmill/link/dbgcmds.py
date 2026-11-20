@@ -9,11 +9,12 @@ define, and ``e`` only on a station that allows it.
 
 from __future__ import annotations
 
+from treadmill.knobs import KNOBS, parse_listing
 from treadmill.link.trlink import Link, NotAllowed
 
 # letter -> the define that compiles it in (None: always available)
 LETTERS: dict[str, str | None] = {
-    "t": "Dbg_SerTimChg",   # timing knobs: t<m|r|p|s|h|v|i|a|b|e|w|y|k><digits>, td restores
+    "t": "Dbg_SerTimChg",   # timing knobs (treadmill.knobs): t<letter><digits>, td restores
     "u": "Dbg_SerDMA", "v": "Dbg_SerDMA", "w": "Dbg_SerDMA", "z": "Dbg_SerDMA", "y": "Dbg_SerDMA",
     "f": "Dbg_SerMem", "x": "Dbg_SerMem",
     "o": "Dbg_SerSD",
@@ -24,15 +25,10 @@ LETTERS: dict[str, str | None] = {
     "e": None,              # settings to defaults: destructive
 }
 
-# The timing knobs behind 't' and how many digits GetDigits() reads for each,
-# as SerUSBIO.ino's case 't' lists them (the Kernal Replace knobs tx and tn
-# exist only on a TR+ build and are not here).
-TIMING_KNOBS = {"m": 4, "r": 3, "p": 3, "s": 3, "h": 3, "v": 3, "i": 3, "a": 3, "b": 3, "e": 3, "w": 3,
-                "y": 3, "k": 2}
-TIMING_NAMES = {"m": "nS_MaxAdj", "r": "nS_RWnReady", "p": "nS_PLAprop", "s": "nS_DataSetup",
-                "h": "nS_DataHold", "v": "nS_VICStart", "i": "nS_VICDHold", "a": "nS_DMAAssert",
-                "b": "nS_DMABAWait", "e": "nS_DMASetup", "w": "nS_DMADataHold", "y": "nS_DMADataSetup",
-                "k": "Cyc_KernProp"}
+# The timing knobs behind 't', by letter: how many digits GetDigits() reads, and the
+# variable the listing prints (treadmill.knobs has the rest).
+TIMING_KNOBS = {k.letter: k.digits for k in KNOBS.values()}
+TIMING_NAMES = {k.letter: k.name for k in KNOBS.values()}
 
 TEXT_REPLY = (3.0, 0.3, 20.0)
 
@@ -43,6 +39,7 @@ class DebugCommands:
         self._link = link
         self.defines = set(defines)
         self.allow_eeprom_reset = allow_eeprom_reset
+        self._listed: set[str] | None = None     # the knob letters the last 't' reply listed
 
     def available(self, letter: str) -> bool:
         need = LETTERS.get(letter)
@@ -63,17 +60,31 @@ class DebugCommands:
                    else f"the flashed build lacks {LETTERS[letter]}")
             raise NotAllowed(f"{command!r} not sent: {why}")
         self._link._send(command.encode("latin-1"))
-        return self._link.stream.read_idle(*TEXT_REPLY).decode("latin-1")
+        reply = self._link.stream.read_idle(*TEXT_REPLY).decode("latin-1")
+        if letter == "t":
+            self._listed = set(parse_listing(reply))
+        return reply
 
     def set_knob(self, knob: str, value: int) -> str:
         """``tp210`` and friends: a timing knob to a value, zero-padded to the
         digit count the firmware reads."""
         if knob not in TIMING_KNOBS:
             raise NotAllowed(f"timing knob {knob!r}: use {', '.join(TIMING_KNOBS)}")
-        width = TIMING_KNOBS[knob]
-        if not 0 <= value < 10 ** width:
-            raise NotAllowed(f"{TIMING_NAMES[knob]} = {value}: {width} digits at most")
-        return self.send(f"t{knob}{value:0{width}d}")
+        spec = KNOBS[knob]
+        if not spec.fits(value):
+            raise NotAllowed(f"{spec.name} = {value}: {spec.digits} digits at most")
+        if spec.tr_plus_only and knob not in self.listed():
+            # Only a TR+ build compiles these letters in; elsewhere 'tx9' would
+            # send the '9' on as a command of its own.
+            raise NotAllowed(f"{spec.name} not sent: the board's 't' listing does not show it (a TR+ build has it)")
+        return self.send(spec.format(value))
+
+    def listed(self) -> set[str]:
+        """The knob letters the board's last 't' reply listed, asking for a
+        listing if nothing has been sent yet."""
+        if self._listed is None:
+            self.listing()
+        return self._listed or set()
 
     def restore_defaults(self) -> str:
         return self.send("td")

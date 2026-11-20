@@ -19,6 +19,7 @@ from treadmill.c64.screen import (
     KEYBUF, KEYBUF_SIZE, KEYCOUNT, REVERSE_VIDEO, SCREEN_BYTES, SCREEN_COLUMNS, SCREEN_RAM_DEFAULT, SCREEN_ROWS,
     VIC_MEMPTR, codes_for_text,
 )
+from treadmill.knobs import KNOBS, standard_of
 from treadmill.link.banner import parse_banner
 from treadmill.mfg import IGETIN, JIFFY_CLOCK, LED_ROW
 from treadmill.link.protocol import (
@@ -29,6 +30,7 @@ from treadmill.link.protocol import (
 from treadmill.link.transport import PipeEnd, open_pipe
 
 WAIT_S = 2.0
+LETTER_ARG_S = 0.2              # a bare 't': the firmware's read() finds nothing and lists at once
 DISCARD_QUIET_S = 1.0           # DiscardCmdInput: twice SerialTimoutMillis of nothing arriving
 STATS_TRAILER = bytes([1, 0, 0, 0, 0x00, 0x2C, 0xA3, 0x30])
 BANNER = ("\n  FW: TeensyROM+ v0.9\r\n      Oct 30 2026, 10:00:00\r\n"
@@ -39,9 +41,8 @@ READY_LINE = "TeensyROM+ v0.9 ready!\n"
 # Commands the firmware answers whatever else it is doing (ProcessCommand's first switch).
 ALWAYS = {FW_CHECK, VERSION_INFO, RESET_C64, LAUNCH_FILE, C64_PAUSE_ON, C64_PAUSE_OFF,
           READ_C64_MEM, WRITE_C64_MEM}
-# The timing knobs at the firmware's NTSC C64 defaults (Common_Defs.h Def_nS_*), by their 't' letter.
-KNOB_DEFAULTS = {"m": 993, "r": 135, "p": 150, "s": 220, "h": 390, "v": 210, "i": 365, "a": 40, "b": 200,
-                 "e": 430, "w": 410, "y": 390, "k": 35}
+# The timing knobs at the firmware's NTSC C64 defaults, by their 't' letter (treadmill.knobs).
+KNOB_DEFAULTS = {k.letter: k.default("NTSC") for k in KNOBS.values()}
 # idread.a as the fake runs it: passes a second, and the share of a path's reads that go wrong
 # per nanosecond the sample point lies outside that path's clean window.
 IDREAD_RESULTS = 0xC000
@@ -352,29 +353,54 @@ class FakeBoard:
         if need is None or need not in self.debug_defines:
             return                                   # dropped, like the firmware's switch
         if letter == "t":
-            sub = end.read(1, WAIT_S).decode("latin-1")
-            if sub in TIMING_KNOBS:
+            sub = end.read(1, LETTER_ARG_S).decode("latin-1")
+            if sub in self._knob_letters():
                 digits = end.read(TIMING_KNOBS[sub], WAIT_S).decode("latin-1")
                 self.knobs[sub] = int(digits)
                 self.letters.append(f"t{sub}{digits}")
                 head = f"\nVal Set to: {int(digits)}\n\n"          # GetDigits()
+                if sub == "x":
+                    head += "Kernal HIRAM sense mode set: takes effect at the next Kernal Replace launch\n"
                 self.menu.render()                                 # the marks follow the margin at once
             elif sub == "d":
-                self.knobs = dict(KNOB_DEFAULTS)
+                self.restore_knobs()
                 self.letters.append("td")
-                head = "Defaults set (NTSC C64)\n"
+                banner = parse_banner(self.banner)
+                head = ("Defaults set\n" if self.image == "minimal"
+                        else f"Defaults set ({banner.video or 'PAL'} {banner.machine or 'C64'})\n")
                 self.menu.render()
             else:
                 self.letters.append(f"t{sub}")
                 head = "No changes\n"
-            end.write(("-----\n" + head + self._knob_listing()).encode("latin-1"))
+            listing = self._minimal_knob_listing() if self.image == "minimal" else self._knob_listing()
+            end.write(("-----\n" + head + listing).encode("latin-1"))
             return
         self.letters.append(letter)
         end.write(f"ok {letter}\n".encode("latin-1"))
 
+    def _knob_letters(self) -> set[str]:
+        """The letters this build's 't' takes: MinimalBoot's six, or main's
+        thirteen and, on a TR+ build, the Kernal Replace two."""
+        if self.image == "minimal":
+            return {k.letter for k in KNOBS.values() if "minimal" in k.images}
+        return {k.letter for k in KNOBS.values() if self.dma or not k.tr_plus_only}
+
+    def restore_knobs(self) -> None:
+        """'td': the knobs to the defaults for the standard the banner shows.
+        Main's leaves KSenseMode alone; MinimalBoot's restores its five
+        rise/fall knobs, and nS_MaxAdj and the DMA set through
+        SetVideoStdDMATiming, as Min_SerUSBIO.ino does."""
+        banner = parse_banner(self.banner)
+        standard = standard_of(banner.machine, banner.video)
+        restored = {k.letter for k in KNOBS.values() if k.restored_by_td}
+        if self.image == "minimal":
+            restored = self._knob_letters() | {"a", "b", "e", "w", "y"}
+        for letter in restored:
+            self.knobs[letter] = KNOBS[letter].default(standard)
+
     def _knob_listing(self) -> str:
         """The block the firmware prints after every 't' command, as
-        SerUSBIO.ino formats it (a TR build: no Kernal Replace lines)."""
+        SerUSBIO.ino formats it; the Kernal Replace lines on a TR+ build only."""
         k = self.knobs
         return ("Current:    Variable  Val (Command)\n"
                 f"\t nS_MaxAdj   {k['m']:04d} (tm####)\n"
@@ -390,6 +416,28 @@ class FakeBoard:
                 f"\t nS_DMADataHold  {k['w']:03d} (tw###)\n"
                 f"\t nS_DMADataSetup {k['y']:03d} (ty###)\n"
                 f"\t Cyc_KernProp  {k['k']:02d} (tk##)\n"
+                + (f"\t KSenseMode    {k['x']}, in effect {self._ksense_in_effect()} (tx#: 0 Skoe, 2 DMA, 9 auto)\n"
+                   f"\t nS_KSenseSample {k['n']:03d} (tn###)\n" if self.dma else "")
+                + "\tSet Defaults      (td)\n"
+                "\tList current vals (t)\n-----\n")
+
+    def _ksense_in_effect(self) -> int:
+        """KSenseEff as a launch sets it: auto is DMA on a C128, Skoe on a C64."""
+        mode = self.knobs["x"]
+        if mode == 9:
+            return 2 if parse_banner(self.banner).machine == "C128" else 0
+        return 2 if mode == 2 else 0
+
+    def _minimal_knob_listing(self) -> str:
+        """Min_SerUSBIO.ino's block: six knobs, its own spacing."""
+        k = self.knobs
+        return ("Current:    Variable  Val (Command)\n"
+                f"\t   nS_MaxAdj {k['m']:04d} (tm####)\n"
+                f"\t nS_RWnReady  {k['r']:03d} (tr###)\n"
+                f"\t  nS_PLAprop  {k['p']:03d} (tp###)\n"
+                f"\tnS_DataSetup  {k['s']:03d} (ts###)\n"
+                f"\t nS_DataHold  {k['h']:03d} (th###)\n"
+                f"\t nS_VICStart  {k['v']:03d} (tv###)\n"
                 "\tSet Defaults      (td)\n"
                 "\tList current vals (t)\n-----\n")
 

@@ -29,10 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
+from treadmill import knobs
 from treadmill.board import Board
 from treadmill.errors import EXIT_USAGE, TreadmillError
+from treadmill.knobs import KNOBS, Knob  # noqa: F401  (KNOBS: the tests import it from here)
 from treadmill.link import DebugCommands, LinkError, TransportError
-from treadmill.link.dbgcmds import TIMING_KNOBS, TIMING_NAMES
 from treadmill.observe.channels import ScreenChannel, ScreenError
 from treadmill.observe.golden import Golden, compare, save_golden
 
@@ -47,32 +48,15 @@ class SweepError(TreadmillError):
     pass
 
 
-@dataclass(frozen=True)
-class Knob:
-    letter: str                   # the letter after 't'
-    name: str                     # the firmware variable the listing prints
-    digits: int
-    define: str = "Dbg_SerTimChg"
-    unit: str = "ns"
-
-
-KNOBS: dict[str, Knob] = {
-    letter: Knob(letter, TIMING_NAMES[letter], TIMING_KNOBS[letter], unit="cycles" if letter == "k" else "ns")
-    for letter in TIMING_KNOBS
-}
-
-
 def knob_named(text: str) -> Knob:
-    """``p``, ``tp`` or ``nS_PLAprop``."""
-    key = text.strip()
-    if key in KNOBS:
-        return KNOBS[key]
-    if len(key) == 2 and key[0] == "t" and key[1] in KNOBS:
-        return KNOBS[key[1]]
-    for knob in KNOBS.values():
-        if knob.name.lower() == key.lower():
-            return knob
-    raise SweepError(f"no timing knob {text!r}; one of " + ", ".join(f"{k.letter} ({k.name})" for k in KNOBS.values()))
+    """``p``, ``tp`` or ``nS_PLAprop``; a mode such as ``KSenseMode`` is set, not swept."""
+    try:
+        knob = knobs.knob_named(text)
+    except KeyError as e:
+        raise SweepError(e.args[0]) from None
+    if not knob.swept:
+        raise SweepError(f"{knob.name} is a mode, set with {knob.command}#, not swept")
+    return knob
 
 
 @dataclass

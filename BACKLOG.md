@@ -229,17 +229,13 @@ cost or a wart with a known, small fix.
    DMA write window was swept along one line. `--scan LO:HI --grid LO:HI`
    maps `nS_DMASetup` by `nS_DMADataHold` with the latch held, drawn as a
    heatmap on the margin map rather than in `report.html`.
-24. **medium** MinimalBoot's read errors under USB traffic have no
-   regression test. `scripts/2026-11-15-minimalboot-usb.py` hands an
-   EasyFlash image with a bank-64 chip to MinimalBoot, asks it for its
-   version as fast as it answers and reads idread's counters by video: on
-   the Kawari C64 (registry 002b), NTSC, main before PR #103 gave 2,963
-   wrong ROM reads of 2.2 million and 1,320 wrong IO2 reads, the PR none.
-   Nothing reruns it when the firmware changes. Fix:
-   `tests/launch/test_minimalboot_handoff.py` with 30 s of traffic, the
-   script's `board._reconnect()` made public, a fake path or a skip on the
-   fake, and a bench run that fails on the commit before PR #103 and passes
-   after it.
+24. **closed 2026-11-20, with the MinimalBoot margins.** MinimalBoot's read
+   errors under USB traffic had no regression test.
+   `tests/sweep/test_minimalboot_margins.py` hands idread to MinimalBoot as
+   the script did (`Board.reconnect_after_drop`; the fake re-enumerates
+   too), checks every knob's default under USB load and sweeps `nS_MaxAdj`
+   under it. The bench run that fails on the commit before PR #103 is item
+   25's.
 25. **medium** The hardware tests have passed on one machine only. Every
    passing run of `tests/` is on the Kawari C64 (registry 002b); the C128
    runs were of a test since dropped, and all the multi-machine numbers
@@ -247,8 +243,14 @@ cost or a wart with a known, small fix.
    timing differ between C64 and C128 and between PAL and NTSC, which is
    what the reset, launch, menu, sweep and handler tests are there for.
    Fix: run the whole suite once on every station (README, "Which tests
-   run where"), and give each station a `[margins]` floor for `nS_PLAprop`
-   from its own sweep.
+   run where"), then the margin run on each (`treadmill run --station <id>
+   --fw ref=main --define Dbg_SerTimChg --define Dbg_SerDMA --tests
+   tests/sweep`, about 90 minutes a TR+ station), and give each station its
+   `[margins]` floors from `treadmill margins suggest`. Prove the margin
+   tests on the bench where a known-bad build exists: `nS_PLAprop`'s floor
+   on NTSC against the commit before `UpdateItemTypeReg`, `nS_DMASetup` on
+   C128 #29 against PR #99's 414 build, and MinimalBoot under load against
+   the commit before PR #103.
 26. **closed 2026-11-19, with the DMA margin test.** The DMA setup margin
    had no regression test. `tests/sweep/test_dma_margins.py` sweeps
    `nS_DMASetup` with its sums held, and the other four DMA knobs, both
@@ -277,3 +279,24 @@ cost or a wart with a known, small fix.
    picture with the session's calibration and bank. Fix: catch the switch
    back's error and report both, and mark the station so later video tests
    skip instead of misreading.
+35. **low** The Special IO handlers' own IO reads have no margin probe.
+   idread counts the EasyFlash handler's IO2 page; the REU's registers,
+   SwiftLink's and the other Special IO handlers answer through their own
+   code after `nS_PLAprop`, each a different time into the cycle. The
+   firmware's `tools/bench/regsweep.py` (with `regread.a`) reads the chosen
+   handler's registers back in a loop while it steps `nS_PLAprop`. Fix: a
+   `regread` probe in `treadmill/probes/` on that program, the handler set
+   through the Settings driver, swept in `test_cpu_margins.py` for each
+   handler a station's machine uses.
+36. **low** MinimalBoot's DMA assert time has no knob. The EasyFlash
+   bank-swap pause MinimalBoot runs for large images asserts /DMA at the
+   compiled `nS_DMAAssert`, and MinimalBoot's `t` takes no `ta`
+   (`Min_SerUSBIO.ino`), so no sweep can reach it. Fix: a `ta` in
+   MinimalBoot's `t`, which is a firmware change and the maintainer's
+   call; then a swap-pause probe under MinimalBoot.
+37. **low** MinimalBoot's `nS_VICStart` is not swept. MinimalBoot's `t`
+   takes `tv`, but vicrom is an Ultimax image the main image serves itself,
+   so `tests/sweep/test_vic_margins.py` times the main image's VIC cycles
+   only. Fix: hand off to MinimalBoot first (idread with its bank-64 chip),
+   then launch vicrom from MinimalBoot, which loads 8K-Hi images itself
+   (`Min_DriveDirLoad.ino`), and sweep `tv` there with the vicrom probe.

@@ -13,14 +13,18 @@ The firmware runs for hours without going anywhere, and you measure it.
 ```
 treadmill/            the package: station model, link, observation, firmware, driver, reports
   pytest_plugin.py    options, markers, fixtures, the run record
-  cli.py              treadmill run | exec | shell | sweep | mfg | stations | calibrate | harvest | screen | frame | score | viewer
+  cli.py              treadmill run | exec | shell | sweep | margins | mfg | stations | calibrate | harvest | screen | frame | score | viewer
   driver.py           run, exec and shell as library calls
-  sweeps.py           the timing-knob sweep engine: knob x probe x search, and the margin it reports
+  knobs.py            the firmware's timing knobs: letters, defaults per standard, sweep limits
+  sweeps.py           the timing-knob sweep engine: knob x probes x search, and the margins it reports
+  probes/             what a sweep samples with: idread, menu, zpattern, reuloop, cpuwatch, noise, vicrom, krread
+  margins.py          margin records (margins.json), floors, the shrink check, PR #99's runs imported
   mfg.py              the manufacturing test of new TR+ boards, one after another
 tests/                the hardware tests, one concern per file, selected by markers and --station
 selftest/             tests that need no hardware (fake board, rendered frames, config)
 scripts/              dated one-off investigation scripts for `treadmill exec`; kept, never part of the suite
 spikes/               the Phase 1 feasibility probes and their results; a record, nothing new goes here
+docs/knobs.md         each timing knob: what it times, its limits, what breaks each way, its probes and test
 data/                 rigs, stations, calibrations, glyph banks, goldens, SD fixtures (private parts are git-ignored)
 reports/              one folder per run: run.json, report.html, one folder per test
 ```
@@ -272,6 +276,17 @@ flashing. Any build with defines, a tag or a dirty tree is a variant and is
 recorded as one.
 
 ## Sweeps
+
+[docs/knobs.md](docs/knobs.md) has every knob: what it times, its defaults
+and limits, what breaks each way, and the probe and test that find it. A
+margin run on a station is all of `tests/sweep/` on a debug build:
+
+```
+treadmill run --station <id> --fw ref=main --define Dbg_SerTimChg --define Dbg_SerDMA --tests tests/sweep
+```
+
+about 90 minutes a TR+ station; a plain TR skips the DMA and Kernal Replace
+tests.
 
 `treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --both`
 finds a bus timing knob's margin each way: the knob (`p`, `tp` or

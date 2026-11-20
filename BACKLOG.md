@@ -307,3 +307,23 @@ cost or a wart with a known, small fix.
    -m "not alike"` reports 21 tests and about 144 minutes for a selection of
    10 that comes to about 70. Fix: total the estimate in a
    `trylast=True` hook, after deselection.
+39. **medium** A high `nS_VICStart` hangs the TeensyROM, and the VIC
+   knobs' upper limits stop short of it. On the Kawari C64 (002b) in NTSC,
+   a TR+ on main a1dbf5e3 with `Dbg_SerTimChg` and `Dbg_SerDMA`, vicrom
+   running, `nS_VICStart` was clean from 85 to 310; at 320 the probe's next
+   DMA read of its counters ($0F00) got no reply, and the board answered
+   nothing on USB after (the reset rungs, then a forced reflash that found
+   no board) until the C64 was power-cycled
+   (`reports/20261120-073513-ntsc`). `isrPHI2()` (`ISRs.c`) holds a
+   VIC-cycle drive until `nS_VICDHold` (365) whatever `nS_VICStart` is, so
+   the later sample alone should not end the interrupt later;
+   `Common_Defs.h` says a higher `nS_VICDHold` breaks Ultimax cartridges on
+   NTSC, which may be the same failure. Until this is settled,
+   `treadmill/knobs.py` caps `nS_VICStart` at 310 and `nS_VICDHold` at its
+   default, so its sweep goes down only. Fix: reproduce attended (each hang
+   needs a power cycle), on a build with `DbgSignalIsrPHI2` and a scope, to
+   see whether the interrupt overruns the next Phi2 rise or the DMA read
+   path waits with interrupts off; step without DMA reads (the border's
+   step on video) to tell the two apart; then set both caps from what it
+   shows, per standard if PAL has more room. A station without power
+   control cannot recover from such a hang: the run ends there.

@@ -81,8 +81,10 @@ KNOBS: dict[str, Knob] = {k.letter: k for k in (
     _k("p", "nS_PLAprop", 3, "cpu", "rise", 150, None, None, images=BOTH_IMAGES),
     _k("s", "nS_DataSetup", 3, "cpu", "rise", 220, 100, 480, images=BOTH_IMAGES),
     _k("h", "nS_DataHold", 3, "cpu", "rise", 390, 250, 520, images=BOTH_IMAGES),
-    _k("v", "nS_VICStart", 3, "vic", "fall", 210, 60, 400, images=BOTH_IMAGES),
-    _k("i", "nS_VICDHold", 3, "vic", "fall", 365, 250, 520),
+    # 320 left a TR+ on NTSC answering nothing on USB until a power cycle (backlog 39); 310 was clean.
+    _k("v", "nS_VICStart", 3, "vic", "fall", 210, 60, 310, images=BOTH_IMAGES),
+    # Common_Defs.h: higher than the default breaks Ultimax cartridges on NTSC; down only until 39 is settled.
+    _k("i", "nS_VICDHold", 3, "vic", "fall", 365, 250, 365),
     _k("a", "nS_DMAAssert", 3, "dma", "fall", 40, 0, 420, readback_at_defaults=True),
     _k("b", "nS_DMABAWait", 3, "dma", "fall", 200, 60, 400, readback_at_defaults=True),
     _k("e", "nS_DMASetup", 3, "dma", "fall", (454, 430, 460), 330, 520, readback_at_defaults=True),

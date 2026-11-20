@@ -236,11 +236,11 @@ def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
     fake, board, dbg = fake_station
     fake.faults["vic_hang_ns"] = 30
     probe = _vicrom(fake, board, tmp_path)
-    margin = Sweep(dbg, KNOBS["i"], probe, SearchSpec(scan=(250, 370), step=40), log=lambda m: None).run()
+    margin = Sweep(dbg, KNOBS["i"], probe, SearchSpec(scan=(250, 365), step=40), log=lambda m: None).run()
     first, second = margin.points[0], margin.points[1]
     assert (first.value, first.hung) == (250, True) and "stopped" in first.notes[0]
     assert (second.value, second.hung, second.failed) == (290, False, True), "relaunched, counting, glyphs wrong"
-    assert [p.failed for p in margin.points[2:]] == [False, False]
+    assert [(p.value, p.failed) for p in margin.points[2:]] == [(330, False), (365, False)]
 
 
 def test_the_probe_kernal_inverts_the_longest_filler_run():

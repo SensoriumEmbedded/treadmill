@@ -57,8 +57,8 @@ knob's value; the cycle is 1015 ns on PAL and 978 ns on NTSC.
 | `nS_PLAprop` | `nS_RWnReady` | its default plus 120 | below `nS_RWnReady` the wait returns at once |
 | `nS_DataSetup` | 100 | 480 | |
 | `nS_DataHold` | 250 | 520 | a Phi2 check caps the drive near fall plus 50 anyway |
-| `nS_VICStart` | 60 | 400 | |
-| `nS_VICDHold` | 250 | 520 | higher crashes Ultimax cartridges on NTSC |
+| `nS_VICStart` | 60 | 310 | at 320 a TR+ on NTSC stopped answering on USB until a power cycle (BACKLOG 39) |
+| `nS_VICDHold` | 250 | its default, 365 | higher breaks Ultimax cartridges on NTSC (`Common_Defs.h`); down only until BACKLOG 39 is settled |
 | `nS_DMAAssert` | 0 | 420 | |
 | `nS_DMABAWait` | 60 | 400, and below `nS_DMASetup` | |
 | `nS_DMASetup` | 330 | 520, and the held sums inside the cycle | |

@@ -413,7 +413,15 @@ each edge with the newest earlier record of the same station, knob, edge and
 probes on another build: a shrink of more than twice `--fine` (10 ns at
 least) is a warning, not a failure, since machines drift.
 
-`treadmill margins map` draws every record as `<reports>/margin-map.html`: a
+`treadmill margins map` draws every record as `<reports>/margin-map.html`. It
+opens with an overview per machine: the latest record of each knob, image and
+probes as its clean window around the default, every default on one line, each
+end red where a failure was found (the last clean value, then the first failing
+one) or green where the sweep stopped clean at its limit. Under it the same
+windows on a time line from the Phi2 rise the interrupt fires on, a section per
+firmware routine with the knobs it waits on, each from the point its knob counts
+from (the rise, the fall, the re-latch, the interrupt), so a routine's knobs
+show against each other in time. Then, in a collapsed section, a
 chart per knob, a row per record labelled by machine model, registry id,
 standard, board, probes and build, the clean window as a bar, the first
 failing values as red ticks, the default across the bar, `--mark

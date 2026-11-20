@@ -125,8 +125,12 @@ treadmill run --station <id> --fw ref=main --define Dbg_SerTimChg --define Dbg_S
 about 90 minutes a TR+ station, less on a plain TR, which skips the DMA and
 Kernal Replace tests. Each sweep leaves a `margins.json` in its test's
 folder; `treadmill margins table` lists them, `treadmill margins map` charts
-them (a row per record, its clean window and every value probed beneath it;
-`--mermaid` for a PR), and `treadmill margins suggest --station <id>`
+them (an overview per machine with every knob's window around its default,
+red where it failed and green at a limit, and the same windows on a time line
+from the Phi2 rise, a section per firmware routine; then, collapsed, a row per
+record, its clean
+window and every value probed beneath it; `--mermaid` for a PR), and
+`treadmill margins suggest --station <id>`
 prints the `[margins]` floors to copy into the station file. A test fails an
 edge short of its floor and warns when an edge shrank against the newest
 earlier record of the same station, knob, edge and probes on another build.

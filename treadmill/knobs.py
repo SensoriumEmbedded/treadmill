@@ -23,6 +23,8 @@ from typing import Mapping
 STANDARDS = ("PAL", "NTSC", "NTSC C128")
 # A Phi2 cycle in ns; the C128 runs its 64 mode at the C64's NTSC rate.
 CYCLE_NS = {"PAL": 1015, "NTSC": 978, "NTSC C128": 978}
+# Cyc_KernProp counts Teensy cycles; the banner reports the clock ("Teensy: 816MHz").
+NS_PER_TEENSY_CYCLE = 1000 / 816
 
 MAIN = frozenset({"main"})
 BOTH_IMAGES = frozenset({"main", "minimal"})

@@ -125,6 +125,47 @@ def test_the_map_and_the_mermaid_export(tmp_path: Path):
     assert margin_map.render([], tmp_path / "none.html").read_text(encoding="utf-8").count("No margin records") == 1
 
 
+def test_the_map_opens_with_an_overview_of_each_machine(tmp_path: Path):
+    from treadmill.report import margin_map
+
+    def rec(knob, group, default, down, up, when, probes=("idread",), unit="ns", image="main"):
+        r = _record(knob=knob, default=default, down=down, up=up, when=when, probes=probes)
+        r["knob"].update(group=group, unit=unit)
+        r["firmware"]["image"] = image
+        r["edges"] = {w: e for w, e in r["edges"].items() if e}
+        return r
+
+    older = rec("nS_PLAprop", "cpu", 150, (135, None), (200, 205), "2026-11-19T09:00:00+00:00")
+    newer = rec("nS_PLAprop", "cpu", 150, (135, None), (235, 240), "2026-11-19T10:00:00+00:00")
+    loaded = rec("nS_MaxAdj", "cpu", 993, (883, 878), (1200, None), "2026-11-19T10:00:00+00:00",
+                 probes=("idread-usbload",))
+    plain = rec("nS_MaxAdj", "cpu", 993, (888, 883), (1200, None), "2026-11-19T10:00:00+00:00")
+    down_only = rec("nS_VICDHold", "vic", 365, (250, None), None, "2026-11-19T10:00:00+00:00", probes=("vicrom",))
+    cycles = rec("Cyc_KernProp", "kernal", 35, (10, 9), (99, None), "2026-11-19T10:00:00+00:00",
+                 probes=("krread",), unit="cycles")
+    broken = rec("nS_DataHold", "cpu", 390, (None, 390), (None, 390), "2026-11-19T10:00:00+00:00",
+                 image="minimal")
+    page = margin_map.render([older, newer, loaded, plain, down_only, cycles, broken],
+                             tmp_path / "map.html").read_text(encoding="utf-8")
+    overview = page[page.index("<h2>Overview: C64 C64-14 NTSC, tr-plus</h2>"):page.index("<h2>In the cycle")]
+    assert "235 ✕ 240" not in overview and "<tspan>235</tspan>" in overview and "✕ 240" in overview
+    assert "✕ 205" not in overview and "fails at 205" not in overview, "the newer record only"
+    assert overview.count('class="fail"') == 4 and overview.count('class="limit"') == 5
+    assert overview.index("nS_MaxAdj</text>") < overview.index("nS_MaxAdj · USB load"), "under load after"
+    assert "35 cycles" in overview and "9 ✕ </tspan><tspan>10" in overview
+    assert "CPU cycle, MinimalBoot" in overview and "fails at the default" in overview
+    assert "VIC cycle" in overview and "Kernal Replace HIRAM sense" in overview and "DMA</text>" not in overview
+    cycle = page[page.index("<h2>In the cycle: C64 C64-14 NTSC, tr-plus, 978 ns</h2>"):page.index("<details>")]
+    assert "idread-usbload" not in cycle and "fails at the default" not in cycle, "main image, no USB load"
+    # a section per routine; inside one, time order from the rise (nS_PLAprop 150 before nS_MaxAdj's 993)
+    order = ["CPU cycle<tspan", ">nS_PLAprop<tspan", ">nS_MaxAdj<tspan", "Kernal Replace, Skoe sense<tspan",
+             ">Cyc_KernProp<tspan", "VIC cycle<tspan", ">nS_VICDHold<tspan"]
+    assert [cycle.index(t) for t in order] == sorted(cycle.index(t) for t in order)
+    assert "DMA<tspan" not in cycle, "a routine with no records has no section"
+    assert "from this interrupt" in cycle and "Phi2 fall</text>" in cycle and "next rise</text>" in cycle
+    assert page.index("<details><summary>Every record, a chart per knob</summary>") < page.index("<h2>nS_PLAprop (ns)")
+
+
 def test_margins_import_and_map_commands(tmp_path: Path, capsys):
     from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     run = _pr99_run(tmp_path)

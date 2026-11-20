@@ -72,6 +72,7 @@ from treadmill.observe.glyphs import GlyphBank
 from treadmill.observe.golden import Golden, Mismatch, compare, save_golden
 from treadmill.report.artifacts import RunDir, write_board_artifacts
 from treadmill.station.config import ConfigError, data_dir, repo_root
+from treadmill.station.kawari import OTHER
 from treadmill.station.kbd import KbdError, KeyboardBoard
 from treadmill.station.model import Station
 
@@ -557,7 +558,7 @@ class KeyboardReset:
 
 
 class StandardSwitch(Protocol):
-    def apply(self, standard: str, port: str) -> None: ...
+    def apply(self, standard: str, port: str, tries: int) -> None: ...
 
 
 class OperatorSwitch:
@@ -568,20 +569,23 @@ class OperatorSwitch:
     def __init__(self, bench: Bench):
         self.bench = bench
 
-    def apply(self, standard: str, port: str) -> None:
+    def apply(self, standard: str, port: str, tries: int) -> None:
         self.bench.do(SET_STANDARD)
         while not self.bench.gone(port):
             time.sleep(BOARD_POLL_S)
 
 
 class KeyboardSwitch:
-    """The keyboard board's ``V``: the Kawari reconfigures in the standard
-    asked for while the C64 is held in reset, and the board under test never
-    leaves USB, so it starts over at once. ``V open`` gives the standard the
-    station's ``kawari_open`` names. It does not outlast a power cycle: the
-    keyboard board powers down with the C64, and J1 floats back to open. A
-    keyboard board that is missing, cannot switch, or stops answering leaves
-    the switch to ``fallback``."""
+    """The keyboard board's ``V``: the Kawari reconfigures in the other
+    standard while the C64 is held in reset, and the board under test never
+    leaves USB, so it starts over at once. The C64 runs the wrong standard
+    with J1 where the keyboard board's ``?`` says it is, so the switch is
+    always the other setting, whatever the Kawari's saved model; the
+    station's ``kawari_open`` is only checked against it. It does not outlast
+    a power cycle: the keyboard board powers down with the C64, and J1
+    floats back to open. It gets one try a board: a C64 still in the wrong
+    standard after it, or a keyboard board that is missing, cannot switch or
+    stops answering, leaves the switch to ``fallback``."""
 
     def __init__(self, station: Station, bench: Bench, fallback: StandardSwitch, console: Console):
         self.station = station
@@ -589,26 +593,44 @@ class KeyboardSwitch:
         self.fallback = fallback
         self.console = console
 
-    def apply(self, standard: str, port: str) -> None:
+    def apply(self, standard: str, port: str, tries: int) -> None:
+        if tries > 1:
+            self.console.warn(f"The C64 still runs {OTHER[standard]} after a switch, so the operator sets it.")
+            self.fallback.apply(standard, port, tries)
+            return
         try:
             with self.bench.open_keyboard(self.station) as kbd:
-                if not self.station.with_keyboard(kbd.fitted).has("region_switch"):
+                if not {"kawari", "reset"} <= kbd.fitted:
                     raise KbdError(f"it has {','.join(sorted(kbd.fitted)) or 'nothing'} fitted, and the "
                                    "switch needs kawari and reset")
-                setting = "open" if standard == self.station.keyboard.kawari_open else "closed"
+                j1 = kbd.identity.get("j1")
+                if j1 not in J1_FLIP:
+                    raise KbdError(f"its '?' reports J1 as {j1 or 'nothing'}")
+                self._check_kawari_open(j1, standard)
+                setting = J1_FLIP[j1]
                 self.console.say(f"The keyboard board switches the C64 to {standard} (V {setting}) ...")
                 kbd.video(setting)
         except KbdError as e:
             self.console.warn(f"The keyboard board did not switch the C64: {e}.")
-            self.fallback.apply(standard, port)
+            self.fallback.apply(standard, port, tries)
+
+    def _check_kawari_open(self, j1: str, standard: str) -> None:
+        """J1 at ``j1`` gives the standard the C64 runs now, the other one."""
+        gives = OTHER[standard] if j1 == "open" else standard
+        said = self.station.keyboard.kawari_open if self.station.keyboard else None
+        if said and said != gives:
+            self.console.warn(f'J1 open gives {gives} on this Kawari, not {said}: set kawari_open = "{gives}" '
+                              f"in the station file.")
+
+
+J1_FLIP = {"open": "closed", "closed": "open"}
 
 
 def standard_switch(station: Station, bench: Bench, console: Console) -> StandardSwitch:
-    """The keyboard board's switch when the station says what its Kawari's
-    J1 open gives, else the operator's."""
+    """The keyboard board's switch on a Kawari C64 whose station names a
+    keyboard board, else the operator's."""
     operator = OperatorSwitch(bench)
-    kb, machine = station.keyboard, station.machine
-    if kb is not None and kb.kawari_open and machine.has_kawari:
+    if station.keyboard is not None and station.machine.has_kawari:
         return KeyboardSwitch(station, bench, operator, console)
     return operator
 
@@ -1942,7 +1964,7 @@ def run_session(template: Station, profile: MfgProfile, bench: Bench, console: C
                     break
                 restarts.append(record.reason)
                 console.warn(f"{record.reason[0].upper()}{record.reason[1:]}.\a")
-                standard.apply(template.machine.region, port)
+                standard.apply(template.machine.region, port, len(restarts))
             bench.do(POWER_OFF)
             seen = getattr(video.source, "no_signal_frames", None)
             while not bench.gone(port):

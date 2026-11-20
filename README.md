@@ -90,8 +90,8 @@ machine, so the station names it, in a `[keyboard]` table:
   when a board's chip id finds no port, the probe opens only ports whose
   serial string is empty or all digits.
 - `kawari_open`: `PAL` or `NTSC`, the standard a Kawari gives with its
-  switch header J1 open (it gives the other one closed). Only a machine
-  with a Kawari needs it.
+  switch header J1 open (it gives the other one closed). `--region` needs
+  it; the manufacturing test reads J1 from the keyboard board instead.
 - `tod`: the station's TOD rate, `standard` (50 Hz on PAL, 60 on NTSC, the
   default), `50`, `60` or `off`.
 
@@ -316,13 +316,17 @@ and with it the REU's size):
    misread every video check. It is not the board's fault: the C64 is set
    to the station's standard, and the same board starts over under its
    number. No CSV row is written for the attempt; the board's `result.json`
-   lists it under `restarts`. When the station's keyboard board can switch
-   the Kawari (`[keyboard] kawari_open` set, `kawari` and `reset` fitted),
-   its `V` command does it with the C64 held in reset, and the board never
-   leaves USB; otherwise, or when the keyboard board does not answer (with
-   a warning saying why), the console asks the operator to power off, set
-   the Kawari and power on. A `V` setting does not outlast a power cycle:
-   the keyboard board powers down with the C64, and J1 goes back to open.
+   lists it under `restarts`. When the station's keyboard board has
+   `kawari` and `reset` fitted, its `V` command does it with the C64 held
+   in reset, and the board never leaves USB. It sets J1 to the other
+   position from where the keyboard board reports it, so it works whatever
+   the Kawari's saved model is; a `kawari_open` that disagrees is named,
+   with the value to set. It gets one try a board: a C64 still in the wrong
+   standard after it, or a keyboard board that does not answer (with a
+   warning saying why), goes to the operator, who is asked to power off,
+   set the Kawari and power on. A `V` setting does not outlast a power
+   cycle: the keyboard board powers down with the C64, and J1 goes back to
+   open.
 2. Firmware: the version and build stamp equal the factory hex's, with no
    tag and no `*`.
 3. External Ports: first the TR+ must have the USB thumb drive mounted

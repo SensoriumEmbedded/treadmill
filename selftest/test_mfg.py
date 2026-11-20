@@ -631,11 +631,13 @@ def test_a_c64_in_the_other_standard_is_set_right_and_its_board_starts_over(lab:
     assert text.count(INSTRUCTIONS[SET_STANDARD]) == 2 and "Board 1 PASSED" in text and "FAIL" not in text
 
 
-def _keyboard_station(lab: Path) -> None:
-    """s1 with a Kawari whose J1 open gives PAL and a keyboard board to switch it."""
+def _keyboard_station(lab: Path, kawari_open: str | None = "PAL") -> None:
+    """s1 with a Kawari and a keyboard board to switch it; the station says
+    J1 open gives ``kawari_open``, or says nothing."""
+    said = f'kawari_open = "{kawari_open}"\n' if kawari_open else ""
     (lab / "data" / "stations" / "kbm.toml").write_text(
         'id = "kbm"\nrig = "rigA"\n[machine]\nid = "bench"\nmodel = "C64"\nhas_kawari = true\n'
-        '[tr]\nuid = "19277260"\n[keyboard]\nchip = "14470230"\nkawari_open = "PAL"\n', encoding="utf-8")
+        f'[tr]\nuid = "19277260"\n[keyboard]\nchip = "14470230"\n{said}', encoding="utf-8")
 
 
 def test_the_keyboard_board_switches_the_standard_and_resets_the_c64(lab: Path):  # noqa: F811
@@ -659,6 +661,54 @@ def test_the_keyboard_board_switches_the_standard_and_resets_the_c64(lab: Path):
     text = out.getvalue()
     assert "The keyboard board switches the C64 to NTSC (V closed)" in text
     assert INSTRUCTIONS[SET_STANDARD] not in text and INSTRUCTIONS[RESET_BUTTON] not in text
+
+
+@pytest.mark.parametrize("kawari_open", ["NTSC", None])
+def test_the_switch_flips_j1_from_where_it_is_whatever_the_station_says(lab: Path, kawari_open):  # noqa: F811
+    """The Kawari C64 powered on in PAL with J1 open: its saved model is PAL.
+    A station that says J1 open gives NTSC, or says nothing, still gets the
+    C64 to NTSC with one V, and a wrong kawari_open is named."""
+    _keyboard_station(lab, kawari_open)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
+    bench = FakeBench(console, boards=[{"banner": pal}])
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
+    assert bench.count == 1 and bench.kbd.switches == ["closed"]
+    text = out.getvalue()
+    named = 'J1 open gives PAL on this Kawari, not NTSC: set kawari_open = "PAL" in the station file.'
+    assert (named in text) == (kawari_open == "NTSC")
+    assert INSTRUCTIONS[SET_STANDARD] not in text
+
+
+def test_a_switch_that_does_not_take_gets_one_try_then_the_operator(lab: Path):  # noqa: F811
+    """V answers OK but the C64 stays PAL: the keyboard board is not asked
+    again, the operator is, and the next power-on comes up in NTSC."""
+    _keyboard_station(lab)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
+    bench = FakeBench(console, boards=[{"banner": pal}, {}])
+    bench._video = lambda setting: None
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
+    wrong = "the C64 runs PAL, and this station tests in NTSC"
+    assert summary["boards"][0]["restarts"] == [wrong, wrong] and bench.count == 2
+    text = out.getvalue()
+    assert text.count("The keyboard board switches the C64 to NTSC (V closed)") == 1
+    assert "The C64 still runs PAL after a switch, so the operator sets it." in text
+    assert text.count(INSTRUCTIONS[SET_STANDARD]) == 1
 
 
 def test_a_keyboard_board_that_cannot_reset_or_switch_leaves_both_to_the_operator(lab: Path):  # noqa: F811

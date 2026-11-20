@@ -21,10 +21,11 @@ from treadmill.sweeps import SearchSpec, Sweep
 pytestmark = [pytest.mark.needs("video"), pytest.mark.needs_fw("Dbg_SerTimChg"), pytest.mark.timing_sensitive,
               pytest.mark.duration(4)]
 
-VIC_KNOBS = ["v", "i"]
+# The two knobs take the same path; nS_VICDHold differs only in the knob.
+CASES = [pytest.param("v", id=KNOBS["v"].name), pytest.param("i", id=KNOBS["i"].name, marks=pytest.mark.alike)]
 
 
-@pytest.mark.parametrize("letter", VIC_KNOBS, ids=[KNOBS[letter].name for letter in VIC_KNOBS])
+@pytest.mark.parametrize("letter", CASES)
 def test_vic_margin(letter, at_menu, dbg, video, calibration, programs, request, pace, margin_check):
     board = at_menu
     knob = KNOBS[letter]

@@ -1,7 +1,9 @@
 """The hardware tests under ``tests/`` run end to end against the fake board:
 every test of Phase 1 passes or skips for a reason the fake cannot meet, none
 fails or errors. What the fake cannot show (timing, a real card, the picture)
-is the bench's to confirm."""
+is the bench's to confirm. Cases marked ``alike`` (a sweep of another knob down
+a path another case already takes) are left out: on the fake they add minutes
+and no path."""
 
 from pathlib import Path
 
@@ -16,7 +18,7 @@ def _run(pytester: pytest.Pytester, lab: Path, *extra: str):  # noqa: F811
     return pytester.runpytest(
         str(REPO / "tests"), "--rootdir", str(REPO), "--station", "s1", "--fw-defines", "Dbg_SerTimChg,Dbg_SerDMA",
         "--golden-dir", str(REPO / "tests" / "golden"), "--reports", str(lab / "reports"),
-        "-p", "no:anyio", "-p", "no:cacheprovider", "-v", *extra)
+        "-m", "not alike", "-p", "no:anyio", "-p", "no:cacheprovider", "-v", *extra)
 
 
 def test_the_hardware_tests_pass_against_the_fake_board(pytester: pytest.Pytester, lab: Path):  # noqa: F811

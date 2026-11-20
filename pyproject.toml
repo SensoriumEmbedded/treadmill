@@ -44,6 +44,7 @@ markers = [
     "soak: long-running; selected only with --soak N",
     "client_path: drives the board through TeensyROM-Web and trom instead of the suite's link",
     "duration(minutes): the declared estimate used by --estimate until history exists",
+    "alike: a case another case of the same test covers the code path of, with another knob; the self-tests' runs against the fake leave it out",
 ]
 
 [tool.ruff]

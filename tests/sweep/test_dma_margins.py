@@ -34,9 +34,14 @@ pytestmark = [pytest.mark.needs("dma"), pytest.mark.needs_fw("Dbg_SerTimChg", "D
 
 C128_PASSES = 3
 DMA_KNOBS = ["a", "b", "e", "w", "y"]
+# nS_DMAAssert (cpuwatch), nS_DMABAWait (sprites) and nS_DMASetup (the held sums, noise first) take every
+# path of this test between them; nS_DMADataHold and nS_DMADataSetup differ only in the knob.
+ALIKE = {"w", "y"}
+CASES = [pytest.param(letter, id=KNOBS[letter].name, marks=[pytest.mark.alike] if letter in ALIKE else [])
+         for letter in DMA_KNOBS]
 
 
-@pytest.mark.parametrize("letter", DMA_KNOBS, ids=[KNOBS[letter].name for letter in DMA_KNOBS])
+@pytest.mark.parametrize("letter", CASES)
 def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, programs, pace, margin_check):
     board = at_menu
     knob = KNOBS[letter]

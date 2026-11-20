@@ -110,6 +110,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "soak: long-running; selected only with --soak N",
         "client_path: drives the board through TeensyROM-Web and trom",
         "duration(minutes): the declared estimate",
+        "alike: covers another case's code path with another knob; the self-tests leave it out",
     ):
         config.addinivalue_line("markers", line)
 

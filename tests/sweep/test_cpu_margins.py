@@ -36,11 +36,15 @@ pytestmark = [pytest.mark.needs_fw("Dbg_SerTimChg"), pytest.mark.timing_sensitiv
 
 FINE = 5
 STEPS = {"r": 10, "p": 10, "s": 10, "h": 10, "m": 20}   # nS_MaxAdj's range is about 350 ns wide
-CASES = [(letter, False) for letter in STEPS] + [("m", True)]
+# nS_PLAprop and nS_MaxAdj under load take every path of this test between them (the menu at a floor,
+# a loaded default, the readback at the defaults with load); the rest differ only in the knob.
+ALIKE = {("r", False), ("s", False), ("h", False), ("m", False)}
+CASES = [pytest.param(letter, load, id=KNOBS[letter].name + ("-usbload" if load else ""),
+                      marks=[pytest.mark.alike] if (letter, load) in ALIKE else [])
+         for letter, load in [(letter, False) for letter in STEPS] + [("m", True)]]
 
 
-@pytest.mark.parametrize("letter, load", CASES,
-                         ids=[KNOBS[l].name + ("-usbload" if load else "") for l, load in CASES])
+@pytest.mark.parametrize("letter, load", CASES)
 def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artifacts, station, request, pace,
                     margin_check):
     board = at_menu

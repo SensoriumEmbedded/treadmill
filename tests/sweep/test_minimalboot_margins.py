@@ -28,11 +28,15 @@ pytestmark = [pytest.mark.needs("video"), pytest.mark.needs_fw("Dbg_SerTimChg"),
               pytest.mark.duration(7)]
 
 MINIMAL_KNOBS = ["r", "p", "s", "h", "m"]
-CASES = [(letter, False) for letter in MINIMAL_KNOBS] + [("m", True)]
+# nS_PLAprop (a sweep and a loaded default) and nS_MaxAdj under load take every path of this test between
+# them; the rest differ only in the knob.
+ALIKE = {("r", False), ("s", False), ("h", False), ("m", False)}
+CASES = [pytest.param(letter, load, id=KNOBS[letter].name + ("-usbload" if load else ""),
+                      marks=[pytest.mark.alike] if (letter, load) in ALIKE else [])
+         for letter, load in [(letter, False) for letter in MINIMAL_KNOBS] + [("m", True)]]
 
 
-@pytest.mark.parametrize("letter, load", CASES,
-                         ids=[KNOBS[l].name + ("-usbload" if load else "") for l, load in CASES])
+@pytest.mark.parametrize("letter, load", CASES)
 def test_minimalboot_margin(letter, load, at_menu, dbg, screen, programs, request, pace, margin_check):
     board = at_menu
     knob = KNOBS[letter]

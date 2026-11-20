@@ -222,9 +222,11 @@ tree offline (`selftest/test_hw_tests_offline.py`), so a new test passes or
 skips there before it meets a board, and stays quick there: one that is slow
 on the fake (`pytest --durations`) gets a shorter fake path or skips with
 `fake_requested()`, as the ASID and TR BASIC tests do, so the self-tests stay
-near ten minutes. What the fake cannot show (timing, a real card, the
-picture) is the bench's to confirm, and a test has run on a bench before it
-is committed.
+near ten minutes. A parametrized case that only repeats another case's path
+with another value (a sweep of the next knob) is marked `alike`, and the
+offline runs leave it out; the bench runs every case. What the fake cannot
+show (timing, a real card, the picture) is the bench's to confirm, and a
+test has run on a bench before it is committed.
 
 **A script** is `scripts/YYYY-MM-DD-<topic>.py`: the day it first ran on a
 bench, a kebab-case topic, no subfolders. The first paragraph of its

@@ -300,3 +300,10 @@ cost or a wart with a known, small fix.
    only. Fix: hand off to MinimalBoot first (idread with its bank-64 chip),
    then launch vicrom from MinimalBoot, which loads 8K-Hi images itself
    (`Min_DriveDirLoad.ino`), and sweep `tv` there with the vicrom probe.
+38. **low** `--estimate` counts the tests `-m` and `-k` deselect.
+   `pytest_collection_modifyitems()` in `treadmill/pytest_plugin.py` adds up
+   the declared durations and clears the list before pytest's own `-m` and
+   `-k` deselection runs, so `treadmill run --tests tests/sweep --estimate --
+   -m "not alike"` reports 21 tests and about 144 minutes for a selection of
+   10 that comes to about 70. Fix: total the estimate in a
+   `trylast=True` hook, after deselection.

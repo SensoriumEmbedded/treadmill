@@ -1,11 +1,30 @@
-"""What every margin test shares: the record, the floor and the shrink check."""
+"""What every margin test shares: the pace of its samples, and the record,
+the floor and the shrink check."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import pytest
 
 from treadmill import margins
+from treadmill.session import fake_requested
 from treadmill.sweeps import Margin
+
+
+@dataclass(frozen=True)
+class Pace:
+    dwell: float                  # idread: seconds of counting a sample
+    repeat: int                   # samples a point
+
+
+@pytest.fixture
+def pace() -> Pace:
+    """A board: a second of counting, three samples a point, since an edge
+    wanders a few ns between runs (one wrong read in 24,064 at 260, none the
+    next). The fake: a tenth, one sample; its counts are a rate and its
+    edges hold still, so the result is the same in a tenth of the time."""
+    return Pace(0.1, 1) if fake_requested() else Pace(1.0, 3)
 
 
 @pytest.fixture

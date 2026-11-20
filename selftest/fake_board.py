@@ -113,6 +113,9 @@ class FakeBoard:
     # the PLA) and its data leaves later (after both ROM tests and a handler call). Outside the IO
     # window the menu shows wrong item-type marks and idread counts wrong IO2 reads.
     windows: dict = field(default_factory=lambda: {"io": (142, 210), "rom": (130, 230)})
+    # The other CPU-cycle knobs, each with a window of its own: outside any of them a path's reads go
+    # wrong too. nS_DataSetup latches the C64's writes, so it counts against IO (idread's IO2 page) only.
+    knob_windows: dict = field(default_factory=lambda: {"s": (160, 330), "h": (330, 460), "m": (930, 1100)})
     idread: IdRead | None = field(default=None, repr=False)
     # The manufacturing test's side: the program running and what breaks it (fake_programs.py), the
     # board's power, and the serve loop held while a program services nothing (the External Ports wait).
@@ -294,7 +297,17 @@ class FakeBoard:
         """How far, in ns, the sample point lies outside ``path``'s clean window; 0 inside it."""
         low, high = self.windows[path]
         point = max(self.knobs["p"], self.knobs["r"])
-        return max(low - point, point - high, 0)
+        worst = max(low - point, point - high, 0)
+        for letter, (lo, hi) in self.knob_windows.items():
+            if letter != "s" or path == "io":
+                worst = max(worst, lo - self.knobs[letter], self.knobs[letter] - hi)
+        return worst
+
+    def accrue(self) -> None:
+        """idread's counters up to now, at the knobs as they have been since
+        the last read or change."""
+        if self.idread is not None:
+            self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
 
     def serve(self, end: PipeEnd) -> None:
         self.end = end
@@ -354,6 +367,7 @@ class FakeBoard:
             return                                   # dropped, like the firmware's switch
         if letter == "t":
             sub = end.read(1, LETTER_ARG_S).decode("latin-1")
+            self.accrue()
             if sub in self._knob_letters():
                 digits = end.read(TIMING_KNOBS[sub], WAIT_S).decode("latin-1")
                 self.knobs[sub] = int(digits)
@@ -506,7 +520,7 @@ class FakeBoard:
         address = self._number(end, 2)
         length = self._number(end, 2)
         if self.idread is not None:
-            self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
+            self.accrue()
             self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 8] = self.idread.bytes()
         if address == VIC_MEMPTR and self.key_on_screen_read:
             keys, self.key_on_screen_read = self.key_on_screen_read, ""

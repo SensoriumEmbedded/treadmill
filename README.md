@@ -314,9 +314,13 @@ a rate, not a coin toss.
 `nS_PLAprop` has an edge each way. Raised, the data leaves too late, and IO
 reads fail before ROM reads, since the board drives them only after a call
 into the IO handler; lowered, the select lines are sampled before the
-slowest has asserted. `tests/sweep/test_tp_margin.py` runs both sweeps as a
-regression guard: the default must be clean, and a station's floor fails the
-test when reads go wrong short of it.
+slowest has asserted. `tests/sweep/test_cpu_margins.py` sweeps it and the
+other CPU-cycle knobs (`nS_RWnReady`, `nS_DataSetup`, `nS_DataHold`,
+`nS_MaxAdj`) both ways as a regression guard: the default must be clean, an
+edge short of the station's floor fails the test, and where a floor is set
+the `menu` probe runs at it too. On the fake board the sweeps count for a
+tenth of a second a sample, once a point (the `pace` fixture), since its
+edges hold still.
 
 A station's floors are in its `[margins]` table, per edge, as knob values:
 `nS_PLAprop = { up = 200, down = 140 }` means the up edge must be clean at

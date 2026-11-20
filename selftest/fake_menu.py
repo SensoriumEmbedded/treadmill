@@ -1,5 +1,6 @@
-"""The fake board's menu: the Teensy Mem tree as firmware 0.9 lists it
-(transcribed from ``Source/Teensy/MainMenuItems.h``), the card's files from
+"""The fake board's menu: the Teensy Mem tree as firmware 0.9 lists it, with
+Minesweeper's USB Mouse handler from 239cb5f0 (transcribed from
+``Source/Teensy/MainMenuItems.h``), the card's files from
 the fake's store, and ``MainMenu.asm``'s key handling in miniature, rendered
 into the fake's screen RAM through the layout the goldens use.
 
@@ -39,7 +40,7 @@ GAMES = [
     Entry("Jupiter Lander", "8Hi"),
     Entry("Jupiter Lander (Cracked)", "Prg"),
     Entry("Mario Brothers", "Prg"),
-    Entry("Minesweeper", "Prg"),
+    Entry("Minesweeper", "Prg", True),
     Entry("Ms. Pac-Man", "Crt"),
     Entry("Robocop 2             224k EZF", "Crt"),
     Entry("Super Mario Brothers   48k PRG", "Prg"),

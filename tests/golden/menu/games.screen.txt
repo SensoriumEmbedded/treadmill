@@ -13,7 +13,7 @@
 | Jupiter Lander                     8Hi |
 | Jupiter Lander (Cracked)           Prg |
 | Mario Brothers                     Prg |
-| Minesweeper                        Prg |
+| Minesweeper                       +Prg |
 | Ms. Pac-Man                        Crt |
 | Robocop 2             224k EZF     Crt |
 | Super Mario Brothers   48k PRG     Prg |

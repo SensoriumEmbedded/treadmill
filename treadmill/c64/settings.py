@@ -15,6 +15,7 @@ read by DMA where the board has it, the names being exact text.
 
 from __future__ import annotations
 
+import re
 import time
 from contextlib import contextmanager
 from typing import Iterator
@@ -26,8 +27,9 @@ from treadmill.observe.channels import DEFAULT_TIMEOUT, ScreenChannel
 
 SPECIAL_IO_LABEL = "Special IO:"
 KERNAL_FILE_LABEL = "Kernal replace file:"   # the file's path is drawn on the row after it
-SET_KERNAL_FILE = 0x4B            # PETSCII 'k' on the main menu: the highlighted file becomes the Kernal file
+SET_KERNAL_FILE = 0xCB            # Shift+K on the main menu: the highlighted file becomes the Kernal file
 KERNAL_FILE_SET = "KERNAL Binary selection updated"
+CUT_PATH = "<.>"                  # MakeFilenameStr: a path too long for the row is its drive, this, and its tail
 DRIVE_PREFIXES = {"SD:": "sd", "USB:": "usb"}
 TR_PAGE = b"2"
 NEXT_IO = 0x41                    # PETSCII 'a' (unshifted): Special IO increment
@@ -42,6 +44,11 @@ KERNAL_REPLACE = "Kernal Replace"
 
 class SettingsError(TreadmillError):
     pass
+
+
+def _same_file(path: str) -> str:
+    """The page shows a file in a folder of the root as ``SD://folder/file``."""
+    return re.sub("/+", "/", path)
 
 
 class Settings:
@@ -152,8 +159,8 @@ class Settings:
         try:
             yield was
         finally:
-            if was and was != path:
-                if any(was.startswith(p) for p in DRIVE_PREFIXES) and not was.endswith("..."):
+            if was and _same_file(was) != _same_file(path):
+                if any(was.startswith(p) for p in DRIVE_PREFIXES) and CUT_PATH not in was:
                     self.set_kernal_file(menu, was)
                 else:
                     self.log(f"[settings] the Kernal file was {was!r}: not a path to put back; it is now {path!r}")

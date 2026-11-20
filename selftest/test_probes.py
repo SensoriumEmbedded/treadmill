@@ -270,17 +270,52 @@ def test_the_kernal_file_is_chosen_with_k_and_put_back(fake_station):
     screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)
     keys = KernalKeys(board)
     menu = MenuDriver(screen, keys, board)
-    settings = Settings(screen, keys, timeout=10.0, log=lambda m: None)
+    logged: list[str] = []
+    settings = Settings(screen, keys, timeout=10.0, log=logged.append)
     fake.files["/treadmill/krprobe.bin"] = bytes(0x2000)
     fake.files["/kernals/jiffy.bin"] = bytes(0x2000)
     fake.directories += ["/treadmill", "/kernals"]
-    fake.kernal_file = "SD:/kernals/jiffy.bin"
-    assert settings.kernal_file_now() == "SD:/kernals/jiffy.bin"
+    fake.kernal_file = "SD://kernals/jiffy.bin"
+    assert settings.kernal_file_now() == "SD://kernals/jiffy.bin"
     with settings.kernal_file(menu, "SD:/treadmill/krprobe.bin") as was:
-        assert was == "SD:/kernals/jiffy.bin" and fake.kernal_file == "SD:/treadmill/krprobe.bin"
-    assert fake.kernal_file == "SD:/kernals/jiffy.bin"
+        assert was == "SD://kernals/jiffy.bin" and fake.kernal_file == "SD://treadmill/krprobe.bin"
+    assert fake.kernal_file == "SD://kernals/jiffy.bin"
+    settings.set_kernal_file(menu, "SD:/treadmill/krprobe.bin")
+    logged.clear()
+    with settings.kernal_file(menu, "SD:/treadmill/krprobe.bin"):
+        pass
+    assert len([m for m in logged if "Kernal file" in m]) == 1, f"the same file is not put back: {logged}"
+    fake.kernal_file = "SD:<.>mos-Support/KERNAL/jaffydos.bin"         # as the page shows a long path
+    with settings.kernal_file(menu, "SD:/treadmill/krprobe.bin"):
+        pass
+    assert fake.kernal_file == "SD://treadmill/krprobe.bin" and "not a path to put back" in logged[-1]
     with pytest.raises(SettingsError):
         settings.set_kernal_file(menu, "TR:/whatever.bin")
+
+
+def _pet(char: str) -> int:
+    """ACME's ``!convtab pet``: lower case to unshifted letters, upper case to shifted ones."""
+    c = ord(char)
+    return c - 0x20 if "a" <= char <= "z" else c + 0x80 if "A" <= char <= "Z" else c
+
+
+@pytest.mark.parametrize("top, source, comment, code", [
+    ("MainMenuCRT/source/MainMenu.asm", "MainMenuCRT/source/MainMenu.asm", "Select Kernal File", "SET_KERNAL_FILE"),
+    ("SettingsMenu/source/SettingsMenu.asm", "SettingsMenu/source/Pg_TRSettings.asm", "Special IO Increment",
+     "NEXT_IO"),
+])
+def test_the_settings_keys_are_the_menus(top, source, comment, code):
+    import os
+    import re
+    import treadmill.c64.settings as settings
+    root = os.environ.get("TREADMILL_FW_REPO")
+    if not root:
+        pytest.skip("TREADMILL_FW_REPO not set")
+    c64 = Path(root) / "Source" / "C64"
+    assert re.search(r"^\s*!convtab pet\b", (c64 / top).read_text(encoding="latin-1"), re.M), top
+    text = (c64 / source).read_text(encoding="latin-1")
+    char, = re.findall(rf"cmp #'(.)'\s*;\s*{comment}", text)
+    assert getattr(settings, code) == _pet(char), f"{source} compares '{char}', {_pet(char):#04x}"
 
 
 def test_sweep_command_with_vicrom_and_krread(lab: Path, capsys):  # noqa: F811

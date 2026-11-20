@@ -22,9 +22,7 @@ from treadmill.c64.menu import (
     Entry, mark_for, render_listing, shown_name, shown_path,
 )
 from treadmill.c64.screen import REVERSE_VIDEO, SCREEN_BYTES, SCREEN_RAM_DEFAULT, codes_for_text
-from treadmill.c64.settings import (
-    KERNAL_FILE_LABEL, KERNAL_FILE_SET, NEXT_IO, SET_KERNAL_FILE, SPECIAL_IO, SPECIAL_IO_LABEL,
-)
+from treadmill.c64.settings import KERNAL_FILE_LABEL, KERNAL_FILE_SET, SPECIAL_IO, SPECIAL_IO_LABEL
 from treadmill.observe.golden import save_golden
 
 _UP = Entry(UP_DIR, MARK_DIR)
@@ -85,6 +83,10 @@ TREE = {"/": ROOT, "/Games": GAMES, "/Pictures": PICTURES, "/TeensyROM Specific"
 GOLDENS = {"root": ("/", ROOT), "games": ("/Games", GAMES), "pictures": ("/Pictures", PICTURES)}
 
 _SOURCE_BY_KEY = {F1: "teensy", F3: "sd", F5: "usb"}
+# The menus' own codes, not the driver's constants, so a driver that types the wrong one fails here:
+# both assemble under ``!convtab pet``, so MainMenu.asm's 'K' is Shift+K and Pg_TRSettings.asm's 'a' is A.
+KERNAL_KEY = 0xCB
+SPECIAL_IO_KEY = 0x41
 CLOCK = "12:00:00am"
 HOT_KEY_FIRST, HOT_KEY_LAST = 0x31, 0x35          # '1'-'5' (NumHotKeys in Menu_Regs.h)
 
@@ -203,7 +205,7 @@ class FakeMenu:
             self.message = None          # "any key"
             self.render()
             return
-        if code == SET_KERNAL_FILE and not self.info_page and self.settings_page is None:
+        if code == KERNAL_KEY and not self.info_page and self.settings_page is None:
             self._set_kernal_file()
             self.render()
             return
@@ -212,7 +214,7 @@ class FakeMenu:
                 self.settings_page = None
             elif ord("1") <= code <= ord("4"):
                 self.settings_page = code - ord("0")
-            elif code == NEXT_IO and self.settings_page == 2:
+            elif code == SPECIAL_IO_KEY and self.settings_page == 2:
                 i = SPECIAL_IO.index(self.board.special_io)
                 self.board.special_io = SPECIAL_IO[(i + 1) % len(SPECIAL_IO)]
             self.render()
@@ -269,7 +271,7 @@ class FakeMenu:
         if entry.mark == MARK_DIR or found is None:
             self.message = ["Invalid File Type"]
             return
-        self.board.kernal_file = "SD:" + found
+        self.board.kernal_file = "SD:" + shown_path(found)      # as the TeensyROM page shows it: SD://dir/file
         self.message = [f"File Selected:", found, f"{KERNAL_FILE_SET}:", "  * Enable via Settings menu/Special IO"]
 
     def _page_down(self) -> None:

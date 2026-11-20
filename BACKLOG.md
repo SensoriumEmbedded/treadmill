@@ -276,15 +276,15 @@ cost or a wart with a known, small fix.
    exists: `tests/sweep/test_dma_setup_margin.py`, the defaults clean on
    the `z` and REU probes and a per-station `[margins]` floor, on every
    TR+ machine class (factory NTSC C128s drift the most, item 20).
-30. **medium** A skip in setup after `screen` is reported as an error.
-   The `screen` fixture's teardown (`treadmill/pytest_plugin.py`, `if
-   has_video and request.node.rep_failed`) reads an attribute that
-   `pytest_runtest_makereport` sets only for the call phase.
+30. **closed 2026-11-19, with the screen teardown's getattr.** A skip in
+   setup after `screen` was reported as an error. The `screen` fixture's
+   teardown (`treadmill/pytest_plugin.py`) read `request.node.rep_failed`,
+   which `pytest_runtest_makereport` sets only for the call phase.
    `test_card_type_set` (`tests/menu/test_item_types.py`) sets up `menu`
    and `screen` before `sd_fixtures`, whose `sd_card` skips on a station
-   with no SD card; there is no call phase, so the teardown raises
-   AttributeError and the run fails on a skip. Fix:
-   `getattr(request.node, "rep_failed", False)`.
+   with no SD card; there was no call phase, so the teardown raised
+   AttributeError and the run failed on a skip. It now reads the attribute
+   with `getattr`, and `selftest/test_plugin.py` holds the case.
 31. **low** The TR BASIC test needs a person. `tests/handlers/test_tr_basic.py`
    skips without `--attended`, because someone types SYS 49152 at READY
    and later presses the TeensyROM menu button. On a station with `keys_hw`

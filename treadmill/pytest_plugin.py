@@ -430,7 +430,7 @@ def screen(request: pytest.FixtureRequest, at_menu: Board, video: FrameSource | 
                             dma_allowed=at_menu.dma_allowed, on_xcheck=checks.append)
     yield channel
     folder = run_dir.for_test(request.node.nodeid)
-    if has_video and request.node.rep_failed:   # set by the report hook below
+    if has_video and getattr(request.node, "rep_failed", False):   # set by the report hook below, on a call
         save_strip(video.ring(), folder / "frames.png")
     if not checks:
         return

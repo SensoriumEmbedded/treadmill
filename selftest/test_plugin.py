@@ -97,6 +97,26 @@ def test_a_failure_in_the_call_survives_a_teardown_error(pytester: pytest.Pytest
     assert "the call failed first" in rec["message"] and "the teardown broke too" in rec["message"]
 
 
+def test_a_skip_in_setup_after_the_screen_is_a_skip(pytester: pytest.Pytester, lab: Path):
+    """Backlog 30: a fixture after ``screen`` that skips (``sd_card`` on a
+    station with no card, as test_card_type_set meets it) leaves no call
+    phase, so ``screen``'s teardown must not need its result."""
+    pytester.makeconftest('pytest_plugins = ["treadmill.pytest_plugin"]')
+    pytester.makepyfile(test_hw=textwrap.dedent("""
+        import pytest
+
+        @pytest.fixture
+        def no_card():
+            pytest.skip("no SD card on this station")
+
+        def test_listing(screen, no_card):
+            pass
+    """))
+    result = pytester.runpytest("--station", "s1", "--reports", str(lab / "reports"), "-p", "no:anyio",
+                                "-p", "no:cacheprovider")
+    result.assert_outcomes(skipped=1)
+
+
 def test_a_run_that_ends_before_any_test_records_why(pytester: pytest.Pytester, lab: Path):
     pytester.makeconftest('pytest_plugins = ["treadmill.pytest_plugin"]')
     pytester.makepyfile(test_hw=TESTS)

@@ -4,6 +4,7 @@ C64's own writes beside z###, screen noise beside a workload, the VIC's
 fetches from an Ultimax cartridge, and what each makes of a stall, a crash or
 a hang."""
 
+import functools
 import time
 from pathlib import Path
 
@@ -293,14 +294,29 @@ def test_the_kernal_file_is_chosen_with_k_and_put_back(fake_station):
         settings.set_kernal_file(menu, "TR:/whatever.bin")
 
 
+@functools.lru_cache(maxsize=1)
+def _video_kit():
+    from selftest.synth import calibrated, harvested_bank
+    calib = calibrated()
+    return calib, harvested_bank(calib)
+
+
+def _krread(fake, board, tmp_path: Path) -> KrReadProbe:
+    """krread with a screen that reads the fake's picture, as a station's capture does."""
+    from selftest.synth import fake_frame_source
+    calib, bank = _video_kit()
+    screen = ScreenChannel(board.link, fake_frame_source(fake), calib, bank, dma_allowed=lambda: True)
+    program = tmp_path / "krread.prg"
+    program.write_bytes(bytes(16))
+    return KrReadProbe(board, screen, program, 28, dwell=0.3, log=lambda m: None)
+
+
 def test_krread_counts_a_failing_default_as_the_sweep_s_result(fake_station, tmp_path: Path):
     """Kernal Replace not serving the probe KERNAL: krread runs, and the
     default's point fails with the reads it missed instead of the setup
     refusing."""
     fake, board, dbg = fake_station
-    program = tmp_path / "krread.prg"
-    program.write_bytes(bytes(16))
-    probe = KrReadProbe(board, program, 28, dwell=0.3, log=lambda m: None)
+    probe = _krread(fake, board, tmp_path)
     margin = Sweep(dbg, KNOBS["k"], probe, SearchSpec(both=True, step=20, fine=10), log=lambda m: None).run()
     assert len(margin.points) == 1 and margin.points[0].failed
     assert "without the replacement" in margin.points[0].notes[0]
@@ -315,15 +331,71 @@ def test_krread_keeps_the_first_read_apart_from_the_verdict(fake_station, tmp_pa
     fake.faults["kr_first_read_miss"] = True
     fake.special_io, fake.kernal_file = "Kernal Replace", "SD://treadmill/krprobe.bin"
     fake.knobs["x"] = 0
-    program = tmp_path / "krread.prg"
-    program.write_bytes(bytes(16))
-    probe = KrReadProbe(board, program, 28, dwell=0.3, log=lambda m: None)
+    probe = _krread(fake, board, tmp_path)
     margin = Sweep(dbg, KNOBS["k"], probe, SearchSpec(both=True, step=10, fine=5), log=lambda m: None).run()
     assert (margin.edges["down"].clean_to, margin.edges["up"].clean_to) == (20, 60)
     rom_first, ram_first, passes = probe.first_reads["k=35"]
     assert passes > 0 and rom_first == passes and ram_first == 0
     assert margin.probe_info["krread"]["first_reads"]["k=35"] == [rom_first, ram_first, passes]
     assert "the first read after the write" in next(n for p in margin.points for n in p.notes if "first" in n)
+
+
+def test_krread_touches_no_memory_while_it_runs(fake_station, tmp_path: Path):
+    """Host DMA while a program runs under Kernal Replace skips the DMA
+    sense and corrupts the program (BACKLOG 40): from the launch to the
+    teardown's reset, the sweep reads its counts off the screen and sends no
+    DMA read or write."""
+    fake, board, dbg = fake_station
+    fake.special_io, fake.kernal_file = "Kernal Replace", "SD://treadmill/krprobe.bin"
+    fake.knobs["x"] = 2
+    dma = []
+
+    def watched(name):
+        real = getattr(board.link, name)
+
+        def call(*a, **k):
+            if fake.krloop is not None:          # krread running: from its launch to the reset
+                dma.append(name)
+            return real(*a, **k)
+        return call
+
+    for name in ("read_memory", "write_memory", "read_screen"):
+        setattr(board.link, name, watched(name))
+    probe = _krread(fake, board, tmp_path)
+    margin = Sweep(dbg, KNOBS["n"], probe, SearchSpec(both=True, step=40, fine=20), log=lambda m: None).run()
+    assert not margin.points[0].failed and margin.edges["up"].first_fail is not None
+    assert dma == [], f"DMA while krread ran: {dma[:5]}"
+
+
+class _Row:
+    """A screen whose top row shows the counts given, one frame per read."""
+
+    def __init__(self, *frames):
+        self.frames = list(frames)
+        self.has_video = True
+
+    def read_video(self):
+        from types import SimpleNamespace
+        import numpy as np
+        codes, confidence = np.full(1000, 0x20, np.uint8), np.ones(1000, np.float32)
+        frame = self.frames.pop(0) if len(self.frames) > 1 else self.frames[0]
+        if frame is not None:
+            for cell, ch in enumerate(" ".join(f"{v:04x}" for v in frame)):
+                codes[cell] = 0x20 if ch == " " else 0x30 + int(ch) if ch.isdigit() else 0x01 + ord(ch) - ord("a")
+        return SimpleNamespace(codes=codes, confidence=confidence)
+
+
+def test_krread_counts_need_two_frames_that_agree(tmp_path: Path):
+    """One frame with a misread miss count is not taken as wrong reads; a
+    row that never reads whole is a hang, not an error."""
+    misread = _Row((0x100, 0, 0x8, 0, 0), (0x180, 0, 0, 0, 0), (0x200, 0, 0, 0, 0))
+    probe = KrReadProbe(None, misread, tmp_path / "krread.prg", 28, dwell=0, log=lambda m: None)
+    assert probe.counters() == (0x200, 0, 0, 0, 0)
+    probe.screen = _Row(*[(0x100 + 0x80 * i, i + 1, 0, 0, 0) for i in range(10)])
+    assert probe.counters() == (0x480, 8, 0, 0, 0), "miss counts that keep moving: the last frame read"
+    probe.screen = _Row(None)
+    got = probe.sample("n250")
+    assert got.hung and "do not read whole" in got.note
 
 
 def _pet(char: str) -> int:

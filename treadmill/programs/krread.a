@@ -10,7 +10,15 @@
 ; verdict. Counters at $C110, 16 bits each: passes; the rest of the reads where the
 ; replacement was missing (ROM side) and where it came over RAM (RAM side); the
 ; first reads, the same two ways. $5A at $C104 once running.
+; Every 256 passes it also writes the five counters in hex on the top row (cells
+; 0, 5, 10, 15 and 20, four digits each), light grey on black as the glyph banks
+; are harvested, where the probe reads them by video: host DMA while a program
+; runs under Kernal Replace corrupts the program and leaves the DMA sense on a
+; stale verdict, so nothing reads the counters by DMA while krread runs. Not
+; every pass: a 30 fps capture of a 60 Hz picture blends two frames, and a digit
+; that changes every frame never reads whole (C64 #14, 2026-11-21).
 
+SCREEN   = $0400
 ready    = $c104
 passes   = $c110
 romwrong = $c112
@@ -34,6 +42,18 @@ next !word 0
         lda $dd0d
         lda #0
         sta $d01a
+        sta $d020
+        sta $d021
+        lda #$15                ; screen at $0400, the ROM's upper case and graphics
+        sta $d018
+        ldx #39
+-       lda #$0f                ; light grey
+        sta $d800,x
+        lda #$20
+        sta SCREEN,x
+        dex
+        bpl -
+        lda #0
         ldx #9
 -       sta passes,x
         dex
@@ -85,4 +105,55 @@ loop    lda #$37                ; KERNAL in: the replacement's bytes
         inc passes
         bne +
         inc passes+1
++       lda passes
+        bne +                   ; every 256 passes, about four times a second: see show
+        jsr show
 +       jmp loop
+
+show    lda $d012               ; the beam on line 128, under the top row: the VIC fetches that row's codes
+        cmp #$80                ; once a frame, on line 51, so it never takes them half written ($01 is $35
+        bne show                ; here: the VIC's registers, and the screen and the digits are RAM)
+        ldy #0
+        lda passes+1
+        jsr hex
+        lda passes
+        jsr hex
+        iny
+        lda romwrong+1
+        jsr hex
+        lda romwrong
+        jsr hex
+        iny
+        lda ramwrong+1
+        jsr hex
+        lda ramwrong
+        jsr hex
+        iny
+        lda romfirst+1
+        jsr hex
+        lda romfirst
+        jsr hex
+        iny
+        lda ramfirst+1
+        jsr hex
+        lda ramfirst
+        ; falls through
+
+hex     pha                     ; A as two digits at SCREEN+Y; Y moves on two
+        lsr
+        lsr
+        lsr
+        lsr
+        tax
+        lda digits,x
+        sta SCREEN,y
+        iny
+        pla
+        and #$0f
+        tax
+        lda digits,x
+        sta SCREEN,y
+        iny
+        rts
+
+digits  !scr "0123456789abcdef"

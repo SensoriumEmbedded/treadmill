@@ -111,7 +111,7 @@ nothing resets the C64 (a C128 can hang on DMA right after a reset).
 | `cpuwatch` | `cpuwatch.a` checks its own writes while `z###` runs beside it | passes with a wrong byte | `Dbg_SerDMA`, a TR+ |
 | `noise` | beside another probe: pixels that change by more than 48 levels between frames | three times the baseline and 100 pixels above it | video |
 | `vicrom` | `vicrom.a`, an Ultimax cartridge whose glyphs the VIC fetches from ROMH | frames off the reference picture by the noise rule | video, any TR |
-| `krread` | `krread.a` under Kernal Replace, the probe KERNAL its own with the filler inverted | reads without the replacement, or with it over RAM | a TR+; the Kernal file, Special IO and `KSenseMode` set and put back |
+| `krread` | `krread.a` under Kernal Replace, the probe KERNAL its own with the filler inverted; its counts on the top row, read by video, so no host DMA reaches it while it runs | reads without the replacement, or with it over RAM | a TR+ with video; the Kernal file, Special IO and `KSenseMode` set and put back |
 
 `--usb-load` (and the tests' loaded cases) runs version requests through
 idread's dwell, so the board's interrupts arrive late.

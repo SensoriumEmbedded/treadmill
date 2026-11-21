@@ -367,7 +367,10 @@ strays from it by three times the defaults' own stray and 100 pixels more.
 `nS_KSenseSample` for the DMA method): its KERNAL is the machine's own, read
 by DMA, with its longest filler run inverted, chosen as the Kernal Replace
 file with the menu's `K` and put back after, and `krread.a` toggles HIRAM and
-counts the reads that came back wrong each way. `tests/sweep/test_vic_margins.py`
+counts the reads that came back wrong each way, in hex on the top row, which
+the probe reads by video: host DMA into a program running under Kernal
+Replace corrupts it and makes the DMA sense keep a stale verdict (BACKLOG
+40), so nothing touches the C64's memory while krread runs. `tests/sweep/test_vic_margins.py`
 and `tests/sweep/test_kernal_margins.py` sweep them both ways; the latter sets
 Special IO and `KSenseMode` and puts them back, and skips `Cyc_KernProp` on a
 C128, whose transceiver hides the address the Skoe sense drives.

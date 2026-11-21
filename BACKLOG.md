@@ -327,7 +327,22 @@ cost or a wart with a known, small fix.
    step on video) to tell the two apart; then set both caps from what it
    shows, per standard if PAL has more room. A station without power
    control cannot recover from such a hang: the run ends there.
-40. **medium** Host writes into the C64's memory may go astray under Kernal
+40. **closed 2026-11-21, with krread's counts read by video.** The check
+   ran (`scripts/2026-11-20-ksense-host-dma.py`,
+   `scripts/2026-11-20-kr-host-dma-basic.py`, Kawari C64 002b, main
+   a1dbf5e3) and the answer is wider than the DMA sense, so it goes to the
+   firmware: host DMA reads or writes while a program runs under Kernal
+   Replace corrupt the program's RAM bit by bit, under either sense, and
+   `10 A=A+1:GOTO 10` stops within seconds to a minute at about 40 accesses
+   a second; Kernal Replace off, or on with no DMA, or on with USB traffic
+   and no DMA, ran clean. Separately, a write to $01 while a host access
+   holds the line is not sensed (`KDS_Begin` keeps the last verdict), about
+   one wrong half-pass of krread per three accesses. A build with PR #106
+   (the release past a snooped bus) still crashed the BASIC loop under both
+   senses (2026-11-21). krread now shows its counts
+   on the top row and the probe reads them by video, so the suite sends no
+   DMA while krread runs. The item as it was: Host writes into the C64's
+   memory may go astray under Kernal
    Replace's DMA sense. On the Kawari C64 (002b) in NTSC, a TR+ on main
    a1dbf5e3, `KSenseMode` 2, krread with a hold handshake (the host wrote a
    flag by DMA before and after each counter read, the loop waited between

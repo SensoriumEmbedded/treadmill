@@ -87,7 +87,7 @@ def fake_frame_source(fake):
         if wait > 0:
             time.sleep(wait)
         last[0] = time.monotonic()
-        fake.show_counters()                     # idread with SHOW redraws its top row every pass
+        fake.show_counters()                     # idread with SHOW and krread redraw their top row every pass
         if fake.heartbeat:                       # hello.a ticks its bottom-right cell once a frame
             fake.memory[0x07E7] = (fake.memory[0x07E7] + 1) & 0xFF
         memptr, cia2 = fake.memory[VIC_MEMPTR], fake.memory[CIA2_PORT_A]

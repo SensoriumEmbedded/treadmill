@@ -449,13 +449,20 @@ class FakeBoard:
 
     def show_counters(self) -> None:
         """idread.a with SHOW: passes, wrong ROM and wrong IO2 reads in hex on
-        the top row (cells 0-3, 5-10 and 12-17), digits as screen codes."""
-        if self.idread is None or not self.idread_show:
+        the top row (cells 0-3, 5-10 and 12-17); krread.a: passes and its four
+        miss counts (cells 0, 5, 10, 15 and 20, four digits each). Digits as
+        screen codes."""
+        if self.krloop is not None:
+            self.accrue()
+            b = self.krloop.bytes()
+            values = tuple((b[i] | b[i + 1] << 8, 4, 5 * (i // 2)) for i in range(0, 10, 2))
+        elif self.idread is not None and self.idread_show:
+            self.accrue()
+            b = self.idread.bytes()
+            values = ((b[0] | b[1] << 8, 4, 0), (b[2] | b[3] << 8 | b[4] << 16, 6, 5),
+                      (b[5] | b[6] << 8 | b[7] << 16, 6, 12))
+        else:
             return
-        self.accrue()
-        b = self.idread.bytes()
-        values = ((b[0] | b[1] << 8, 4, 0), (b[2] | b[3] << 8 | b[4] << 16, 6, 5),
-                  (b[5] | b[6] << 8 | b[7] << 16, 6, 12))
         for value, width, cell in values:
             for i, ch in enumerate(f"{value:0{width}x}"):
                 code = 0x30 + int(ch) if ch.isdigit() else 0x01 + ord(ch) - ord("a")

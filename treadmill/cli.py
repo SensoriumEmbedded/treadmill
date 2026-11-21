@@ -265,7 +265,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                     prg = assemble("krread", primary=h.firmware.primary if h.firmware else None, extra=defines)
                 except AssembleError as e:
                     raise CommandError(str(e), EXIT_USAGE) from e
-                probes.append(KrReadProbe(board, prg, defines["LEN"], dwell=args.dwell, log=log))
+                probes.append(KrReadProbe(board, ns["screen"], prg, defines["LEN"], dwell=args.dwell, log=log))
         if "noise" in names:
             screen = ns["screen"]
             probes.append(NoiseProbe(ns["video"], getattr(screen, "calib", None), probes[0], log=log))
@@ -789,8 +789,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "C64's REU loop; Special IO is set to the REU for the sweep and put back), cpuwatch (the "
                         "C64's writes beside z###), noise (screen noise beside the first of the others), vicrom "
                         "(an Ultimax cartridge's glyphs fetched in VIC cycles, by video), krread (Kernal Replace's "
-                        "HIRAM sense: the probe KERNAL, Special IO and KSenseMode are set for the sweep and put "
-                        "back); repeat it for several probes at each point")
+                        "HIRAM sense, its counters read by video: the probe KERNAL, Special IO and KSenseMode are "
+                        "set for the sweep and put back); repeat it for several probes at each point")
     s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")
     s.add_argument("--image", choices=["main", "minimal"], default="main",
                    help="minimal: sweep MinimalBoot's knobs (m r p s h v): idread with a bank-64 chip, which the "

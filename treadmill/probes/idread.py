@@ -23,7 +23,10 @@ DROP_S = 20.0                     # the launch, to the main image restarting as 
 MINIMAL_S = 20.0                  # MinimalBoot answering once the port is back
 # idread.a built with SHOW: its counters on the top row in hex (cells, width), digits as screen codes.
 SHOW_FIELDS = ((0, 4), (5, 6), (12, 6))
-SHOW_DIGITS = {**{0x30 + i: i for i in range(10)}, **{0x01 + i: 10 + i for i in range(6)}}
+# A-F are $01-$06 in the upper-case charset the programs set, and the same glyphs are $41-$46 in the
+# lower/upper one, which the video reader may pick for a screen with no lower-case letters (C64 #14).
+SHOW_DIGITS = {**{0x30 + i: i for i in range(10)}, **{0x01 + i: 10 + i for i in range(6)},
+               **{0x41 + i: 10 + i for i in range(6)}}
 SHOW_READS = 5
 
 

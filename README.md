@@ -474,7 +474,13 @@ and with it the REU's size):
    (its root lists), within 10 s: the test itself gives the drive 1.5 s,
    which a stick still coming up after power-on misses. Then the built-in
    test passes after the operator presses MENU
-   and ALT. Its `Hello from TR at:` line agrees on serial and on screen, and
+   and ALT. The console asks for them once video shows the test's button
+   prompt (with no video, or no frame read 8 s after the launch, at once):
+   a button pressed before it, or the C64's reset, makes the TR+ drop the
+   test's messages (`Sout Timeout!` lines closer together than its 3 s
+   wait, or with `Button detected`), and the step fails saying so, for the
+   board to be tested again.
+   Its `Hello from TR at:` line agrees on serial and on screen, and
    is within `time_tolerance_s` (5 s) of UTC when it arrived (a new board's
    timezone setting is UTC). UTC is this PC's clock corrected by its offset
    from `ntp_server`, measured before each board; with no answer the PC's

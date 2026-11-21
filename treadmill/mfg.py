@@ -106,6 +106,8 @@ CASSETTE_BUFFER = range(0x033C, 0x03FC)
 NO_KEY = bytes([0xA9, 0x00, 0x18, 0x60])                           # LDA #0; CLC; RTS
 EPC_ENDED = ("a key on the C64, or the TR's MENU button, ended the External Ports test before its LED "
              "questions were answered")
+EPC_EARLY_PRESS = ("the TR's MENU button, or the C64's reset, was pressed before the External Ports test asked "
+                   "for MENU, so the TR+ dropped the test's messages; test the board again")
 YES_KEYS, NO_KEYS = (0x59, 0xD9), (0x4E, 0xCE)                     # Y and N, either shift
 JIFFY_CLOCK = 0x00A0     # TIME, $A0-$A2: the KERNAL's IRQ adds one 60 times a second
 JIFFY_STILL_S = 1.0
@@ -143,6 +145,15 @@ REAPPEAR_S = 5.0                     # a restarting TR+ back on USB: the bench's
 # SendMsgSerialStringBuf (FileParsers.ino) prints this when the C64 has not taken a message in 3 s; it is
 # in no passing board's serial log.
 SOUT_TIMEOUT = "Sout Timeout!"
+# The same wait also ends once BtnPressed is set (the TR's MENU button, or a C64 reset the TR+ senses), and
+# from then on every message gives up at once. So lines closer together than the 3 s wait were never waited
+# on: a button pressed before ExtPortCheck asked for it. On the bench, 7 lines came within 3 s of the
+# launch, during Ethernet init, then 'Button detected' and the TR+'s own reset back to its menu.
+SOUT_WAIT_S = 3.0
+SOUT_BURST_S = SOUT_WAIT_S - 0.5          # the margin covers the reader thread's stamps
+SOUT_DECIDE_S = 2 * SOUT_WAIT_S           # one line, and nothing after it this long: the C64 stopped
+SOUT_LINE = re.compile(re.escape(SOUT_TIMEOUT))
+BUTTON_DETECTED = "Button detected"
 # One serial line this many times in a row is a loop: a C64 writing a status the TR+ does not know made it
 # print "?Stat: c3" 26,001 times; a passing board's whole log repeats no line more than 16 times.
 FLOOD_LINES = 50
@@ -171,6 +182,10 @@ EPC_VERDICT_S = 8.0       # the Hello line to the verdict: ExtPortCheck's last m
 # The External Ports test's launch to its button prompt or its fail line: 7.5 s at most, but the slowest
 # fail path (two 15 s DHCP timeouts, the 2.5 s NTP wait, two SD starts, the 1.5 s USB wait) is 40 s.
 EPC_PROMPT_S = 45.0
+# The operator is told to press the buttons once video shows the prompt (3.3-3.9 s after the launch on the
+# bench): a press before it ends the test (SOUT_WAIT_S). With no frame read this long after the launch,
+# they are told then, as with no video, and follow the C64's screen.
+BLIND_INSTRUCT_S = 8.0
 # The USB thumb drive mounted before the External Ports test starts. Not measured yet (result.json's
 # usb_ready will say): the bench's stick missed the test's own 1.5 s twice when it started 5 s after
 # power-on, never when it started 14 s after.
@@ -977,6 +992,21 @@ def xpt_serial(text: str) -> tuple[list[tuple[str, str]], str | None]:
     return lines, stall.group(1).strip() if stall else None
 
 
+def sout_cause(times: list[float], button: bool, now: float) -> str | None:
+    """Why the TR+ gave up on the External Ports test's messages, from when
+    each 'Sout Timeout!' arrived (SOUT_WAIT_S): "press" when two came closer
+    together than its wait, or 'Button detected' is on serial with them;
+    "stopped" when they came a wait apart, or one came SOUT_DECIDE_S ago with
+    nothing since; None while it cannot tell, or with none."""
+    if not times:
+        return None
+    if button or any(b - a < SOUT_BURST_S for a, b in zip(times, times[1:])):
+        return "press"
+    if len(times) > 1 or now - times[0] >= SOUT_DECIDE_S:
+        return "stopped"
+    return None
+
+
 def c64_stopped(text: str) -> tuple[str, bool] | None:
     """Why the C64 has stopped following its test, from what the TR+ sent
     since the test began, and whether the TR+ is printing in a loop; None
@@ -1291,20 +1321,24 @@ def step_external_ports(c: Ctx) -> str:
     the test printed before reaching it. The board's part gets EPC_PROMPT_S,
     counted only while video reads frames that show no prompt: with every
     frame lost, the operator's time is added, so a capture's trouble does
-    not fail a board. The operator's epc_timeout_s starts at the prompt.
-    The LED questions go on the C64's bottom row once the test waits for
-    its key."""
+    not fail a board. The operator's epc_timeout_s starts at the prompt,
+    and they are told to press once it shows (BLIND_INSTRUCT_S). The LED
+    questions go on the C64's bottom row once the test waits for its key."""
     with c.timed("usb_ready"):
         wait_usb_drive(c)
     mark = c.mark()
     with c.timed("epc_launch"):
         launch_from_menu(c, EPC_PATH)
-    c.bench.do(BUTTONS)
     launched = time.monotonic()
     prompted = None if c.video.ok else launched
+    instructed = False
     video_read = False
     hello, failed_reads, fetch_failed = None, 0, None
     while True:
+        if not instructed and (prompted is not None or
+                               (not video_read and time.monotonic() - launched >= BLIND_INSTRUCT_S)):
+            c.bench.do(BUTTONS)
+            instructed = True
         serial = c.serial_since(mark)
         hello = HELLO.search(serial)
         if hello:
@@ -1312,8 +1346,13 @@ def step_external_ports(c: Ctx) -> str:
             break
         if c.link.stream.ended:
             raise StepFailed("the board left USB during the External Ports test", markable=False)
+        chunks = c.link.stream.tap.chunks[mark:]
+        souts = [arrival(chunks, m.start()) for m in SOUT_LINE.finditer(serial)]
+        cause = sout_cause(souts, BUTTON_DETECTED in serial, time.monotonic())
+        if cause == "press":
+            raise StepFailed(EPC_EARLY_PRESS, markable=False)
         stopped = c64_stopped(serial)
-        if stopped:
+        if stopped and (cause == "stopped" or not souts):
             raise StepFailed(stopped[0], markable=False)
         if c.video.ok:
             read = c.video_text()

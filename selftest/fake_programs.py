@@ -9,6 +9,10 @@ reads by color, since the real one is a packed binary.
 ``faults`` (per board, from the fake bench) breaks one thing at a time:
 ``epc_fail`` ("ethernet", "sd", "usb"), ``clock_offset_s``, ``epc_key`` (a key on
 the C64 as the prompt shows, "prompt", or as mfg reads the verdict, "verdict"),
+``epc_prompt_after_s`` (Ethernet init first; a button pressed before the prompt
+drops the test's messages, as on the bench), ``epc_press_early`` (the operator
+presses MENU during Ethernet init anyway), ``epc_sout`` (the C64 stops taking
+messages during Ethernet init),
 ``xpt_fail_pass``, ``xpt_early_fail_pass`` (that pass stops at its address
 test, before any serial line), ``reu_fail``, ``reu_kb``; ``leds`` lists what the
 operator types for each LED question (``FakeBoard.watch_led_questions``),
@@ -84,14 +88,43 @@ class ExtPorts:
         if b.faults.get("epc_hang"):                # stuck before its button prompt, with no fail line
             b.show(self.head(), reverse={0, 2})
             return
-        b.show(self.head() + EPC_BUTTONS[:2], reverse={0, 2})
+        delay = b.faults.get("epc_prompt_after_s")
+        if delay or b.faults.get("epc_press_early") or b.faults.get("epc_sout"):
+            b.show(EPC_HEAD[:3] + ["Ethernet init via DHCP.."], reverse={0, 2})
+            if b.faults.get("epc_press_early"):
+                self.dropped()
+            elif b.faults.get("epc_sout"):
+                b.say("\nSout Timeout!\n")
+            else:
+                b.unblocked.clear()
+                timer = threading.Timer(delay, self.prompt)
+                timer.daemon = True
+                timer.start()
+            return
+        self.prompt()
+
+    def prompt(self) -> None:
+        b = self.board
         with b.lock:
+            if b.program is not self:
+                return
+            b.show(self.head() + EPC_BUTTONS[:2], reverse={0, 2})
             if b.buttons_pending:
                 b.buttons_pending = False
-                self.buttons()
+                if b.faults.get("epc_prompt_after_s"):     # pressed before this prompt
+                    self.dropped()
+                else:
+                    self.buttons()
             else:
                 self.waiting = True
                 b.unblocked.clear()          # ExtPortCheck services nothing until the buttons
+
+    def dropped(self) -> None:
+        """BtnPressed before ExtPortCheck asked for MENU, as on the bench: each
+        message after it gives up at once, then loop() goes back to the menu."""
+        self.board.say("\nSout Timeout!\n" * 7)
+        self.board.unblocked.set()
+        self.board.return_to_menu()
 
     def buttons(self) -> None:
         self.waiting = False

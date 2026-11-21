@@ -32,12 +32,12 @@ from treadmill.link.banner import parse_banner
 from treadmill.link.transport import ByteStream
 from treadmill.link.trlink import DRAIN_S, Link
 from treadmill.mfg import (
-    CIA1_ICR, EPC_ENDED, FAIL, HELLO, IGETIN, INSTRUCTIONS, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, RESET_BUTTON,
+    CIA1_ICR, EPC_EARLY_PRESS, EPC_ENDED, FAIL, HELLO, IGETIN, INSTRUCTIONS, LAUNCHED, NO_KEY, NOT_RUN, PASS, RED, RESET_BUTTON,
     SET_STANDARD,
     SID, BoardLog, BoardRecord, Console, Ctx, MfgProfile, RealBench, StepFailed, hold_epc_prompt,
     _ntp_stamp, arrival, clock_delta, clock_problem, ntp_offset, pc_clock_offset, utc_at,
     ReuView, compare_sd, epc_reason, firmware_problems, reu_verdict, reu_view, run_session, sd_snapshot,
-    xpt_reason, xpt_serial,
+    sout_cause, xpt_reason, xpt_serial,
 )
 from treadmill.observe.capture import CaptureTimeout
 from treadmill.observe.channels import ScreenChannel
@@ -490,6 +490,44 @@ def test_the_getin_vector_changes_by_one_byte():
         assert c.link.writes == []
 
 
+def test_why_the_tr_gave_up_on_a_message():
+    """The TR+ waits 3 s for the C64 to take each message unless a button
+    cut the wait short: lines closer than that, or 'Button detected' with
+    them, are a press; lines a wait apart, or one alone for two waits, a C64
+    that stopped."""
+    assert sout_cause([], False, 100.0) is None
+    assert sout_cause([10.0, 10.01], False, 10.1) == "press"
+    assert sout_cause([10.0], True, 10.1) == "press"
+    assert sout_cause([10.0], False, 12.0) is None
+    assert sout_cause([10.0, 13.05], False, 13.1) == "stopped"
+    assert sout_cause([10.0], False, 16.0) == "stopped"
+
+
+def test_the_buttons_are_asked_for_once_the_c64_shows_its_prompt(lab: Path, monkeypatch):  # noqa: F811
+    """On the bench the operator pressed MENU during Ethernet init, as the
+    console had just asked: the TR+ dropped the test's messages, 7
+    'Sout Timeout!' lines in 3 s, and went back to its menu, and mfg blamed
+    the C64. The press is now asked for once video shows the prompt, and a
+    press made before it anyway is named; a C64 that stops taking messages
+    is still named as one."""
+    monkeypatch.setattr(mfg, "SOUT_DECIDE_S", 1.0)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, _ = _console()
+    bench = FakeBench(console, boards=[{"epc_prompt_after_s": 1.5}, {"epc_press_early": True}, {"epc_sout": True}])
+    video = bench.video_kit()
+    try:
+        run_session(load_station("s1"), profile, bench, console, video, RunDir(lab / "reports"),
+                    boards=3, log=lambda m: None)
+    finally:
+        video.close()
+    rows = _rows(profile.log)
+    assert [r["result"] for r in rows] == [PASS, FAIL, FAIL]
+    assert [r["reason"] for r in rows[1:]] == [
+        EPC_EARLY_PRESS, "the C64 stopped taking the TR+'s messages (serial: 'Sout Timeout!')"]
+    waits = json.loads((Path(rows[0]["evidence"]) / "result.json").read_text(encoding="utf-8"))["waits"]
+    assert waits["epc_prompt"] >= 1.5
+
+
 def test_keys_lost_frames_and_an_early_expansion_port_fail(lab: Path, monkeypatch):  # noqa: F811
     """What an operator and a capture do to the tests.
     1. A key on the C64 as mfg first reads the verdict waits in the buffer:
@@ -503,6 +541,7 @@ def test_keys_lost_frames_and_an_early_expansion_port_fail(lab: Path, monkeypatc
        line, fails on its screen's reason without waiting for serial.
     Boards 1, 3 and 4 say N to the TR LED, so each stops at that question."""
     monkeypatch.setattr(mfg, "VERDICT_S", 2.0)
+    monkeypatch.setattr(mfg, "BLIND_INSTRUCT_S", 1.0)       # every frame of the prompt is lost
     profile = MfgProfile.load(_profile(lab / "mfg"))
     console, out = _console()
     bench = FakeBench(console, boards=[{"epc_key": "verdict", "leds": ["y", "n"]}, {"epc_key": "prompt"},

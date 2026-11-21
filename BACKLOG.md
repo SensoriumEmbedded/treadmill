@@ -164,6 +164,21 @@ cost or a wart with a known, small fix.
    fixed-standard machine's registry region, else the keyboard board's J1
    with `kawari_open`, or the picture's geometry against both stored
    calibrations.
+41. **medium** A machine read with the class glyph bank can take a
+   subfolder for the drive's root. C64 #14 (registry 14, real VIC-II) has
+   no bank of its own, and `svideo-generic.npz` reads the up-dir entry's
+   arrows as `??` there (and the letter O as `?`), so `Listing.is_root` in
+   `treadmill/c64/menu.py` (no `<Up Dir>` first) is true inside
+   `//treadmill`. `ensure_root()` then stays put, the Settings driver's
+   `open("/treadmill")` sees no new listing, and Kernal Replace's file is
+   neither set nor put back ("the listing of /treadmill did not appear",
+   three times on 2026-11-21, each time the run before had left the menu in
+   that folder). #14 was recalibrated and harvested that day (colors 15,
+   14, 13 and 7: the menu's) and now reads `<Up Dir>`; a bank harvested
+   over the old calibration read L as E and H as F low on the screen
+   instead. Left to do: judge the root from the path row (`/` alone) as
+   well as the up-dir entry, and calibrate and harvest every station
+   before its first run.
 
 ## Firmware builds
 

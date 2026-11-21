@@ -17,9 +17,11 @@
 ;   $C000/1  passes, 16-bit (256 rounds each: two ROM reads, one IO2 read)
 ;   $C002-4  wrong ROM reads, 24-bit
 ;   $C005-7  wrong IO2 reads, 24-bit
-; With SHOW defined, each pass also writes the three counters in hex on the
-; top row (passes, wrong ROM, wrong IO2), for an image that refuses DMA:
-; MinimalBoot answers only reset, launch, version and the firmware check.
+; With SHOW defined, every 32nd pass also writes the three counters in hex on
+; the top row (passes, wrong ROM, wrong IO2), for an image that refuses DMA:
+; MinimalBoot answers only reset, launch, version and the firmware check. Not
+; every pass: a 30 fps capture of a 60 Hz picture blends two frames, and a digit
+; that changes every frame never reads whole (C64 #14, 2026-11-21).
 
 RES  = $c000
 SCREEN = $0400
@@ -96,8 +98,11 @@ round:
     inc RES
     bne +
     inc RES+1
-+   jsr show
-    jmp pass
++   lda RES
+    and #$1f                        ; every 32 passes, about four times a second
+    bne +
+    jsr show
++   jmp pass
 } else {
     inc RES
     bne pass
@@ -123,6 +128,9 @@ wrong_io:
 
 !ifdef SHOW {
 show:                               ; Y is 0 here, and pass sets it again
+    lda $d012                       ; the beam on line 128, under the top row: the VIC fetches
+    cmp #$80                        ; that row's codes once a frame, on line 51, so it never
+    bne show                        ; takes them half written
     lda RES+1
     jsr hex
     lda RES

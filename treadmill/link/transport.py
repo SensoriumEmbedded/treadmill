@@ -199,11 +199,18 @@ class ByteStream:
             raise TransportError(f"{self.name}: {e}") from e
 
     def close(self) -> None:
+        """Ends the stream and closes the port. A serial port is closed only
+        once the reader thread has let go of it: pyserial on Windows closing
+        a handle the reader is still in ReadFile on crashes the process
+        (seen on the mains relay, whose port stays live between the open and
+        close of each call). The reader stops within its read timeout, 0.1 s."""
         with self._cv:
             self._ended = True
             if self.ended_at is None:
                 self.ended_at = time.monotonic()
             self._cv.notify_all()
+        if isinstance(self._raw, _SerialRaw) and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
         try:
             self._raw.close()
         except Exception:

@@ -124,7 +124,23 @@ def describe_station(board: "Board | LinklessSession") -> dict[str, Any]:
     st = board.station
     return {"id": st.id, "rig": st.rig.id, "machine": st.machine.id, "model": st.machine.model,
             "region": st.machine.region, "standard": st.standard, "caps": sorted(st.caps), "tr_uid": st.tr.uid,
-            "tr_kind": st.tr.kind, "keyboard": describe_keyboard(board)}
+            "tr_kind": st.tr.kind, "keyboard": describe_keyboard(board), "power": describe_power(board)}
+
+
+def describe_power(board: "Board | LinklessSession") -> dict[str, Any] | None:
+    """The rig's power control as the station opened it: the mains relay's
+    identity when it answered, else why the ``power`` capability is off."""
+    spec = board.station.rig.power
+    if spec is None:
+        return None
+    out: dict[str, Any] = {"backend": spec.backend, "unit": spec.unit, "channel": spec.channel,
+                           "off_seconds": spec.off_seconds, "on": board.station.has("power"),
+                           "state": getattr(board, "power_state", None),
+                           "problem": getattr(board, "power_problem", None)}
+    ident = getattr(getattr(board, "power", None), "identity", None)
+    if ident:
+        out.update(unit=ident.get("chip"), fw=ident.get("fw"), proto=ident.get("proto"))
+    return out
 
 
 def describe_keyboard(board: "Board | LinklessSession") -> dict[str, Any] | None:

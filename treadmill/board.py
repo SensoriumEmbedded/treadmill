@@ -9,7 +9,9 @@ its reset fitted, a reset on the C64's /RESET line, which the TR+ senses
 from any handler; then the 134-baud USB reboot with a loader relaunch of the
 firmware already on the board, when the run knows which hex that is; then a
 mains cycle when the rig has power control; else the station is marked wedged
-and the rest of the run skips with that reason.
+and the rest of the run skips with that reason. A mains cycle takes the
+keyboard board down with the machine and undoes a Kawari's standard switch,
+so the rung puts both back once the menu is up.
 """
 
 from __future__ import annotations
@@ -25,10 +27,11 @@ from treadmill.link.trlink import NotAllowed
 from treadmill.link.banner import Banner
 from treadmill.link.state import MENU_READY, State, derive_state
 from treadmill.link.unsolicited import EventLog
+from treadmill.station.kawari import KawariError, set_standard
 from treadmill.station.kbd import KbdError, KeyboardBoard
 from treadmill.station.lock import RigLock
 from treadmill.station.model import Station
-from treadmill.station.power import Power, PowerUnavailable, make_power
+from treadmill.station.power import Power, PowerUnavailable, SerialRelayPower, make_power
 
 if TYPE_CHECKING:
     from treadmill.firmware.prepare import FirmwareRun
@@ -39,7 +42,10 @@ C128_RESET_HOLD_S = 0.25        # no DMA within ~80 ms of a C128 reset release (
 # returns at once for TR BASIC, whose program owns the serial port): a reset
 # sent there only waits out the boot timeout.
 SERIAL_DEAF_HANDLERS = frozenset({"TR_BASIC"})
-
+# The keyboard board powers from the machine; its port is back within about a second of power-on.
+KBD_REAPPEAR_S = 5.0
+STAYED_ON = ("the board stayed on USB through the power cycle: the supply's switch is on ON, the supply powers "
+             "another machine, or off_seconds is shorter than the supply holds up")
 
 
 class Wedged(TreadmillError):
@@ -47,20 +53,39 @@ class Wedged(TreadmillError):
 
 
 def open_keyboard(station: Station, factory: Callable[[], KeyboardBoard] | None = None, *,
-                  discover: bool = True) -> tuple[KeyboardBoard | None, str | None]:
+                  discover: bool = True, timeout: float = 0.0) -> tuple[KeyboardBoard | None, str | None]:
     """The station's keyboard board, or None and why not. A board the station
     names that is not on USB, or will not answer, leaves the station without
     its capabilities instead of failing the open: the tests that need it skip
     with the reason. ``factory`` replaces discovery (a fake board); without
-    one, ``discover=False`` opens nothing."""
+    one, ``discover=False`` opens nothing. ``timeout``: how long to look for
+    a board that is still coming up with its machine."""
     if station.keyboard is None:
         return None, None
     if factory is None and not discover:
         return None, "not opened: the TR is a fake and no fake keyboard board was given"
     try:
-        return (factory() if factory else KeyboardBoard.open(station.keyboard.chip)), None
+        return (factory() if factory else KeyboardBoard.open(station.keyboard.chip, timeout=timeout)), None
     except KbdError as e:
         return None, str(e)
+
+
+def power_hint(power: Power, station: Station) -> str:
+    """What the mains relay says about a TeensyROM that is not on USB, for
+    the not-found error: the machine's switch and plug when the relay has
+    power on, or the relay itself when it doesn't answer."""
+    if not isinstance(power, SerialRelayPower):
+        return ""
+    ch = power.channel
+    try:
+        state = power.check()
+    except PowerUnavailable as e:
+        return (f". The mains relay doesn't answer ({e}), and with the supply's switch on AUTO the supply has no "
+                "power without it")
+    if state == "on":
+        return (f". The mains relay has channel {ch} on: check that the machine's power switch is on and that the "
+                "bench supply is plugged into this machine")
+    return f". The mains relay has channel {ch} {state}: a power cycle may be under way"
 
 
 @dataclass
@@ -86,6 +111,14 @@ class Board:
     probe_pending: bool = False          # a reconnect happened; whatever answers next is probed when the menu is up
     kbd: KeyboardBoard | None = None
     kbd_problem: str | None = None       # why the station's keyboard board isn't open
+    # How to open the keyboard board again after a power cycle: the factory Board.open was given, or discovery.
+    kbd_factory: Callable[[], KeyboardBoard] | None = None
+    kbd_discover: bool = True
+    power_problem: str | None = None     # why the station's power control is off, when its rig has one
+    power_state: str | None = None       # the relay channel's state when the station opened
+    power_timings: dict[str, float | None] = field(default_factory=dict)   # the last power cycle's
+    region: str | None = None            # the run's --region, which a power cycle undoes on a Kawari
+    _power_on_at: float = 0.0
 
     # -- opening ----------------------------------------------------------
 
@@ -94,17 +127,21 @@ class Board:
              link_factory: Callable[[], Link] | None = None, fw_defines: tuple[str, ...] = (),
              caps_mask: set[str] | frozenset[str] = frozenset(),
              firmware: "FirmwareRun | None" = None,
-             kbd_factory: Callable[[], KeyboardBoard] | None = None) -> "Board":
+             kbd_factory: Callable[[], KeyboardBoard] | None = None,
+             power_factory: Callable[[], Power] | None = None) -> "Board":
         """Lock the rig, find the board by chip id, open it and probe it, with
         the recovery ladder's upper rungs attached: a reconnect by chip id,
         and, when ``firmware`` knows the hex on the board and the checkout
         whose flasher put it there, the USB reboot that relaunches it. Then
-        the keyboard board the station names, whose fitted outputs join the
-        capabilities. ``link_factory`` replaces discovery and the serial port
-        (the self-tests hand in a link to a fake board) and gets no rung past
-        a reset; with it, only ``kbd_factory`` opens a keyboard board. Nothing
-        stays held when this fails: the lock and the ports are released before
-        the error leaves."""
+        the power control's check and the keyboard board the station names,
+        whose fitted outputs join the capabilities. ``link_factory`` replaces
+        discovery and the serial port (the self-tests hand in a link to a
+        fake board) and gets no rung past a reset; with it, only
+        ``kbd_factory`` opens a keyboard board. ``power_factory`` replaces
+        the rig's power backend (a fake mains relay). Nothing stays held when
+        this fails: the lock and the ports are released before the error
+        leaves."""
+        power = power_factory() if power_factory is not None else make_power(station.rig.power, attended)
         lock = RigLock(station.rig.id, wait=lock_wait).acquire()
         events = EventLog()
         try:
@@ -112,17 +149,22 @@ class Board:
                 link = link_factory()
                 link._on_unsolicited = events.feed
             else:
-                found = find_port(station.tr.uid, station.tr.port_hint)
+                try:
+                    found = find_port(station.tr.uid, station.tr.port_hint)
+                except NotFound as e:
+                    raise NotFound(f"{e}{power_hint(power, station)}") from None
                 link = Link(open_serial(found.port), on_unsolicited=events.feed)
         except Exception:
+            power.close()
             lock.release()
             raise
-        board = cls(station=station, link=link, events=events, lock=lock,
-                    power=make_power(station.rig.power, attended),
-                    fw_defines=tuple(fw_defines), caps_mask=frozenset(caps_mask))
+        board = cls(station=station, link=link, events=events, lock=lock, power=power,
+                    fw_defines=tuple(fw_defines), caps_mask=frozenset(caps_mask),
+                    kbd_factory=kbd_factory, kbd_discover=link_factory is None)
         if link_factory is None:
             board.attach_recovery(firmware)
         try:
+            board.check_power()
             board.kbd, board.kbd_problem = open_keyboard(station, kbd_factory, discover=link_factory is None)
             if board.kbd is not None:
                 board.station = board.station.with_keyboard(board.kbd.fitted).masked(board.caps_mask)
@@ -144,6 +186,19 @@ class Board:
         self.station = self.station.with_keyboard(None).masked(self.caps_mask)
         if kbd is not None:
             kbd.close()
+
+    def check_power(self) -> None:
+        """The rig's power control answers before the run needs it: a mains
+        relay that is missing, or isn't what the rig names, takes the
+        ``power`` capability away with the reason, as a keyboard board that
+        doesn't answer takes its own. Nothing is switched."""
+        if self.station.rig.power is None:
+            return
+        try:
+            self.power_state = self.power.check()
+        except PowerUnavailable as e:
+            self.power_problem = str(e)
+            self.mask({"power"})
 
     def attach_recovery(self, firmware: "FirmwareRun | None") -> None:
         """The ladder's rungs above a reset, for a board on a real port."""
@@ -199,8 +254,11 @@ class Board:
                 if self.kbd is not None:
                     self.kbd.close()
             finally:
-                if self.lock:
-                    self.lock.release()
+                try:
+                    self.power.close()
+                finally:
+                    if self.lock:
+                        self.lock.release()
 
     # -- DMA policy ----------------------------------------------------------
 
@@ -292,9 +350,12 @@ class Board:
             try:
                 rung()
                 self.wait_for_menu()
+                if name == "power-cycle":
+                    self.after_power_cycle()
                 self.recoveries.append(name)
                 return
-            except (LinkError, TransportError, PowerUnavailable, Refused, NotFound, KbdError) as e:
+            except (LinkError, TransportError, PowerUnavailable, Refused, NotFound, KbdError, NotAllowed,
+                    KawariError) as e:
                 failures.append(f"{name}: {e}")
         self.wedged_reason = "; ".join(failures) or "no recovery rung available"
         raise Wedged(self.wedged_reason)
@@ -309,10 +370,62 @@ class Board:
         if self.reconnect_hook:
             self.reconnect()
 
-    def _rung_power(self) -> None:
-        self.power.cycle(self.station.rig.power.off_seconds if self.station.rig.power else 5.0)
+    @property
+    def power_off_seconds(self) -> float:
+        return self.station.rig.power.off_seconds if self.station.rig.power else 5.0
+
+    def _rung_power(self, off_seconds: float | None = None) -> None:
+        """The mains off and on. The TeensyROM powers from the machine, so its
+        USB must go with the mains: a board still on USB afterwards means the
+        cut never reached it."""
+        t_cut = time.monotonic()
+        self.power.cycle(self.power_off_seconds if off_seconds is None else off_seconds)
+        self._power_on_at = t_on = time.monotonic()
+        stream = self.link.stream
+        if not stream.ended:
+            raise PowerUnavailable(STAYED_ON)
+        gone = stream.ended_at
+        self.power_timings = {"off_s": round(t_on - t_cut, 2),
+                              "left_usb_s": round(gone - t_cut, 2) if gone is not None else None,
+                              "usb_back_s": None, "menu_s": None}
         if self.reconnect_hook:
             self.reconnect()
+            self.power_timings["usb_back_s"] = round(time.monotonic() - t_on, 2)
+
+    def after_power_cycle(self) -> None:
+        """Once the menu is back after a mains cycle, put back what the cycle
+        undid: the keyboard board, which powers from the machine, with its
+        TOD line, and the run's ``--region`` on a Kawari, whose ``V`` setting
+        lasts only until the C64 powers off."""
+        if self._power_on_at:
+            self.power_timings["menu_s"] = round(time.monotonic() - self._power_on_at, 2)
+        if self.station.keyboard is not None:
+            if self.kbd is not None:
+                self.kbd.close()
+            self.kbd, self.kbd_problem = open_keyboard(self.station, self.kbd_factory, discover=self.kbd_discover,
+                                                       timeout=KBD_REAPPEAR_S)
+            self.station = self.station.with_keyboard(self.kbd.fitted if self.kbd else None).masked(self.caps_mask)
+            try:
+                self.apply_tod()
+            except KbdError as e:
+                self.drop_keyboard(f"its TOD line was not set after the power cycle: {e}")
+        if self.region and self.station.standard != self.region:
+            set_standard(self, self.region)
+
+    def power_cycle(self, off_seconds: float | None = None) -> dict[str, float | None]:
+        """One power cycle through the ladder's own rung, then the menu back
+        and what the cycle undid put back: ``treadmill power cycle`` and
+        ``run --power-check``. Not a recovery, so not counted as one. The
+        timings, in seconds: ``off_s`` the cut as the relay timed it,
+        ``left_usb_s`` from the cut to the board leaving USB, ``usb_back_s``
+        and ``menu_s`` from power back to the board on USB and at the menu."""
+        if not self.station.has("power"):
+            why = f" ({self.power_problem})" if self.power_problem else ""
+            raise PowerUnavailable(f"station {self.station.id} lacks power{why}")
+        self._rung_power(off_seconds)
+        self.wait_for_menu()
+        self.after_power_cycle()
+        return dict(self.power_timings)
 
     def reopen(self, away: float) -> None:
         """Close the port for ``away`` seconds, then open it again: the host

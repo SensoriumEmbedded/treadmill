@@ -66,6 +66,7 @@ class ByteStream:
         self._buf = bytearray()
         self._cv = threading.Condition()
         self._ended = False
+        self.ended_at: float | None = None   # time.monotonic() when the stream ended: a power cycle's timing
         self.tap = Tap()
         self._thread = threading.Thread(target=self._pump, args=(read_chunk,),
                                         name=f"treadmill-rx:{name}", daemon=True)
@@ -93,6 +94,8 @@ class ByteStream:
         finally:
             with self._cv:
                 self._ended = True
+                if self.ended_at is None:
+                    self.ended_at = time.monotonic()
                 self._cv.notify_all()
 
     def _take(self, count: int) -> bytes:
@@ -198,6 +201,8 @@ class ByteStream:
     def close(self) -> None:
         with self._cv:
             self._ended = True
+            if self.ended_at is None:
+                self.ended_at = time.monotonic()
             self._cv.notify_all()
         try:
             self._raw.close()

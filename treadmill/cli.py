@@ -5,7 +5,8 @@ station that could not be had.
 
 ``run`` puts the firmware under test on a station's board and runs the
 hardware tests against it; ``exec`` runs a script and ``shell`` opens a REPL
-on a station opened the same way. ``stations`` lists what is configured;
+on a station opened the same way. ``power`` checks a station's power control
+or runs one timed power cycle. ``stations`` lists what is configured;
 ``calibrate``, ``harvest``, ``screen``, ``frame`` and ``viewer`` are the video
 channel's tools on a live station (``calibrate`` also works on a saved frame,
 and ``score`` compares a saved frame with the DMA read taken with it).
@@ -103,7 +104,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         station=args.station, tests=tuple(args.tests or ()), reports=args.reports, caps_mask=args.caps_mask,
         region=args.region,
         soak=args.soak, estimate=args.estimate, include_tolerant=args.include_tolerant, attended=args.attended,
-        no_video=args.no_video, no_xcheck=args.no_xcheck, golden_dir=args.golden_dir,
+        no_video=args.no_video, no_xcheck=args.no_xcheck, golden_dir=args.golden_dir, power_check=args.power_check,
         firmware=_firmware_options(args), pytest_args=tuple(args.pytest_args),
     )
     # pytest's own output is the diagnostics stream: stderr under --json, so stdout stays the record.
@@ -561,6 +562,34 @@ def cmd_screen(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_power(args: argparse.Namespace) -> int:
+    """The station's power control. ``status`` checks it and switches
+    nothing; ``cycle`` runs one power cycle through the recovery ladder's
+    own rung, with the menu back after it, and times it."""
+    from treadmill.report.artifacts import describe_power
+    from treadmill.session import open_station
+
+    log = _log_for(args)
+    with open_station(args.station, attended=args.attended, video=False, log=log) as s:
+        b = s.board
+        power = describe_power(b)
+        if power is None:
+            raise CommandError(f"station {args.station}: its rig has no [power]", EXIT_USAGE)
+        if args.action == "status":
+            ok = b.station.has("power")
+            state = f"channel {power['channel']} {power.get('state') or '?'}" if ok else f"off: {power['problem']}"
+            text = (f"{args.station}: {power['backend']} unit {power.get('unit') or '?'}, {state}; "
+                    f"the TeensyROM is on USB")
+            _emit({"power": power, "ok": ok}, args.json, text)
+            return EXIT_OK if ok else EXIT_NO_STATION
+        b.ensure_menu()
+        timings = b.power_cycle(args.off)
+    text = (f"{args.station}: power cycled. The board left USB {timings['left_usb_s']} s after the cut, was back "
+            f"on USB {timings['usb_back_s']} s and at the menu {timings['menu_s']} s after power came back")
+    _emit({"power": power, "timings": timings}, args.json, text)
+    return EXIT_OK
+
+
 def cmd_frame(args: argparse.Namespace) -> int:
     """Save one frame (and the normalized text area when calibrated) as PNG."""
     import cv2
@@ -742,6 +771,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-video", action="store_true", help="leave the capture device closed")
     s.add_argument("--no-xcheck", action="store_true", help="record video-vs-DMA disagreement, never fail on it")
     s.add_argument("--golden-dir", help="where the screen goldens live (default: tests/golden)")
+    s.add_argument("--power-check", action="store_true",
+                   help="one power cycle before the first test, through the ladder's own rung: proves the "
+                        "station can recover by mains before an unattended run")
     _firmware_args(s)
     s.add_argument("pytest_args", nargs="*", help="after --: arguments for pytest")
     s.set_defaults(func=cmd_run, screen_on=True)
@@ -857,6 +889,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="write the SD golden from the master card image's folder, then exit")
     s.add_argument("--out", help="with --snapshot-sd: where to write it (default: the profile's sd_golden)")
     s.set_defaults(func=cmd_mfg, json=False)
+
+    s = sub.add_parser("power", help="the station's power control: check it, or run one timed power cycle",
+                       description="status: the mains relay answers, as the rig names it, and the TeensyROM is on "
+                                   "USB; nothing is switched. cycle: one power cycle through the recovery "
+                                   "ladder's own rung, the menu back after it, and how long each step took. A cycle "
+                                   "cuts the machine's mains: it needs the go-ahead for the station.")
+    _station_args(s)
+    s.add_argument("action", choices=("status", "cycle"))
+    s.add_argument("--off", type=float, metavar="S", help="seconds off (default: the rig's off_seconds)")
+    s.set_defaults(func=cmd_power)
 
     s = sub.add_parser("stations", help="list the configured stations and their capabilities")
     s.add_argument("--station", help="only this station")

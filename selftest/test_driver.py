@@ -86,7 +86,7 @@ def test_exec_records_a_station_that_cannot_be_opened(lab: Path, tmp_path: Path,
 def test_pytest_command_carries_every_option(tmp_path: Path):
     opts = RunOptions(station="s1", tests=("tests/smoke", "tests/menu/test_navigation.py::test_sources"),
                       caps_mask="dma,keys_kernal", soak=3, estimate=True, include_tolerant=True,
-                      no_video=True, no_xcheck=True, golden_dir="g",
+                      no_video=True, no_xcheck=True, golden_dir="g", power_check=True,
                       firmware=FirmwareOptions(fw="ref=main", target="tr-plus", defines=("Dbg_SerDMA",),
                                                tag="t", allow_dirty=True, no_flash=True),
                       pytest_args=("-x", "-k", "menu"))
@@ -96,7 +96,8 @@ def test_pytest_command_carries_every_option(tmp_path: Path):
     text = " ".join(cmd)
     for piece in ("--station s1", f"--run-dir {tmp_path}", "--fw ref=main", "--fw-target tr-plus",
                   "--define Dbg_SerDMA", "--tag t", "--allow-dirty", "--no-flash", "--caps-mask dma,keys_kernal",
-                  "--soak 3", "--estimate", "--include-tolerant", "--no-video", "--no-xcheck", "--golden-dir g"):
+                  "--soak 3", "--estimate", "--include-tolerant", "--no-video", "--no-xcheck", "--golden-dir g",
+                  "--power-check"):
         assert piece in text, piece
     assert cmd[-3:] == ["-x", "-k", "menu"]
     assert PYTEST_EXIT[1] == EXIT_FAILED and PYTEST_EXIT[5] == EXIT_USAGE and PYTEST_EXIT[0] == EXIT_OK

@@ -198,6 +198,36 @@ def fake_keyboard(station: Station, tr=None):
         port="fake-keyboard")
 
 
+def fake_relay(station: Station, tr=None):
+    """For the self-tests: a factory for the rig's power control over a fake
+    mains relay, or None when the rig has no serial-relay. Given the fake
+    TeensyROM, a cut powers it off and the restore powers it on again as
+    the machine it sits in would: the menu after a cold start, a Kawari in
+    the standard its J1 open gives, and the board back on USB."""
+    spec = station.rig.power
+    if spec is None or spec.backend != "serial-relay":
+        return None
+    from selftest.fake_relay import FakeRelay
+    from treadmill.station.power import SerialRelayPower
+
+    opens = station.keyboard.kawari_open if station.keyboard and station.machine.has_kawari else None
+
+    def switched(channel: int, on: bool) -> None:
+        if tr is None or channel != spec.channel:
+            return
+        if not on:
+            tr.power_off()
+            return
+        tr.powered = True
+        tr.return_to_menu(sensed=False)
+        if opens:
+            tr.set_video(opens)
+        tr.usb_restart(0.0)
+
+    relay = FakeRelay(chip=spec.unit or "21474836", on_power=switched)
+    return lambda: SerialRelayPower(spec, connect=relay.connect)
+
+
 def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:
     """One log line on the station's keyboard board, or None when it names none."""
     if kbd is not None:
@@ -297,7 +327,8 @@ def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...],
 
     fake, stream = start_fake_board(debug_defines=set(fw_defines))
     board = Board.open(station, attended=attended, link_factory=lambda: Link(stream),
-                       fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station, fake))
+                       fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station, fake),
+                       power_factory=fake_relay(station, fake))
     board.reconnect_hook = lambda: Link(fake.host_stream)       # the fake's USB coming back
     if not video:
         board.mask({"video"})

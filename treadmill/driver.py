@@ -92,6 +92,7 @@ class RunOptions:
     no_video: bool = False
     no_xcheck: bool = False
     golden_dir: str | None = None
+    power_check: bool = False                  # one power cycle before the first test
     firmware: FirmwareOptions = field(default_factory=FirmwareOptions)
     pytest_args: tuple[str, ...] = ()          # handed to pytest as they are
 
@@ -147,7 +148,8 @@ def pytest_command(opts: RunOptions, run_dir: Path) -> list[str]:
     if opts.golden_dir:
         cmd += ["--golden-dir", opts.golden_dir]
     for flag, on in (("--estimate", opts.estimate), ("--include-tolerant", opts.include_tolerant),
-                     ("--attended", opts.attended), ("--no-video", opts.no_video), ("--no-xcheck", opts.no_xcheck)):
+                     ("--attended", opts.attended), ("--no-video", opts.no_video), ("--no-xcheck", opts.no_xcheck),
+                     ("--power-check", opts.power_check)):
         if on:
             cmd.append(flag)
     cmd += list(opts.pytest_args)

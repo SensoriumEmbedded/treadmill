@@ -54,6 +54,7 @@ def _header(meta: dict) -> str:
         ("Video", (f"{video.get('kind', '')} {video.get('mode', '')}".strip() if video.get("available")
                    else f"none ({video.get('reason', '')})" if video else "")),
         ("Calibration", f"{cal.get('method')} residual {cal.get('residual')}" if cal else ""),
+        ("Power", _power(st.get("power"), meta.get("power_check"), meta.get("recoveries"))),
         ("Suite", f"{meta.get('suite', '')} {meta.get('suite_commit') or ''} on {meta.get('host', '')}, "
                   f"Python {meta.get('python', '')}"),
         ("Started", f"{meta.get('started', '')} to {meta.get('finished', '')}"),
@@ -62,6 +63,25 @@ def _header(meta: dict) -> str:
         ("Command", " ".join(meta.get("argv") or [])),
     ]
     return f"<table>{_rows(pairs)}</table>"
+
+
+def _power(power: dict | None, check: dict | None, recoveries: list | None) -> str:
+    """The header's power line: the backend and its channel, or why it was off;
+    the --power-check timings; how many times the ladder cycled the mains."""
+    if not power:
+        return ""
+    text = f"{power.get('backend')}"
+    if power.get("backend") == "serial-relay":
+        text += f" unit {power.get('unit') or '?'}, channel {power.get('channel')}"
+    if not power.get("on"):
+        text += f": off ({power.get('problem') or 'no power control'})"
+    if check:
+        text += (f"; --power-check: left USB {check.get('left_usb_s')} s after the cut, menu "
+                 f"{check.get('menu_s')} s after power came back")
+    cycles = (recoveries or []).count("power-cycle")
+    if cycles:
+        text += f"; the ladder cycled the mains {cycles} time{'s' if cycles > 1 else ''}"
+    return text
 
 
 def _results(tests: list[dict]) -> str:

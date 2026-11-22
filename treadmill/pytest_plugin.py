@@ -35,9 +35,10 @@ from treadmill.report import (
     RunDir, describe_board, describe_station, host_record, render_report, write_board_artifacts,
 )
 from treadmill.session import (  # noqa: F401
-    FAKE_ENV, dbg_for, fake_keyboard, fake_requested, keyboard_line, keys_for, load_bank, load_or_calibrate,
-    menu_for, open_video,
+    FAKE_ENV, dbg_for, fake_keyboard, fake_relay, fake_requested, keyboard_line, keys_for, load_bank,
+    load_or_calibrate, menu_for, open_video,
 )
+from treadmill.station.power import PowerUnavailable
 from treadmill.station import ConfigError, load_station
 from treadmill.station.kawari import KawariError, set_standard
 from treadmill.station.kbd import KbdError, KeyboardBoard
@@ -96,6 +97,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 help="record video-vs-DMA disagreement but never fail a test on it")
     g.addoption("--golden-dir", action="store", default=None,
                 help="where the screen goldens live (default: <rootdir>/tests/golden)")
+    g.addoption("--power-check", action="store_true", default=False,
+                help="one power cycle before the first test, through the ladder's own rung: proves the "
+                     "station's recovery by mains before an unattended run")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -270,17 +274,19 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
     """The station's board: rig locked, port open, probed, capabilities final,
     the recovery ladder's rungs attached, and the C64 in the --region
     standard when one was given."""
-    factory = kbd_factory = None
+    factory = kbd_factory = power_factory = None
     if fake_requested():
         from selftest.fake_board import start_fake_board
         fake, stream = start_fake_board(debug_defines=set(firmware.defines))   # the build the run claims
         factory = lambda: Link(stream)  # noqa: E731
         kbd_factory = fake_keyboard(station, fake)
+        power_factory = fake_relay(station, fake)
         setattr(request.config, FAKE_ATTR, fake)
     mask = {c for c in request.config.getoption("--caps-mask").split(",") if c}
     try:
         b = Board.open(station, attended=request.config.getoption("--attended"), link_factory=factory,
-                       fw_defines=firmware.defines, caps_mask=mask, firmware=firmware, kbd_factory=kbd_factory)
+                       fw_defines=firmware.defines, caps_mask=mask, firmware=firmware, kbd_factory=kbd_factory,
+                       power_factory=power_factory)
     except Exception as e:
         pytest.exit(f"station {station.id}: {e}", returncode=4)
     if fake_requested():
@@ -288,6 +294,8 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
     line = keyboard_line(b.kbd, b.kbd_problem)
     if line:
         _log(line)
+    if b.power_problem:
+        _log(f"[power] off: {b.power_problem}")
     region = request.config.getoption("--region")
     if region:
         try:
@@ -297,6 +305,16 @@ def board(request: pytest.FixtureRequest, station, run_dir: RunDir, firmware: Fi
             b.close()
             pytest.exit(f"station {station.id}: --region {region}: {e}",
                         returncode=EXIT_USAGE if isinstance(e, NotAllowed) else EXIT_NO_STATION)
+        b.region = region                               # a power cycle undoes it; the ladder puts it back
+    if request.config.getoption("--power-check"):
+        try:
+            timings = b.power_cycle()
+        except (PowerUnavailable, NotAllowed, KawariError, KbdError, LinkError, TransportError) as e:
+            b.close()
+            pytest.exit(f"station {station.id}: --power-check: {e}", returncode=EXIT_NO_STATION)
+        run_dir.meta["power_check"] = timings
+        _log(f"[power] check passed: the board left USB {timings['left_usb_s']} s after the cut, and was at "
+             f"the menu {timings['menu_s']} s after power came back")
     run_dir.meta["station"] = describe_station(b)
     run_dir.meta["board"] = describe_board(b)
     yield b
@@ -588,6 +606,8 @@ def _lacks(board: Board, missing: list[str]) -> str:
     why = ""
     if board.kbd_problem and KEYBOARD_CAPS.intersection(missing):
         why = f" (keyboard board: {board.kbd_problem})"
+    elif board.power_problem and "power" in missing:
+        why = f" (power: {board.power_problem})"
     return f"station {board.station.id} lacks {', '.join(missing)}{why}"
 
 

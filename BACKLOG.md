@@ -121,6 +121,23 @@ cost or a wart with a known, small fix.
    the same hardware. Fix: one helper in `kawari.py` that reads J1 and
    flips it from the standard the banner shows, used by both, with
    `kawari_open` dropped from the `region_switch` rule.
+42. **high** The reboot rung strands the board in the Teensy bootloader.
+   `Board._rung_reboot()` (`treadmill/board.py`) calls `relaunch()`
+   (`treadmill/firmware/flash.py`), which opens the port at 134 baud and so
+   sends the Teensy into the bootloader. Without `teensy_loader_cli` on the
+   host (none on the Windows bench) the boot-only step is skipped, and
+   the forced `flash()` passes `--uid`, which `flash-firmware.mjs` refuses
+   for a board in the bootloader, since it cannot read the chip id there
+   ("No attached board has chip ID ..."). Every later test then errors in
+   its setup. It ended two runs on 2026-11-21, each after the laptop's
+   Modern Standby dropped the board: the C64C #24's, before the screen-on
+   hold existed, and the C128 Marco1's second run (46), which left 16 of
+   21 tests unrun. On the one board
+   checked, HalfKay's USB serial number is
+   the chip id divided by ten, in hex. Fix: when the only board in the
+   bootloader (16C0:0478) has that serial, flash it without `--uid`, which
+   the script allows for a single board; and try a reconnect before the
+   rung, since a board that rebooted on its own runs again by itself.
 
 ## Video
 
@@ -373,3 +390,48 @@ cost or a wart with a known, small fix.
    runs krread under each sense and, beside it, writes and reads back a
    pattern in a free page by DMA, counting mismatches; if the DMA sense's
    count is not zero, it goes to the firmware with that script.
+43. **medium** A sweep loses its whole record when a probe's own recovery
+   fails. After a hang, `ReuLoopProbe.sample()` (`treadmill/probes/reuloop.py`)
+   resets at the defaults and waits 60 s for the menu. On the C128 Marco1
+   (2026-11-21) the REU loop with sprites hung at `nS_DMABAWait` 180, the
+   menu was still booting at 60 s, and the `LinkError` went up through
+   `Sweep.run()` (`treadmill/sweeps.py`): the test ended with no
+   margins.json, though the walk had found 190 clean and 180 failing. The
+   next test's setup reset the machine without trouble. Fix: the probe's
+   recovery goes through the station ladder (another reset) before it
+   gives up, and `Sweep.run()` writes the record it has, with that edge
+   open, when a probe raises.
+44. **medium** A noise-only failure becomes an edge on one sighting. A walk
+   stops at its first failure, so one disturbed stretch of frames ends it.
+   On the C64C #24 (2026-11-21) run 1's four noise-only DMA edges (one large
+   event each, 11,717 to 324,241 pixels over the limit, the next value
+   inward clean) did not recur in run 2 at the same values. On the C128
+   Marco1 the same day a noise-only edge repeated at one value in all three
+   passes (`nS_DMADataHold` 429), so some are real. Fix: sample a point
+   whose only failure is the noise probe once more before the walk stops
+   there, and fail it only if the repeat fails too.
+45. **low** vicrom's baseline is the worst frame at the defaults.
+   `VicRomProbe` (`treadmill/probes/vicrom.py`) takes the frame of its
+   baseline dwell that differs most from the reference, so one disturbed
+   frame raises the limit for the whole sweep. On 2026-11-21 the baselines
+   were 52,491 to 83,073 pixels on C64 #14 and the C64C #24 and 115,476 to
+   120,561 on the C128 Marco1, which puts the limit at 157,000 to 362,000;
+   Marco1's `nS_VICStart` 80 cleared it by 2%. Fix: look at the baseline
+   frames to see what differs at the defaults, then judge by a high
+   percentile of the frames rather than the worst, or mask what moves.
+46. **high** The screen-on hold once failed to keep the laptop out of
+   Modern Standby. With `treadmill run` holding `ES_DISPLAY_REQUIRED`
+   (`treadmill/awake.py`), the C128 Marco1's first run went 95 minutes on
+   2026-11-21 without a standby, but its second run, started two minutes
+   after the first ended, went into Modern Standby 15 minutes in, at
+   20:08. USB dropped, and the run lost its station when the laptop woke
+   at 20:26 (42). Windows gives the reason as SC_MONITORPOWER, but it gave
+   the same at 14:41 with no run going and at 16:59 during the C64C #24's
+   run, before the hold existed: on this laptop that is the ordinary
+   display timeout (60 minutes on AC). Presence sensing is off, and the run
+   logged no refusal from Windows. What ended the hold is not known. Fix:
+   during a run, check that the hold shows in `powercfg /requests`
+   (elevated), and try whether a hold taken after the machine has been
+   idle past the timeout still counts; a thread that calls
+   `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` every minute resets the
+   idle timer and would not depend on either.

@@ -92,6 +92,16 @@ def _keys_table(t: dict[str, Any], path: Path) -> None:
                           "table with its chip id; drop the rig's [keys] table or leave backend = \"none\"")
 
 
+def _power(t: dict[str, Any], path: Path) -> PowerSpec | None:
+    """A rig's [power] table. The old serial-relay ``port`` names a COM port,
+    which no file here may carry: the relay is found by its serial string."""
+    power = t.get("power")
+    if power is not None and "port" in power:
+        raise ConfigError(f"{path} [power]: port is gone: the mains relay is found by its USB serial string. "
+                          "Write unit = \"<its chip id>\", or leave it out when one relay is on USB")
+    return _optional(PowerSpec, power, f"{path} [power]")
+
+
 def load_rig(rig_id: str, base: Path | None = None) -> Rig:
     base = base or data_dir()
     path = base / "rigs" / f"{rig_id}.toml"
@@ -102,7 +112,7 @@ def load_rig(rig_id: str, base: Path | None = None) -> Rig:
     return Rig(
         id=rig_id,
         capture=_build(CaptureSpec, t["capture"], f"{path} [capture]") if "capture" in t else None,
-        power=_optional(PowerSpec, t.get("power"), f"{path} [power]"),
+        power=_power(t, path),
         region_switch=_region_switch(t, path),
         scope=bool(t.get("scope", False)),
         u64_url=t.get("u64_url"),

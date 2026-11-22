@@ -75,9 +75,10 @@ class CaptureSpec:
 @dataclass(frozen=True)
 class PowerSpec:
     backend: str = "none"           # none | serial-relay | http-plug | u64 | manual
-    port: str | None = None         # serial-relay: the micro's USB serial port
+    unit: str | None = None         # serial-relay: the relay's chip id (USB serial string MainsRelay_<chip id>);
+                                    # None: the only relay on USB
     url: str | None = None          # http-plug: the plug's local API base
-    channel: int = 0
+    channel: int = 1                # serial-relay: the relay channel the machine's supply is on, from 1
     off_seconds: float = 5.0        # how long the mains stays off in a power cycle
 
 

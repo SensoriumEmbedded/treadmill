@@ -134,6 +134,22 @@ def test_old_rig_keyboard_settings_say_where_they_went(tmp_path: Path, rig, matc
         load_rig("r", tmp_path)
 
 
+def test_a_rig_names_its_mains_relay_by_unit_and_channel(tmp_path: Path):
+    (tmp_path / "rigs").mkdir()
+    (tmp_path / "rigs" / "r.toml").write_text(
+        'id = "r"\n[power]\nbackend = "serial-relay"\nunit = "12345678"\noff_seconds = 8.0\n', encoding="utf-8")
+    power = load_rig("r", tmp_path).power
+    assert (power.backend, power.unit, power.channel, power.off_seconds) == ("serial-relay", "12345678", 1, 8.0)
+
+
+def test_the_old_power_port_says_what_to_write_instead(tmp_path: Path):
+    (tmp_path / "rigs").mkdir()
+    (tmp_path / "rigs" / "r.toml").write_text('id = "r"\n[power]\nbackend = "serial-relay"\nport = "COM7"\n',
+                                             encoding="utf-8")
+    with pytest.raises(ConfigError, match="port is gone.*unit ="):
+        load_rig("r", tmp_path)
+
+
 @pytest.mark.parametrize("table, match", [
     ('kawari_open = "PAL"\n', "needs chip"),
     ('chip = "C64USBKeyboard_1"\n', "not a chip id"),

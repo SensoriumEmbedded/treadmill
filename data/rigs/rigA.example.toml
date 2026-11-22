@@ -21,8 +21,10 @@ converter = "generic"   # names the S-Video-to-HDMI converter; the glyph bank is
 
 [power]
 backend = "none"        # none | serial-relay | http-plug | u64 | manual
-# port = "COM7"         # serial-relay: the micro driving the solid-state relay
+# unit = "00000000"     # serial-relay: the mains relay's chip id (USB serial string MainsRelay_<chip id>);
+                        # leave it out when one relay is on USB
+# channel = 1           # serial-relay: the relay channel the bench supply is on
 # url = "http://192.0.2.10"   # http-plug: the plug's local API base
-off_seconds = 5.0
+off_seconds = 5.0       # how long the mains stays off in a power cycle; the mains relay takes 2 to 60
 
 # The keyboard board lives in one machine, so it is set in the station file ([keyboard]).

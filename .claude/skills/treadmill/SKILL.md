@@ -16,8 +16,10 @@ station could not be had.
 Flashing or driving a board needs the person's go-ahead in the session: say
 which station gets which image (`--fw ...`) and what will run, and wait.
 The keyboard board counts: a key, a reset or a standard switch drives the
-machine. The self-tests and anything with `TREADMILL_FAKE_BOARD=1` need no
-go-ahead.
+machine. So does the mains relay: on a station with `power`, a run's
+recovery ladder may cut the machine's mains, and `--power-check` and
+`treadmill power ... cycle` always do, so the ask says so. The self-tests
+and anything with `TREADMILL_FAKE_BOARD=1` need no go-ahead.
 Never write a port name, host, IP address or chip id into a committed file.
 `run`, `sweep` and `exec` keep the host's screen on while they work, since
 on a Modern Standby laptop the screen going off sleeps the machine and drops
@@ -28,6 +30,9 @@ the station; a closed lid still does.
 | Ask | Command |
 |---|---|
 | What stations exist, what each can do | `treadmill stations --json` |
+| Is the station's power control working | `treadmill power --station <id> status --json`: the mains relay answers as the rig names it; switches nothing |
+| Power-cycle a station, or prove its recovery by mains | `treadmill power --station <id> cycle --json` (go-ahead first): one cycle through the ladder's own rung, timed; fails if the TR stays on USB (the supply's switch on ON, or the supply on another machine) |
+| An unattended run that can recover by mains | `treadmill run --station <id> --power-check ...`: one power cycle before the first test, the run ends if it fails; `run.json` `power_check` has the timings |
 | Run the hardware tests on the firmware already on the board | `treadmill run --station <id> --json` |
 | Test a branch, a PR branch or a commit | `treadmill run --station <id> --fw ref=<ref> --json` (built in a worktree, cached, flashed only if the board does not already run it) |
 | Test a worktree with one-off edits | `--fw path=<dir> --allow-dirty` (the build carries the dirty `*`) |

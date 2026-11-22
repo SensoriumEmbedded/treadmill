@@ -147,6 +147,55 @@ are checked by a script, not by the suite: `treadmill exec
 --no-link --station <id> scripts/2026-11-19-keyboard-board-features.py`
 (about six minutes; it restarts the C64 many times).
 
+### Power control
+
+The rig's `[power]` table cuts and restores the machine's mains. Its
+hardware backend, `serial-relay`, is the mains relay (the mains-relay
+repository; protocol 1, its `docs/Host_Protocol.md`): a Teensy inside the
+bench supply's case that switches the supply's mains through a solid-state
+relay. The relay is wired across the supply's own power switch, which makes
+that switch its bypass: ON powers the machine whatever the relay does, and
+the switch's off position is AUTO, where the relay decides. On AUTO the
+supply's switch no longer turns the machine off, so a cartridge or cable
+swap uses the machine's own switch, which otherwise stays on. The bench
+supply powers the machine under test, so it goes where the capture cable
+goes.
+
+- `unit`: the relay's chip id. It enumerates as `MainsRelay_<unit>`, which
+  is how it is found; leave it out when one relay is on USB.
+- `channel`: the relay channel the supply is on, from 1.
+- `off_seconds`: how long a power cycle keeps the mains off, 2 to 60.
+
+A station opens with its relay checked (it answers protocol 1, it is the
+unit the rig names, it has the channel, it takes `off_seconds`) and
+nothing switched. A relay that is missing or isn't what the rig names
+takes the `power` capability away, and the reason shows where the
+keyboard board's would. When a station's TeensyROM isn't on USB, the
+not-found error says what the relay shows.
+
+With `power`, the recovery ladder's last rung is a power cycle. It fails
+when the TeensyROM stays on USB through the cut: the supply's switch is on
+ON, the supply powers another machine, or `off_seconds` is shorter than
+the supply holds up. Once the menu is back, the rung opens the keyboard
+board again (it powers from the machine), sets its TOD line, and switches
+a Kawari back to the run's `--region`, since a `V` setting lasts only
+until the power goes. With the reboot rung's bootloader problem still open
+(BACKLOG 42), the power cycle also brings back a board that rung left in
+the bootloader.
+
+- `treadmill power --station <id> status` checks the relay and switches
+  nothing.
+- `treadmill power --station <id> cycle` runs one power cycle through the
+  rung and times it: how long the board took to leave USB after the cut,
+  and to be back on USB and at the menu after power came back. It cuts the
+  machine's mains, so it needs the go-ahead for the station.
+- `treadmill run --power-check` runs the same cycle before the first test
+  and ends the run if it fails. It costs a boot and proves the recovery
+  path before an unattended run.
+
+`manual` asks whoever is at the bench, and only in an attended run
+(`--attended`); elsewhere the station has no `power`.
+
 ## The hardware tests
 
 `tests/` holds one concern per file: identity and reset (`smoke/`), files to
@@ -603,7 +652,8 @@ session (`board`, `link`, `screen_channel()`, `menu()`, `keys()`, `dbg()`,
 ## Reports
 
 Every run leaves `reports/<timestamp>/`: `run.json` (station with its
-video standard and keyboard board, board, the
+video standard, keyboard board and power control, the `--power-check`
+timings and the ladder's recoveries, board, the
 firmware spec with its commit, dirty hash, defines, tag, hex and stamp,
 capabilities, capture mode, calibration residual, the suite's own commit, the
 options, every test's outcome, duration and message, the summary and exit

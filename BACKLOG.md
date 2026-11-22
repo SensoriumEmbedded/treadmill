@@ -138,6 +138,15 @@ cost or a wart with a known, small fix.
    bootloader (16C0:0478) has that serial, flash it without `--uid`, which
    the script allows for a single board; and try a reconnect before the
    rung, since a board that rebooted on its own runs again by itself.
+47. **low** The manufacturing test leaves the board swap's power-off to the
+   operator. `treadmill mfg` (`treadmill/mfg.py`) asks for the C64 to be
+   powered off before each board comes out (`POWER_OFF`) and on again once
+   the next is in (`CONNECT`). On a station with `power`, the mains relay
+   could hold the machine off itself for the swap, which would also make
+   sure no board goes in live. Fix: `Power.off()` before the `POWER_OFF`
+   prompt and `on()` after `CONNECT`'s, when the station has `power`. The
+   relay restores power by itself after its 10-minute `OFF` limit, so a
+   longer swap needs the `OFF` renewed.
 
 ## Video
 

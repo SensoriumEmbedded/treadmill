@@ -24,7 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from treadmill import __version__
+from treadmill import __version__, awake
 from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE, TreadmillError  # noqa: F401
 from treadmill.station import ConfigError, list_stations, load_station
 from treadmill.station.model import tier
@@ -744,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--golden-dir", help="where the screen goldens live (default: tests/golden)")
     _firmware_args(s)
     s.add_argument("pytest_args", nargs="*", help="after --: arguments for pytest")
-    s.set_defaults(func=cmd_run)
+    s.set_defaults(func=cmd_run, screen_on=True)
 
     s = sub.add_parser("exec", help="run a script on an open station, with a test's logging and artifacts",
                        description="The script runs as __main__ with the station's objects as globals: "
@@ -756,7 +756,7 @@ def build_parser() -> argparse.ArgumentParser:
     _no_link_arg(s)
     s.add_argument("script", help="the Python file to run")
     s.add_argument("script_args", nargs="*", help="after --: arguments for the script")
-    s.set_defaults(func=cmd_exec)
+    s.set_defaults(func=cmd_exec, screen_on=True)
 
     s = sub.add_parser("shell", help="a Python REPL on an open station",
                        description="The same names a script gets, at a prompt: link.ping(), screen.read(), "
@@ -817,7 +817,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")
     s.add_argument("--dwell", type=float, default=1.0,
                    help="idread, reuloop, vicrom, krread: seconds of counting per sample (default 1)")
-    s.set_defaults(func=cmd_sweep)
+    s.set_defaults(func=cmd_sweep, screen_on=True)
 
     s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, the map, floors for a station",
                        description="Reads every margins.json under --reports. table: one line a record, the clean "
@@ -925,7 +925,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     as_json = getattr(args, "json", False)
     try:
-        return args.func(args)
+        # run, sweep and exec leave a board unattended for an hour or more: see treadmill/awake.py
+        hold = awake.screen_on(_log_for(args)) if getattr(args, "screen_on", False) else contextlib.nullcontext()
+        with hold:
+            return args.func(args)
     except TreadmillError as e:
         return _fail(e, as_json, e.code)      # each error says what it stands for: the request, the station, a failure
     except KeyboardInterrupt:

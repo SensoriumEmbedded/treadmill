@@ -19,6 +19,9 @@ The keyboard board counts: a key, a reset or a standard switch drives the
 machine. The self-tests and anything with `TREADMILL_FAKE_BOARD=1` need no
 go-ahead.
 Never write a port name, host, IP address or chip id into a committed file.
+`run`, `sweep` and `exec` keep the host's screen on while they work, since
+on a Modern Standby laptop the screen going off sleeps the machine and drops
+the station; a closed lid still does.
 
 ## Which command
 

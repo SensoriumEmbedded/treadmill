@@ -618,5 +618,6 @@ differed, and `xcheck.json` when video was cross-checked against DMA.
 - Every command but the shell takes `--json`, and every one exits non-zero on failure; the codes are above.
 - Every run writes `reports/<timestamp>/run.json` and `report.html`; `data/results.sqlite` comes with the nightly runs.
 - The suite refuses to start when another program holds the station's rig or serial port.
+- `run`, `sweep` and `exec` keep the screen on while they work (Windows; `treadmill/awake.py`). On a laptop with Modern Standby the screen going off after its idle timeout puts the machine in standby whatever the sleep setting says, and USB drops the board and the capture with it. A closed lid or Sleep chosen by hand still sleeps.
 - DMA commands are never sent to a plain TR; debug letters are never sent to a build without their define; the port search sends TR commands only to the board it looks for or to an unnamed port, never to the keyboard board.
 - Nothing is flashed or driven without the person's go-ahead; the station files that name boards stay private.

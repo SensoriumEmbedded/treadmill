@@ -36,7 +36,7 @@ from treadmill.report import (
 )
 from treadmill.session import (  # noqa: F401
     FAKE_ENV, dbg_for, fake_keyboard, fake_relay, fake_requested, keyboard_line, keys_for, load_bank,
-    load_or_calibrate, menu_for, open_video,
+    load_or_calibrate, menu_for, open_video, picture_ok,
 )
 from treadmill.station.power import PowerUnavailable
 from treadmill.station import ConfigError, load_station
@@ -378,6 +378,11 @@ def video(request: pytest.FixtureRequest, board: Board, run_dir: RunDir) -> Fram
     if src is None:
         _drop_video(board, run_dir, "no capture device" if board.station.rig.capture is None
                     else "the capture device did not open")
+        yield None
+        return
+    if not picture_ok(board, src, log=_log):
+        src.close()
+        _drop_video(board, run_dir, "the capture shows only black while the board is at its menu")
         yield None
         return
     run_dir.meta["video"] = {"available": True, **src.describe()}

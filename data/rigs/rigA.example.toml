@@ -9,7 +9,8 @@ scope = false                   # the Tek TDS2024B is on this bench
 
 [capture]
 backend = "opencv"      # opencv | av
-device = 0              # OpenCV index, or a DirectShow device name
+device = "USB Video"    # the DirectShow device name (an MS2109 dongle's), looked up at each open; or an OpenCV
+                        # index, which moves when devices re-enumerate
 fourcc = "MJPG"
 width = 1280
 height = 720

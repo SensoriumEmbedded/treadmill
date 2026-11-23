@@ -8,7 +8,10 @@ on the bench PC but never delivers a frame), with the mode passed at open,
 since a format set afterwards is ignored by the DirectShow backend; it
 discards the first frames after opening, which the MS2109 delivers before
 its signal settles (the dongle hands out its own color bars for the first
-part of a second). Nothing
+part of a second). A rig names its device or gives DirectShow's index; a
+name is looked up at each open (``dshow``), since the index moves.
+``check_picture`` refuses a capture that shows only black, which is what
+another camera on the device's old index delivered. Nothing
 here decides what a frame means: that is ``channels`` and ``liveness``.
 """
 
@@ -27,6 +30,7 @@ import cv2
 import numpy as np
 
 from treadmill.errors import TreadmillError
+from treadmill.observe.dshow import DeviceListError, device_index
 from treadmill.station.config import data_dir
 from treadmill.station.model import CaptureSpec
 
@@ -37,6 +41,8 @@ NO_SIGNAL_MATCH = 6.0         # mean absolute difference from the rig's no-signa
 STABLE_TOLERANCE = 2.0        # mean absolute pixel difference between "the same" frames
 DEFAULT_TIMEOUT = 10.0
 FRESH_S = 1.0                 # a live feed delivers 25-60 frames a second; one older than this is not the picture now
+BLACK_MAX = 8                 # brightest pixel value of a frame that counts as black: a C64 picture's border and text are far above
+PICTURE_S = 2.0               # how long check_picture watches for a frame that is not black
 
 
 class CaptureError(TreadmillError):
@@ -177,7 +183,8 @@ class CvCapture(FrameSource):
         super().__init__()
         self.spec = spec
         self.backend = backend or spec.api or ("dshow" if os.name == "nt" else "any")
-        self._cap = self._open(spec, self.backend)
+        self.index = self._index(spec.device, self.backend)
+        self._cap = self._open(spec, self.index, self.backend)
         self._discard = discard
         self._settle_until = time.monotonic() + settle
         self._no_signal = self._load_pattern(spec.no_signal)
@@ -201,7 +208,20 @@ class CvCapture(FrameSource):
         return image
 
     @staticmethod
-    def _open(spec: CaptureSpec, backend: str) -> cv2.VideoCapture:
+    def _index(device: int | str, backend: str, names: list[str] | None = None) -> int:
+        """The index to open: the rig's own, or the one its device name has
+        now (``names``: DirectShow's list, for the self-tests)."""
+        if isinstance(device, int):
+            return device
+        if backend != "dshow":
+            raise CaptureError(f"capture device {device!r} is a name, which only the dshow backend looks up")
+        try:
+            return device_index(device, names)
+        except DeviceListError as e:
+            raise CaptureError(str(e)) from e
+
+    @staticmethod
+    def _open(spec: CaptureSpec, index: int, backend: str) -> cv2.VideoCapture:
         api = CvCapture.BACKENDS.get(backend)
         if api is None:
             raise CaptureError(f"unknown capture backend {backend!r}; one of {', '.join(CvCapture.BACKENDS)}")
@@ -209,9 +229,9 @@ class CvCapture(FrameSource):
                   cv2.CAP_PROP_FPS, spec.fps]
         if spec.fourcc:
             params = [cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*spec.fourcc)] + params
-        cap = cv2.VideoCapture(spec.device, api, params)
+        cap = cv2.VideoCapture(index, api, params)
         if not cap.isOpened():
-            raise CaptureError(f"capture device {spec.device!r} did not open with {backend}")
+            raise CaptureError(f"capture device {spec.device!r} (index {index}) did not open with {backend}")
         return cap
 
     def _run(self) -> None:
@@ -235,8 +255,8 @@ class CvCapture(FrameSource):
         pass
 
     def describe(self) -> dict:
-        return {"kind": "CvCapture", "backend": self.backend, "device": self.spec.device,
-                "mode": f"{self.spec.fourcc} {self.spec.width}x{self.spec.height}@{self.spec.fps}",
+        return {"kind": "CvCapture", "backend": self.backend, "device": self.spec.device, "index": self.index,
+                "mode":f"{self.spec.fourcc} {self.spec.width}x{self.spec.height}@{self.spec.fps}",
                 "actual": f"{int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
                           f"{int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}@{self._cap.get(cv2.CAP_PROP_FPS):g}",
                 "read_errors": self._errors, "no_signal_frames": self.no_signal_frames}
@@ -296,6 +316,26 @@ def open_capture(spec: CaptureSpec, backend: str | None = None) -> FrameSource:
     if spec.backend == "opencv":
         return CvCapture(spec, backend)
     raise CaptureError(f"capture backend {spec.backend!r} is not implemented (opencv is)")
+
+
+def is_black(image: np.ndarray) -> bool:
+    return int(image.max()) <= BLACK_MAX
+
+
+def check_picture(src: FrameSource, seconds: float = PICTURE_S, timeout: float = DEFAULT_TIMEOUT) -> Frame:
+    """The first frame that is not black, watched for ``seconds`` once frames
+    arrive. Raises when every frame in that time is black: another camera on
+    the device's index (a locked phone's virtual camera delivers black), or
+    nothing on the capture's input. Only for a machine known to be showing a
+    picture, such as the TR's menu."""
+    frame = src.next_frame(timeout=timeout)
+    deadline = time.monotonic() + seconds
+    while is_black(frame.image):
+        if time.monotonic() >= deadline:
+            raise CaptureError(f"the capture shows only black for {seconds:.0f} s: is {src.describe()} the capture "
+                               "device, with the machine's picture on its input?")
+        frame = src.next_frame(frame, timeout=timeout)
+    return frame
 
 
 def save_strip(frames: list[Frame], path: Path | str, columns: int = 6, scale: float = 0.25) -> Path | None:

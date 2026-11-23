@@ -361,3 +361,56 @@ def test_screen_channel_policy_waits_and_xcheck(calib, bank):
     assert dma_only.read().source == "dma"
     with pytest.raises(ScreenError):
         ScreenChannel(None, None, None, None).read()
+
+
+DSHOW_NAMES = ["ASUS 5M WebCam", "Phone (Windows Virtual Camera)", "USB Video", "Camera (NVIDIA Broadcast)"]
+
+
+def test_a_capture_device_named_in_the_rig_is_opened_at_the_index_it_has_now():
+    from treadmill.observe import CaptureError, CvCapture
+
+    assert CvCapture._index("USB Video", "dshow", DSHOW_NAMES) == 2
+    assert CvCapture._index(1, "dshow", DSHOW_NAMES) == 1
+    with pytest.raises(CaptureError, match="only the dshow backend"):
+        CvCapture._index("USB Video", "msmf", DSHOW_NAMES)
+    with pytest.raises(CaptureError, match=r"no video input device is named 'USB Capture'.*2 'USB Video'"):
+        CvCapture._index("USB Capture", "dshow", DSHOW_NAMES)
+    with pytest.raises(CaptureError, match="2 video input devices are named 'USB Video'"):
+        CvCapture._index("USB Video", "dshow", DSHOW_NAMES + ["USB Video"])
+
+
+def test_a_capture_showing_only_black_is_refused():
+    from treadmill.observe.capture import CaptureError, check_picture
+
+    black = np.zeros((20, 20, 3), np.uint8)
+    dark = black.copy()
+    dark[5, 5] = (40, 40, 40)                    # one dim pixel: a C64's darkest border is brighter than black
+    assert check_picture(ReplaySource([black, black, dark]), seconds=1.0).image[5, 5, 0] == 40
+    with pytest.raises(CaptureError, match="only black"):
+        check_picture(ReplaySource([black]), seconds=0.2)
+
+
+def test_the_picture_is_judged_only_while_the_board_is_at_its_menu():
+    from types import SimpleNamespace
+
+    from treadmill.link import LinkError
+    from treadmill.link.state import MENU_READY
+    from treadmill.session import picture_ok
+
+    class Board:
+        def __init__(self, kind=None, error=None):
+            self.kind, self.error = kind, error
+
+        def state(self):
+            if self.error:
+                raise self.error
+            return SimpleNamespace(kind=self.kind)
+
+    black = np.zeros((20, 20, 3), np.uint8)
+    picture = np.full((20, 20, 3), 90, np.uint8)
+    logged = []
+    assert not picture_ok(Board(MENU_READY), ReplaySource([black]), log=logged.append)
+    assert "only black" in logged[0]
+    assert picture_ok(Board(MENU_READY), ReplaySource([picture]))
+    assert picture_ok(Board("program"), ReplaySource([black]))
+    assert picture_ok(Board(error=LinkError("no answer")), ReplaySource([black]))

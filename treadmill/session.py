@@ -22,11 +22,12 @@ from typing import TYPE_CHECKING
 from treadmill.board import Board, open_keyboard
 from treadmill.c64.keys import HwKeys, KernalKeys, Keys
 from treadmill.c64.menu import MenuDriver
-from treadmill.link import DebugCommands
+from treadmill.link import DebugCommands, LinkError, TransportError
+from treadmill.link.state import MENU_READY
 from treadmill.observe.calibrate import (
     LAYOUT_MENU, Calibration, CalibrationError, calibration_path, find_text_area, refine, with_bleed,
 )
-from treadmill.observe.capture import CaptureError, FrameSource, open_capture
+from treadmill.observe.capture import CaptureError, FrameSource, check_picture, open_capture
 from treadmill.observe.channels import ScreenChannel, XCheck, from_dump
 from treadmill.observe.glyphs import GlyphBank, GlyphError, bootstrap_bank, load_chargen
 from treadmill.station import Station, load_station
@@ -104,6 +105,24 @@ def open_video(station: Station, log=print) -> FrameSource | None:
         return None
     log(f"[video] {src.describe()}")
     return src
+
+
+def picture_ok(board: Board, video: FrameSource, log=print) -> bool:
+    """False when the board is at its menu and the capture shows only black
+    (``check_picture``). Anywhere else a black screen can be the machine's
+    own, so it is not judged."""
+    try:
+        at_menu = board.state().kind == MENU_READY
+    except (LinkError, TransportError):
+        return True
+    if not at_menu:
+        return True
+    try:
+        check_picture(video)
+    except CaptureError as e:
+        log(f"[video] {e}")
+        return False
+    return True
 
 
 def load_bank(station: Station, chargen: str | None = None, root: Path | None = None, log=print) -> GlyphBank | None:
@@ -356,6 +375,9 @@ def open_station(station_id: str, *, attended: bool = False, video: bool = True,
     src = bank = cal = None
     try:
         src = open_video(board.station, log) if video else None
+        if src is not None and not picture_ok(board, src, log):
+            src.close()
+            src = None
         if src is None and video:
             board.mask({"video"})
         if src is not None:

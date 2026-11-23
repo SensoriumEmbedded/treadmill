@@ -74,7 +74,11 @@ To add one:
 1. Copy `data/rigs/rigA.example.toml` to `data/rigs/<rig>.toml`: the capture
    device and mode (`treadmill frame --station ... --raw` shows what it
    delivers), `firmware_checkout` for the TeensyROM checkout whose tools
-   build and flash, and the power backend when the rig has one.
+   build and flash, and the power backend when the rig has one. Name the
+   capture device as DirectShow lists it rather than giving its index: the
+   index moves when devices re-enumerate, and another camera then takes
+   its place. A run whose board is at its menu while the capture shows only
+   black turns video off.
 2. Copy `data/stations/example.example.toml` to `data/stations/<id>.toml`:
    the rig, the machine (a registry id from the validation tracker's
    `systems.csv`, named in `data/registry.toml`, or an inline `[machine]`

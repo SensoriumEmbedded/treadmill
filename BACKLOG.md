@@ -205,17 +205,20 @@ cost or a wart with a known, small fix.
    instead. Left to do: judge the root from the path row (`/` alone) as
    well as the up-dir entry, and calibrate and harvest every station
    before its first run.
-48. **high** The rig opens its capture by DirectShow index, and the index
-   moves. `[capture] device` in the rig file is a position in DirectShow's
-   list, and the list reorders when devices re-enumerate. On 2026-11-22
-   index 1 had become the phone's virtual camera and the capture dongle had
-   moved to 2, so the C128 Marco1's margin run read a black picture for 100
-   minutes with no read errors: seven video tests failed, the two vicrom
-   sweeps passed on black (baseline 0, against about 118,000 on the dongle),
-   and the noise probe saw nothing beside the DMA sweeps. Nothing checks
-   what was opened. Fix: open the device by its name (`USB Video`, from
-   DirectShow's device list), the index only as a fallback, and refuse a
-   capture whose first frames are all black.
+48. **closed 2026-11-22, with the capture opened by name.** The rig opened
+   its capture by DirectShow index, and the list reorders when devices
+   re-enumerate. On 2026-11-22 index 1 had become the phone's virtual
+   camera and the capture dongle had moved to 2, so the C128 Marco1's
+   margin run read a black picture for 100 minutes with no read errors:
+   seven video tests failed, the two vicrom sweeps passed on black
+   (baseline 0, against about 118,000 on the dongle), and the noise probe
+   saw nothing beside the DMA sweeps. `[capture] device` may now be the
+   DirectShow name, looked up at each open (`treadmill/observe/dshow.py`,
+   `CvCapture._index()`), and a session whose board is at its menu drops
+   video when the capture shows only black for 2 s (`check_picture()`,
+   `picture_ok()` in `treadmill/session.py`). At another moment the same
+   camera showed a lock icon, which the black check lets through: the name
+   is what keeps another camera out.
 
 ## Firmware builds
 

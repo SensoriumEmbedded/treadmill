@@ -205,6 +205,17 @@ cost or a wart with a known, small fix.
    instead. Left to do: judge the root from the path row (`/` alone) as
    well as the up-dir entry, and calibrate and harvest every station
    before its first run.
+48. **high** The rig opens its capture by DirectShow index, and the index
+   moves. `[capture] device` in the rig file is a position in DirectShow's
+   list, and the list reorders when devices re-enumerate. On 2026-11-22
+   index 1 had become the phone's virtual camera and the capture dongle had
+   moved to 2, so the C128 Marco1's margin run read a black picture for 100
+   minutes with no read errors: seven video tests failed, the two vicrom
+   sweeps passed on black (baseline 0, against about 118,000 on the dongle),
+   and the noise probe saw nothing beside the DMA sweeps. Nothing checks
+   what was opened. Fix: open the device by its name (`USB Video`, from
+   DirectShow's device list), the index only as a fallback, and refuse a
+   capture whose first frames are all black.
 
 ## Firmware builds
 
@@ -416,9 +427,14 @@ cost or a wart with a known, small fix.
    event each, 11,717 to 324,241 pixels over the limit, the next value
    inward clean) did not recur in run 2 at the same values. On the C128
    Marco1 the same day a noise-only edge repeated at one value in all three
-   passes (`nS_DMADataHold` 429), so some are real. Fix: sample a point
-   whose only failure is the noise probe once more before the walk stops
-   there, and fail it only if the repeat fails too.
+   passes (`nS_DMADataHold` 429), so some are real. On Marco1 on 2026-11-22
+   the point straight after a REU-loop hang and its relaunch failed on
+   noise alone twice in one pass (`nS_DMABAWait` 215 and 85, 530,000 to
+   580,000 pixels, nearly the whole picture), where the other two passes
+   were clean from 60 to 400: the relaunched program had likely not
+   settled. Fix: sample a point whose only failure is the noise probe once
+   more before the walk stops there, and fail it only if the repeat fails
+   too.
 45. **low** vicrom's baseline is the worst frame at the defaults.
    `VicRomProbe` (`treadmill/probes/vicrom.py`) takes the frame of its
    baseline dwell that differs most from the reference, so one disturbed
@@ -444,3 +460,15 @@ cost or a wart with a known, small fix.
    idle past the timeout still counts; a thread that calls
    `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` every minute resets the
    idle timer and would not depend on either.
+49. **medium** A REU loop that fails every round is never relaunched.
+   `ReuLoopProbe` (`treadmill/probes/reuloop.py`) relaunches the loop only
+   after a hang. On the C128 Marco1 on 2026-11-22, `nS_DMASetup` 490 left
+   the loop running with every round bad (2,713 of 2,713, twice the normal
+   round rate), and it stayed that way at every later point, the default
+   460 included, while zpattern read clean. Passes 2 and 3 found false
+   edges at 455 and 485, the record says the default failed, and the test
+   passed. In the same run the loop reported 65,477 rounds, none bad, at
+   `nS_DMADataHold` 434 (normal is about 1,450). Fix: take every round bad,
+   or a round count far from the baseline's, as a broken loop: relaunch at
+   the defaults and sample the point again; and fail the test when a pass
+   fails at the default.

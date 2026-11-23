@@ -1,0 +1,226 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 772" width="1000" height="772" role="img" aria-labelledby="title desc">
+  <title id="title">A TReadmill station</title>
+  <desc id="desc">The bench PC reaches the station over USB: the mains relay's Teensy in the bench supply's case, the TeensyROM in the machine's expansion port, the C64-USBKeyboard board inside the machine, and the capture dongle. The TeensyROM and the machine are under test; the rest is instrumentation. The mains relay, the keyboard board and a Kawari are optional. The Teensy drives a solid-state relay wired across the supply's own switch, the supply powers the machine, and the machine powers the TeensyROM and the keyboard board. The TeensyROM drives /RESET. The keyboard board plugs onto the keyboard connector (matrix and RESTORE) and reaches /RESET, the TOD line, the Kawari's J1 and CRESET_N and the TeensyROM's buttons by flying leads, each optional. The machine's S-Video and audio go through a converter and an HDMI splitter to the dongle.</desc>
+  <style>
+    .bg { fill: #ffffff; }
+    .box { fill: #f6f8fa; stroke: #8c959f; stroke-width: 1.2; }
+    .dut { fill: #fff8c5; stroke: #d4a72c; stroke-width: 1.4; }
+    .inner { fill: #ffffff; stroke: #afb8c1; stroke-width: 1; }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 12.5px; fill: #1f2328; }
+    .t { font-size: 14.5px; font-weight: 600; }
+    .s { font-size: 11.5px; fill: #59636e; }
+    .c { text-anchor: middle; }
+    .e { text-anchor: end; }
+    .usb { stroke: #0969da; stroke-width: 2.4; fill: none; }
+    .mains { stroke: #cf222e; stroke-width: 2.4; fill: none; }
+    .pwr { stroke: #9a6700; stroke-width: 2.4; fill: none; }
+    .sig { stroke: #424a53; stroke-width: 1.8; fill: none; }
+    .lead { stroke: #1a7f37; stroke-width: 2; fill: none; }
+    .cable { stroke: #424a53; stroke-width: 9; fill: none; }
+    .core { stroke: #f6f8fa; stroke-width: 3.5; fill: none; }
+    .av { stroke: #8250df; stroke-width: 2.4; fill: none; }
+    .opt { stroke-dasharray: 6 4; }
+    .dot { fill: #cf222e; }
+    .avhead { fill: #8250df; }
+    .usbhead { fill: #0969da; }
+    .sighead { fill: #424a53; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d1117; }
+      .box { fill: #161b22; stroke: #6e7681; }
+      .dut { fill: #272115; stroke: #9e6a03; }
+      .inner { fill: #0d1117; stroke: #484f58; }
+      text { fill: #e6edf3; }
+      .s { fill: #9198a1; }
+      .usb { stroke: #4493f8; }
+      .mains { stroke: #f85149; }
+      .pwr { stroke: #d29922; }
+      .sig { stroke: #b7bdc8; }
+      .lead { stroke: #3fb950; }
+      .cable { stroke: #b7bdc8; }
+      .core { stroke: #161b22; }
+      .av { stroke: #a371f7; }
+      .dot { fill: #f85149; }
+      .avhead { fill: #a371f7; }
+      .usbhead { fill: #4493f8; }
+      .sighead { fill: #b7bdc8; }
+    }
+  </style>
+  <defs>
+    <marker id="av-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="avhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="usb-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="usbhead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+    <marker id="sig-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="sighead" d="M0,0 L10,5 L0,10 z"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1000" height="772" rx="10"/>
+
+  <!-- Bench PC -->
+  <rect class="box" x="16" y="40" width="144" height="640" rx="8"/>
+  <text class="t c" x="88" y="66">Bench PC</text>
+  <text class="s c" x="88" y="85">Windows</text>
+  <text class="s c" x="88" y="101">runs treadmill</text>
+
+  <!-- the mains relay: a Teensy in the bench supply's case, an SSR across the supply's switch -->
+  <text class="s c" x="580" y="16">120 V mains in</text>
+  <rect class="box" style="stroke-dasharray:6 4" x="240" y="30" width="744" height="150" rx="10"/>
+  <text class="t" x="252" y="51">Mains relay project</text>
+  <text class="s" x="404" y="51">in the bench supply's case</text>
+
+  <rect class="inner" x="270" y="66" width="150" height="74" rx="6"/>
+  <text class="t c" x="345" y="96">Teensy 3.1</text>
+  <text class="s c" x="345" y="116">powered by USB</text>
+
+  <path class="usb" d="M160,103 H270"/>
+  <text class="s c" x="200" y="95">USB serial</text>
+
+  <!-- mains: the inlet, then the SSR and the supply's switch in parallel, then the supply -->
+  <path class="mains" d="M580,22 V70 M530,70 H630"/>
+  <path class="mains" d="M530,70 V84 M530,114 V126"/>
+  <circle class="dot" cx="530" cy="86" r="2.6"/>
+  <circle class="dot" cx="530" cy="112" r="2.6"/>
+  <path class="mains" d="M530,86 L546,108"/>
+  <path class="mains" d="M630,70 V84 M630,114 V126"/>
+  <circle class="dot" cx="630" cy="86" r="2.6"/>
+  <circle class="dot" cx="630" cy="112" r="2.6"/>
+  <path class="mains" d="M630,86 L646,108"/>
+  <path class="mains" d="M530,126 H740"/>
+
+  <path class="sig" marker-end="url(#sig-arrow)" d="M420,97 H535"/>
+  <text class="s c" x="530" y="146">SSR, Opto 22 240D45</text>
+  <text class="s" x="652" y="96">supply's switch,</text>
+  <text class="s" x="652" y="110">the bypass</text>
+
+  <rect class="inner" x="740" y="62" width="234" height="100" rx="6"/>
+  <text class="t c" x="857" y="86">Bench supply</text>
+  <text class="s c" x="857" y="105">5 VDC and 9 VAC for the machine</text>
+  <text class="s c" x="857" y="121">its switch at ON: always on;</text>
+  <text class="s c" x="857" y="137">off is AUTO, the relay decides</text>
+
+  <!-- machine power -->
+  <path class="pwr" d="M930,162 V210"/>
+  <text class="s e" x="922" y="194">5 VDC, 9 VAC</text>
+
+  <!-- The machine under test, with the keyboard board inside and the TeensyROM in its expansion port -->
+  <rect class="dut" x="380" y="210" width="604" height="370" rx="8"/>
+  <text class="t c" x="640" y="234">C64 or C128</text>
+
+  <rect class="inner" x="790" y="256" width="180" height="40" rx="5"/>
+  <text class="c" x="880" y="281">/RESET</text>
+
+  <rect class="inner" x="790" y="314" width="180" height="30" rx="5"/>
+  <text class="c" x="880" y="334">TOD clock line</text>
+
+  <rect class="inner" x="790" y="386" width="180" height="50" rx="5"/>
+  <text class="c" x="880" y="406">Keyboard connector</text>
+  <text class="s c" x="880" y="424">matrix, RESTORE (NMI)</text>
+
+  <rect class="inner" style="stroke-dasharray:6 4" x="790" y="452" width="180" height="48" rx="5"/>
+  <text class="c" x="880" y="471">VIC-II Kawari</text>
+  <text class="s c" x="880" y="488">J1 (NTSC/PAL), CRESET_N</text>
+
+  <rect class="inner" x="790" y="518" width="180" height="46" rx="5"/>
+  <text class="c" x="880" y="537">A/V port</text>
+  <text class="s c" x="880" y="554">S-Video (Y/C), audio</text>
+
+
+  <!-- TeensyROM under test, half in the expansion port -->
+  <rect class="dut" x="276" y="244" width="210" height="96" rx="8"/>
+  <text class="t c" x="381" y="270">TeensyROM</text>
+  <text class="s c" x="381" y="290">TR or TR+: the firmware under test</text>
+  <text class="s c" x="381" y="308">builds flashed, tests run,</text>
+  <text class="s c" x="381" y="324">timing edges swept</text>
+
+  <path class="usb" d="M160,276 H276"/>
+  <text class="s c" x="218" y="268">USB serial</text>
+  <text class="s c" x="218" y="292">DMA on a TR+</text>
+
+  <path class="sig" d="M486,272 H790"/>
+  <text class="s c" x="638" y="264">/RESET</text>
+
+  <!-- C64-USBKeyboard board, inside the machine -->
+  <rect class="box" style="stroke-dasharray:6 4" x="410" y="392" width="210" height="104" rx="8"/>
+  <text class="t c" x="515" y="438">C64-USBKeyboard project</text>
+  <text class="s c" x="515" y="458">Teensy 3.6/4.1, MT8808 crosspoint</text>
+
+  <path class="usb opt" d="M160,422 H410"/>
+  <text class="s c" x="218" y="414">USB serial</text>
+
+  <path class="usb opt" d="M340,480 H410"/>
+  <rect class="box" style="stroke-dasharray:6 4" x="190" y="458" width="150" height="44" rx="8"/>
+  <text class="c" x="265" y="476">USB keyboard</text>
+  <text class="s c" x="265" y="493">on its USB host port</text>
+
+  <!-- its multi-signal connector to the keyboard matrix -->
+  <path class="cable" style="stroke-dasharray:10 6" d="M620,411 H790"/>
+  <path class="core" style="stroke-dasharray:10 6" d="M620,411 H790"/>
+  <text class="s c" x="705" y="399">keyboard connector</text>
+
+  <!-- its flying leads -->
+  <path class="lead opt" d="M580,392 V286 H790"/>
+  <path class="lead opt" d="M600,392 V329 H790"/>
+  <path class="lead opt" d="M620,468 H790 M620,484 H790"/>
+  <path class="lead opt" d="M440,392 V340"/>
+  <text class="s" x="448" y="370">TR menu, ALT</text>
+
+  <!-- capture chain -->
+  <path class="av" marker-end="url(#av-arrow)" d="M930,564 V608"/>
+  <text class="s e" x="922" y="600">S-Video and audio</text>
+
+  <rect class="box" x="800" y="610" width="180" height="70" rx="8"/>
+  <text class="t c" x="890" y="636">S-Video to HDMI</text>
+  <text class="s c" x="890" y="654">converter, with its</text>
+  <text class="s c" x="890" y="670">audio input in use</text>
+
+  <rect class="box" x="650" y="610" width="110" height="70" rx="8"/>
+  <text class="t c" x="705" y="640">HDMI</text>
+  <text class="t c" x="705" y="658">splitter</text>
+
+  <path class="av" marker-end="url(#av-arrow)" d="M800,645 H762"/>
+  <text class="s c" x="781" y="637">HDMI</text>
+
+  <path class="av" marker-end="url(#av-arrow)" d="M650,645 H502"/>
+  <text class="s c" x="576" y="637">HDMI</text>
+
+  <path class="av opt" d="M705,680 V704"/>
+  <text class="s" x="713" y="700">its other output: a monitor</text>
+
+  <rect class="box" x="290" y="610" width="210" height="70" rx="8"/>
+  <text class="t c" x="395" y="636">Capture dongle</text>
+  <text class="s c" x="395" y="654">MS2109: a USB video</text>
+  <text class="s c" x="395" y="670">and audio device</text>
+
+  <path class="usb" marker-end="url(#usb-arrow)" d="M290,645 H162"/>
+  <text class="s c" x="225" y="637">USB video, audio</text>
+
+  <!-- legend -->
+  <g transform="translate(0,728)">
+    <path class="usb" d="M16,0 H44"/>
+    <text class="s" x="50" y="4">USB</text>
+    <path class="mains" d="M92,0 H120"/>
+    <text class="s" x="126" y="4">120 V mains</text>
+    <path class="pwr" d="M206,0 H234"/>
+    <text class="s" x="240" y="4">machine power</text>
+    <path class="sig" d="M336,0 H364"/>
+    <text class="s" x="370" y="4">control lines</text>
+    <path class="cable" d="M456,0 H484"/>
+    <path class="core" d="M456,0 H484"/>
+    <text class="s" x="490" y="4">multi-signal connector</text>
+    <path class="lead opt" d="M626,0 H654"/>
+    <text class="s" x="660" y="4">flying leads</text>
+    <path class="av" d="M738,0 H766"/>
+    <text class="s" x="772" y="4">video and audio</text>
+    <path class="sig opt" d="M876,0 H904"/>
+    <text class="s" x="910" y="4">optional</text>
+  </g>
+  <g transform="translate(0,752)">
+    <rect class="dut" x="16" y="-7" width="28" height="14" rx="3"/>
+    <text class="s" x="50" y="4">under test</text>
+    <rect class="box" x="126" y="-7" width="28" height="14" rx="3"/>
+    <text class="s" x="160" y="4">instrumentation</text>
+  </g>
+</svg>

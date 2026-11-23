@@ -56,7 +56,20 @@ everything else on stderr.
 ## Rigs and stations
 
 A station is a rig (capture device and optional controls) plus a machine from
-the registry plus a TeensyROM board. To add one:
+the registry plus a TeensyROM board. The bench PC reaches each part over its
+own USB cable:
+
+![A station: the bench PC's USB cables to the mains relay, the TeensyROM, the keyboard board and the capture dongle; the relay switches the bench supply, which powers the machine, which powers the TeensyROM and the keyboard board](docs/station.svg)
+
+| Part | Project | What the suite does through it |
+|---|---|---|
+| TeensyROM, TR or TR+ | [TeensyROM](https://github.com/SensoriumEmbedded/TeensyROM) | Builds, flashes and drives the firmware under test; resets the machine; on a TR+, reads the screen and memory by DMA |
+| C64-USBKeyboard board | [C64-USBKeyboard](https://github.com/SensoriumEmbedded/C64-USBKeyboard#external-connections), which draws its wiring | Presses keys and RESTORE, resets the machine without the TR, switches a Kawari between PAL and NTSC, sets the TOD rate ("The keyboard board" below) |
+| Kawari | [VIC-II Kawari](https://github.com/randyrossi/vicii-kawari) | Runs a C64 in PAL or NTSC, as the keyboard board switches it |
+| Mains relay | [mains-relay](https://github.com/SensoriumEmbedded/mains-relay) | Cuts and restores the machine's mains ("Power control" below) |
+| Capture dongle | | Reads the screen by video and records the machine's audio |
+
+To add one:
 
 1. Copy `data/rigs/rigA.example.toml` to `data/rigs/<rig>.toml`: the capture
    device and mode (`treadmill frame --station ... --raw` shows what it

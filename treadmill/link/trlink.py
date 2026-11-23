@@ -14,6 +14,7 @@ bench library's extras (keys, screen, pause, get file).
 from __future__ import annotations
 
 import json
+import struct
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -27,8 +28,8 @@ from treadmill.link.banner import TR_PLUS, Banner, parse_banner
 from treadmill.link.protocol import (
     ACK, BAD_SID, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVES, FAIL, FW_CHECK,
     GET_DIR_NDJSON, GET_FILE, GOOD_SID, IMAGES, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE, READ_C64_MEM,
-    RESET_C64, STATS_TRAILER_BYTES, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
-    from_board, path_field, to_board,
+    RESET_C64, SNOOP_TAP, SPANS_LOCKED, SPANS_MAX, STATS_TRAILER_BYTES, VERSION_INFO, WRITE_C64_MEM, WRITE_C64_SPANS,
+    ProtocolError, board_reply, checksum, from_board, path_field, to_board,
 )
 from treadmill.link.transport import ByteStream
 
@@ -37,6 +38,7 @@ REPLY_S = 5.0
 DRAIN_S = 0.3
 FW_CHECK_S = 3.0
 POST_DATA_S = 180.0
+SPANS_DATA_S = 30.0
 GET_DATA_S = 180.0
 LISTING_S = 120.0
 TRAILER_S = 0.3
@@ -99,6 +101,23 @@ class Probe:
     @property
     def dma(self) -> bool:
         return self.image == "main" and self.banner is not None and self.banner.kind == TR_PLUS
+
+
+@dataclass
+class SnoopTake:
+    """One SnoopTapToken reply: the counts since the last take and the ring, oldest first, as
+    (ARM cycle stamp, address, data, info) per entry (docs/ControlComms.md, "Snoop Tap")."""
+    hz: int
+    recorded: int
+    skipped: int
+    page_cycles: int
+    triggered: bool
+    entries: list[tuple[int, int, int, int]]
+
+
+SNOOP_HEADER = struct.Struct("<IIIIBH")
+SNOOP_ENTRY = struct.Struct("<IHBB")
+SNOOP_TAKE, SNOOP_ARM, SNOOP_STOP = 0, 1, 2
 
 
 class Link:
@@ -222,6 +241,49 @@ class Link:
         data = bytes(data)
         self._send(to_board(WRITE_C64_MEM) + to_board(address) + to_board(len(data)) + data, drain)
         self._ack(f"write to ${address:04X}")
+
+    def write_spans(self, spans: list[tuple[int, int]], payload: bytes, *, slice_bytes: int = 0, gap_us: int = 0,
+                    lock_to: int | None = None, drain: float = DRAIN_S) -> None:
+        """WriteC64Spans: ``payload`` written over ``spans`` ((address, length), in order) by DMA,
+        ``slice_bytes`` at a time (0: a span at a time) with the 6510 running ``gap_us`` between
+        slices. ``lock_to`` starts each slice on the C64's next store to that address (a sample
+        player's) instead, and ``gap_us`` becomes the longest wait for one."""
+        payload = bytes(payload)
+        entries = ([(lock_to, 0)] if lock_to is not None else []) + list(spans)
+        if not spans or len(entries) > SPANS_MAX or sum(length for _, length in spans) != len(payload):
+            raise ProtocolError(f"spans write: {len(spans)} spans of {sum(n for _, n in spans)} bytes "
+                                f"for a {len(payload)}-byte payload")
+        self._require_dma(f"spans write to ${spans[0][0]:04X}")
+        header = bytes([SPANS_LOCKED if lock_to is not None else 0, slice_bytes, gap_us, len(entries)])
+        header += b"".join(to_board(address) + to_board(length) for address, length in entries)
+        self._send(to_board(WRITE_C64_SPANS), drain)
+        try:
+            self._ack("spans write")
+            self._s.write(header)
+            self._ack(f"spans write to ${spans[0][0]:04X}")
+        except Refused:
+            time.sleep(DISCARD_QUIET_S)          # the board discards what it is still owed until the line is quiet
+            raise
+        self._s.write(payload)
+        self._ack(f"spans write data to ${spans[0][0]:04X}", SPANS_DATA_S)
+
+    def snoop_tap(self, mode: int, pages: bytes = b"", *, drain: float = DRAIN_S) -> SnoopTake:
+        """SnoopTapToken, in a build with DbgSnoopTap: the ring and its counts. ``SNOOP_TAKE``
+        keeps recording, ``SNOOP_ARM`` then records ``pages`` (256 flag bytes, one per page),
+        ``SNOOP_STOP`` stops."""
+        if mode not in (SNOOP_TAKE, SNOOP_ARM, SNOOP_STOP) or len(pages) != (256 if mode == SNOOP_ARM else 0):
+            raise ProtocolError(f"snoop tap: mode {mode} with {len(pages)} page bytes")
+        self._require_dma("snoop tap")
+        self._send(to_board(SNOOP_TAP) + bytes([mode]) + bytes(pages), drain)
+        self._ack("snoop tap")
+        head = self._s.read(SNOOP_HEADER.size, REPLY_S)
+        if len(head) != SNOOP_HEADER.size:
+            raise LinkError(f"snoop tap: got {len(head)} of {SNOOP_HEADER.size} header bytes")
+        hz, recorded, skipped, page_cycles, triggered, count = SNOOP_HEADER.unpack(head)
+        body = self._s.read(SNOOP_ENTRY.size * count, REPLY_S)
+        if len(body) != SNOOP_ENTRY.size * count:
+            raise LinkError(f"snoop tap: got {len(body) // SNOOP_ENTRY.size} of {count} entries")
+        return SnoopTake(hz, recorded, skipped, page_cycles, bool(triggered), list(SNOOP_ENTRY.iter_unpack(body)))
 
     def read_screen(self) -> ScreenDump:
         """The text screen wherever the VIC is pointed, decoded for the charset

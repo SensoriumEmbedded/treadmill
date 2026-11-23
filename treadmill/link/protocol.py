@@ -26,6 +26,7 @@ C64_PAUSE_OFF = 0x6430
 READ_C64_MEM = 0x64FD      # TR+ main image only
 WRITE_C64_MEM = 0x64FB     # TR+ main image only
 WRITE_C64_SPANS = 0x64FC   # TR+ main image only
+SNOOP_TAP = 0x64F8         # TR+ main image built with DbgSnoopTap only
 # Refused with FAIL + "Busy!" unless the board is sitting at its own menu:
 PING = 0x6455
 POST_FILE = 0x64BB
@@ -51,6 +52,10 @@ IMAGES = {FW_FULL: "main", FW_MINIMAL: "minimal"}
 # Drive numbers in file and directory commands.
 DRIVES = {"usb": 0, "sd": 1, "teensy": 2}
 DRIVE_USB, DRIVE_SD, DRIVE_TEENSY = 0, 1, 2
+
+# WriteC64Spans's flag byte: each slice starts on the C64's next store to the first entry's address.
+SPANS_LOCKED = 0x01
+SPANS_MAX = 64
 
 # The commands the main image only runs at the menu. After each, the firmware
 # appends two 32-bit stats (Stats.Unlocked, then F_CPU_ACTUAL) that a reader

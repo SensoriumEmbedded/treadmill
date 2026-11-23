@@ -27,6 +27,10 @@ PROGRAMS = {
     "hello": ("hello.a", {}),
     "reuclient": ("reuclient.a", {}),
     "reuclient_sprites": ("reuclient.a", {"SPRITES": 1}),
+    "reureadback": ("reureadback.a", {}),
+    "reureadback_sprites": ("reureadback.a", {"SPRITES": 1}),
+    "reureadback_hammer": ("reureadback.a", {"HAMMER": 1}),
+    "reureadback_hammer_sprites": ("reureadback.a", {"HAMMER": 1, "SPRITES": 1}),
     "cpuwatch": ("cpuwatch.a", {}),
     # The stock KERNAL's filler run; the probe gives the machine's own (treadmill.probes.krread).
     "krread": ("krread.a", {"MARK": 0xE4B7, "LEN": 28, "FILL": 0xAA, "PAT": 0x0F}),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import struct
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,7 +26,8 @@ from treadmill.mfg import IGETIN, JIFFY_CLOCK, LED_ROW
 from treadmill.link.protocol import (
     ACK, C64_PAUSE_OFF, C64_PAUSE_ON, DELETE_FILE, DIR_END, DIR_START, DRIVE_TEENSY, DRIVE_USB, FAIL, FW_CHECK,
     FW_FULL, FW_MINIMAL, GET_DIR_NDJSON, GET_FILE, GOOD_SID, LAUNCH_FILE, MENU_ONLY, PING, POST_FILE,
-    READ_C64_MEM, RESET_C64, VERSION_INFO, WRITE_C64_MEM, board_reply, checksum,
+    READ_C64_MEM, RESET_C64, SNOOP_TAP, SPANS_LOCKED, SPANS_MAX, VERSION_INFO, WRITE_C64_MEM, WRITE_C64_SPANS,
+    board_reply, checksum,
 )
 from treadmill.link.transport import PipeEnd, open_pipe
 
@@ -40,7 +42,7 @@ TR_BASIC_ITEM = "BASIC TR Command IO access only"      # the menu item that leav
 READY_LINE = "TeensyROM+ v0.9 ready!\n"
 # Commands the firmware answers whatever else it is doing (ProcessCommand's first switch).
 ALWAYS = {FW_CHECK, VERSION_INFO, RESET_C64, LAUNCH_FILE, C64_PAUSE_ON, C64_PAUSE_OFF,
-          READ_C64_MEM, WRITE_C64_MEM}
+          READ_C64_MEM, WRITE_C64_MEM, WRITE_C64_SPANS, SNOOP_TAP}
 # The timing knobs at the firmware's NTSC C64 defaults, by their 't' letter (treadmill.knobs).
 KNOB_DEFAULTS = {k.letter: k.default("NTSC") for k in KNOBS.values()}
 # idread.a as the fake runs it: passes a second, and the share of a path's reads that go wrong
@@ -264,8 +266,8 @@ class FakeBoard:
             self.memory[0xD018] = 0x1C
             self.memory[0x0F04] = 0x5A
             self.ultimax_since = time.monotonic()
-        if "reuloop" in name or "cpuwatch" in name:
-            self.c64loop = C64Loop(time.monotonic(), needs_reu="reuloop" in name,
+        if "reuloop" in name or "cpuwatch" in name or "reureadback" in name:
+            self.c64loop = C64Loop(time.monotonic(), needs_reu="cpuwatch" not in name,
                                    collapse_ns=self.faults.get("reu_collapse_ns"))
             self.memory[0xC104] = 0x5A
         if path.lower().endswith("hello.prg"):
@@ -277,6 +279,8 @@ class FakeBoard:
             self.heartbeat = True
 
     debug_defines: set = field(default_factory=set)   # the Dbg_* defines this build carries
+    snoop_ring: list = field(default_factory=list)     # DbgSnoopTap: the entries the next take sends
+    snoop_pages: bytes = b""                           # DbgSnoopTap: the last armed page flags
     letters: list[str] = field(default_factory=list) # every letter command received
     knobs: dict = field(default_factory=lambda: dict(KNOB_DEFAULTS))
 
@@ -692,6 +696,8 @@ class FakeBoard:
             C64_PAUSE_OFF: lambda e: self._reply(e, ACK),
             READ_C64_MEM: self._read_memory,
             WRITE_C64_MEM: self._write_memory,
+            WRITE_C64_SPANS: self._write_spans,
+            SNOOP_TAP: self._snoop_tap,
             LAUNCH_FILE: self._launch,
             DELETE_FILE: self._delete,
             POST_FILE: self._post,
@@ -785,6 +791,46 @@ class FakeBoard:
         elif address == KEYCOUNT and self.led_asked and self.led_answers:
             self.led_asked = False
             self.type_keys(self.led_answers.pop(0))
+
+    def _write_spans(self, end: PipeEnd) -> None:
+        """WriteC64Spans with WriteC64SpansCommand()'s refusals; every slice lands at once."""
+        if not self.dma:
+            end.write(b"Unk cmd\n")
+            return
+        self._reply(end, ACK)
+        flags, _, _, count = end.read(4, WAIT_S)
+        entries = [(self._number(end, 2), self._number(end, 2)) for _ in range(count)]
+        locked = flags == SPANS_LOCKED
+        spans = entries[1:] if locked else entries
+        why = ("Flags must be 0" if flags & ~SPANS_LOCKED else
+               "Want 1 to 64 spans" if not spans or count > SPANS_MAX else
+               "Store entry's length must be 0" if locked and entries[0][1] else
+               "Empty span" if any(n == 0 for _, n in spans) else
+               "Span runs past $FFFF" if any(a + n > 0x10000 for a, n in spans) else
+               "Span touches $DE00-$DFFF" if any(a < 0xE000 and a + n > 0xDE00 for a, n in spans) else "")
+        if why:
+            self._refuse(end, why)
+            return
+        self._reply(end, ACK)
+        for address, length in spans:
+            self.memory[address:address + length] = end.read(length, WAIT_S)
+        self._reply(end, ACK)
+
+    def _snoop_tap(self, end: PipeEnd) -> None:
+        """SnoopTapToken in a DbgSnoopTap build: the ring the test put in ``snoop_ring``, sent once."""
+        if "DbgSnoopTap" not in self.debug_defines:
+            end.write(b"Unk cmd\n")
+            return
+        mode = end.read(1, WAIT_S)[0]
+        if mode == 1:
+            self.snoop_pages = end.read(256, WAIT_S)
+        elif mode > 2:
+            self._refuse(end, "Mode must be 0, 1 or 2")
+            return
+        ring, self.snoop_ring = self.snoop_ring, []
+        self._reply(end, ACK)
+        end.write(struct.pack("<IIIIBH", 816_000_000, len(ring), 0, 0, 0, len(ring)))
+        end.write(b"".join(struct.pack("<IHBB", *entry) for entry in ring))
 
     def _launch(self, end: PipeEnd) -> None:
         self._reply(end, ACK)

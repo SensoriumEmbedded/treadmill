@@ -29,6 +29,10 @@ from treadmill.link.trlink import (  # noqa: F401
     NotAllowed,
     Probe,
     Refused,
+    SNOOP_ARM,
+    SNOOP_STOP,
+    SNOOP_TAKE,
     ScreenDump,
+    SnoopTake,
     drive_number,
 )

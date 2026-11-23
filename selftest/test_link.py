@@ -11,7 +11,7 @@ from treadmill.c64.screen import (
 )
 from treadmill.link import Link, LinkError, NotAllowed, Refused, trlink
 from treadmill.link.transport import ByteStream, TransportError, open_pipe
-from treadmill.link.protocol import DRIVE_SD
+from treadmill.link.protocol import DRIVE_SD, ProtocolError
 from selftest.fake_board import BANNER, BANNER_TR, start_fake_board
 
 C64_RESET = 0xFCE2
@@ -53,6 +53,59 @@ def test_plain_tr_never_gets_dma(board_and_link):
     assert probe.banner.kind == "tr" and not probe.dma and not link.dma_allowed
     with pytest.raises(NotAllowed):
         link.write_memory(0xC6, b"\x01")
+
+
+def test_spans_land_in_list_order_and_a_locked_job_leaves_its_store_alone(board_and_link):
+    board, link, _ = board_and_link
+    link.probe()
+    link.write_spans([(0x6000, 3), (0x7000, 2)], b"abcde", slice_bytes=33, gap_us=40)
+    assert bytes(board.memory[0x6000:0x6003]) == b"abc" and bytes(board.memory[0x7000:0x7002]) == b"de"
+    store = board.memory[0xD418]
+    link.write_spans([(0x6000, 4)], b"wxyz", slice_bytes=33, gap_us=200, lock_to=0xD418)
+    assert bytes(board.memory[0x6000:0x6004]) == b"wxyz" and board.memory[0xD418] == store
+
+
+def test_a_refused_span_list_is_reported_and_the_link_carries_on(board_and_link, monkeypatch):
+    board, link, _ = board_and_link
+    monkeypatch.setattr(trlink, "DISCARD_QUIET_S", 0.0)
+    link.probe()
+    before = bytes(board.memory[0xDE00:0xDE02])
+    with pytest.raises(Refused, match=r"Span touches \$DE00-\$DFFF"):
+        link.write_spans([(0xDE00, 2)], b"\x01\x02")
+    assert bytes(board.memory[0xDE00:0xDE02]) == before
+    link.write_spans([(0x6000, 1)], b"z")
+    assert board.memory[0x6000] == ord("z")
+
+
+def test_a_spans_payload_that_does_not_fill_its_spans_is_never_sent(board_and_link):
+    board, link, _ = board_and_link
+    link.probe()
+    sent = len(board.received)
+    with pytest.raises(ProtocolError):
+        link.write_spans([(0x6000, 4)], b"abc")
+    with pytest.raises(ProtocolError):
+        link.write_spans([], b"")
+    assert len(board.received) == sent
+    board.banner = BANNER_TR
+    board.dma = False
+    link.probe()
+    with pytest.raises(NotAllowed):
+        link.write_spans([(0x6000, 1)], b"z")
+
+
+def test_a_snoop_tap_take_returns_the_ring_oldest_first(board_and_link):
+    board, link, _ = board_and_link
+    board.debug_defines = {"DbgSnoopTap"}
+    link.probe()
+    pages = bytes(0x90 == p and 16 for p in range(256))
+    assert link.snoop_tap(trlink.SNOOP_ARM, pages).entries == []
+    assert board.snoop_pages == pages
+    board.snoop_ring = [(1000, 1500, 0, 0xC0), (0x60064D20, 0, 0, 0xC1)]
+    take = link.snoop_tap(trlink.SNOOP_TAKE)
+    assert take.hz == 816_000_000 and take.recorded == 2
+    assert take.entries == [(1000, 1500, 0, 0xC0), (0x60064D20, 0, 0, 0xC1)]
+    with pytest.raises(ProtocolError):
+        link.snoop_tap(trlink.SNOOP_ARM)
 
 
 def test_keys_go_into_the_kernal_buffer(board_and_link):

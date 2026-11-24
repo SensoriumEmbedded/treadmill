@@ -219,6 +219,22 @@ cost or a wart with a known, small fix.
    `picture_ok()` in `treadmill/session.py`). At another moment the same
    camera showed a lock icon, which the black check lets through: the name
    is what keeps another camera out.
+51. **medium** The menu's colors are whatever the board's EEPROM holds, so a
+   station's screen reads depend on the board plugged in. A plain TR in C64
+   #14 on 2026-11-24 ran the firmware's default theme (purple border,
+   light-green names, light-blue `Dir`), and #14's bank read `G` and `F` at
+   the start of `/Games` and `/Featured SIDs` as `?` or `P` on every read,
+   and now and then `D` and `O` as `?`. A harvest in light green (13) on top
+   of the bank, which already had 13, did not change it. The TR+ in #14
+   misreads the same two cells (smoke `reset_to_menu`, the same day). Fix:
+   a station `[theme]` (the seven color references of `enum
+   ColorRefOffsets` in the firmware's `Menu_Regs.h`), set over the remote
+   protocol's `SetColorToken` (0x6422: reference, then color, then Ack)
+   before the tests and put back after, as the settings baseline does; pick
+   each station's colors by `treadmill screen` reads of the menu, harvest
+   the bank in them, and keep the board's own theme in the run record.
+   `SetColorToken` writes the board's EEPROM, so the put-back must run on
+   every way out.
 
 ## Firmware builds
 
@@ -491,3 +507,29 @@ cost or a wart with a known, small fix.
    each paced frame's interval against the frame period (spread, worst
    lateness) and, flat out, the longest gap between pairs, with thresholds
    from runs of one build against itself.
+52. **medium** The menu probe fails a point on a cell the video only read
+   as unsure. `MenuProbe.sample()` (`treadmill/probes/menu.py`) counts every
+   cell that differs from the golden, and a cell below the confidence floor
+   reads as `?` (`UNSURE` in `treadmill/observe/channels.py`). On a plain TR
+   in C64 #14 on 2026-11-24 the main-image sweeps of `test_cpu_margins.py`
+   stopped on one unsure cell in one sample of three (`?ir` for `Dir`,
+   `TeensyR?M`): `nS_PLAprop` "failed" at 165 where a scan later found it
+   clean to 210, so every edge was set by the picture. A late byte reads as
+   a confidently wrong letter on every sample instead (`Featuwed`, `r` read
+   as `w`, at the real edge). With unsure cells left out for that run (a
+   local change, reverted), the same sweeps gave edges that matched the
+   MinimalBoot idread ones. Fix: count only cells read confidently wrong,
+   and report the unsure ones in the sample's note; keep the golden's own
+   `?` wildcards as they are.
+53. **medium** A sweep past an IO1 edge can leave the TeensyROM's state bad
+   for the rest of the run. On the plain TR in C64 #14 on 2026-11-24,
+   `nS_PLAprop` 215 and 220 (main image, menu probe) garbled the menu's
+   banner, `Src:` row and F-key legend, which the Teensy composes and the
+   menu reads over IO1, and they stayed garbled across C64 resets with the
+   knobs back at their defaults: the next three cases (`nS_DataSetup`,
+   `nS_DataHold`, `nS_MaxAdj`) failed at their defaults, 61 or 62 cells
+   each. A flash (a Teensy restart) cleared it, and the rerun was clean.
+   `Sweep.run()` restores the knobs (`td`) but not the Teensy's own state.
+   Fix: after a sweep whose walk failed, check the probe at the defaults;
+   if it fails there, restart the Teensy (the ladder's USB reboot rung) and
+   check again before the next case, and record that it was needed.

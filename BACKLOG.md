@@ -475,3 +475,19 @@ cost or a wart with a known, small fix.
    or a round count far from the baseline's, as a broken loop: relaunch at
    the defaults and sample the point again; and fail the test when a pass
    fails at the default.
+50. **medium** The ASID stream test checks the pairs, not when they
+   arrive. `asidlog.a` stores each pair's two bytes and nothing else,
+   `test_asid_stream.py` compares content and order (`compare_pairs` in
+   `treadmill/asid.py`), and `asid.json` gives each phase's average rate
+   only. A firmware change that delays or bunches frames without
+   corrupting them passes, though a listener hears it as tempo wobble.
+   Raised with PR #109's bench run, where the byte check was the one that
+   mattered: its window adds under a microsecond per USB register access.
+   Fix: have the logger stamp pairs from a free-running timer the player
+   does not program (a CIA timer; check the player's setup). A stamp on
+   every pair halves the ring to 6,144 pairs, so either read it more often
+   or stamp only the pair that starts a frame (register 0, $80). Stamp the
+   host's sends too, since the Windows timer adds its own jitter. Report
+   each paced frame's interval against the frame period (spread, worst
+   lateness) and, flat out, the longest gap between pairs, with thresholds
+   from runs of one build against itself.

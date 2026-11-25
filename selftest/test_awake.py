@@ -39,8 +39,23 @@ def test_a_refused_hold_says_so_and_the_command_still_runs(monkeypatch):
     ran = False
     with awake.screen_on(said.append):
         ran = True
-    assert ran and calls == [awake.HOLD]
+    assert ran and calls == [awake.HOLD], "nothing to let go of"
     assert "keep the screen on" in said[0]
+
+
+def test_the_idle_timers_are_reset_while_the_hold_lasts_and_not_after(monkeypatch):
+    """Backlog 46: the request once failed to hold, so the idle timers are
+    reset on a timer as well, from a thread that ends with the block."""
+    import threading
+    import time
+    calls = _recorder(monkeypatch)
+    with awake.screen_on(refresh=0.02):
+        time.sleep(0.15)
+    nudges = calls.count(awake.NUDGE)
+    assert calls[0] == awake.HOLD and calls[-1] == awake.ES_CONTINUOUS and nudges >= 3
+    assert not awake.ES_CONTINUOUS & awake.NUDGE
+    time.sleep(0.1)
+    assert calls.count(awake.NUDGE) == nudges and "treadmill-awake" not in [t.name for t in threading.enumerate()]
 
 
 def test_off_windows_it_does_nothing(monkeypatch):

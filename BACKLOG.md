@@ -475,8 +475,12 @@ cost or a wart with a known, small fix.
    Marco1's `nS_VICStart` 80 cleared it by 2%. Fix: look at the baseline
    frames to see what differs at the defaults, then judge by a high
    percentile of the frames rather than the worst, or mask what moves.
-46. **high** The screen-on hold once failed to keep the laptop out of
-   Modern Standby. With `treadmill run` holding `ES_DISPLAY_REQUIRED`
+46. **medium, until a run confirms it** The screen-on hold once failed to
+   keep the laptop out of Modern Standby. Since 2026-11-25 a thread also
+   resets the idle timers once a minute while the hold lasts
+   (`treadmill/awake.py`), the fix below that depends on neither question;
+   no run longer than the display timeout has confirmed it yet. The rest
+   is as found. With `treadmill run` holding `ES_DISPLAY_REQUIRED`
    (`treadmill/awake.py`), the C128 Marco1's first run went 95 minutes on
    2026-11-21 without a standby, but its second run, started two minutes
    after the first ended, went into Modern Standby 15 minutes in, at

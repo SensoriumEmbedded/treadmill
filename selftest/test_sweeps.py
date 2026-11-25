@@ -257,6 +257,52 @@ def test_dmasetup_holds_the_release_and_the_latch_and_reads_at_the_defaults(fake
     assert "only nS_DMASetup" in str(e.value)
 
 
+def test_another_knob_set_for_the_sweep_moves_the_limits(fake_station):
+    """nS_PLAprop's floor is nS_RWnReady: with nS_RWnReady set low, the walk
+    reaches a select edge below the default nS_RWnReady."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    window = Window(fake, "p", (0, 999))
+    seen: list[dict] = []
+
+    class Watching(Window):
+        def sample(self, label, setting=None):
+            seen.append(dict(self.fake.knobs))
+            return Sample(0 if max(self.fake.knobs["p"], self.fake.knobs["r"]) >= 130 else 1, 1)
+
+    plain = Sweep(dbg, KNOBS["p"], window, SearchSpec(stop=KNOB_DEFAULTS["r"]), log=lambda m: None).run()
+    assert plain.limits == (143, 270) and plain.to_dict()["set"] == {}
+    margin = Sweep(dbg, KNOBS["p"], Watching(fake, "p", (0, 999)), SearchSpec(stop=100, step=10, fine=1),
+                   fixed={"r": 100}, log=lambda m: None).run()
+    assert margin.limits == (100, 270) and (margin.last_clean, margin.first_fail) == (130, 129)
+    assert all(k["r"] == 100 for k in seen) and all(p.held == {"r": 100} for p in margin.points)
+    assert margin.to_dict()["set"] == {"nS_RWnReady": 100} and "nS_RWnReady set to 100" in margin.describe()
+    assert fake.knobs == KNOB_DEFAULTS and margin.restored, "the set knob goes back with the defaults"
+    for fixed, spec, message in (({"r": 200}, SearchSpec(stop=160), "nS_RWnReady 200 is past its limits 0..150"),
+                                 ({"p": 160}, SearchSpec(stop=160), "it cannot also be set"),
+                                 ({"x": 2}, SearchSpec(stop=160), "cannot be set to 2")):
+        with pytest.raises(SweepError) as e:
+            Sweep(dbg, KNOBS["p"], window, spec, fixed=fixed, log=lambda m: None).run()
+        assert message in str(e.value) and e.value.code == EXIT_USAGE
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["e"], window, SearchSpec(stop=440), fixed={"w": 400})
+    assert "nS_DMADataHold moves with the sweep of nS_DMASetup" in str(e.value)
+    screen = ScreenChannel(board.link, None, None, None, dma_allowed=lambda: True)
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["p"], MenuProbe(board, screen, Golden.load(ROOT_GOLDEN)), SearchSpec(stop=160),
+              fixed={"a": 20})
+    assert "nS_DMAAssert times DMA" in str(e.value)
+
+
+def test_a_set_dma_knob_is_read_back_at_the_defaults(fake_station):
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Window(fake, "p", (100, 300))
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=160, step=10), fixed={"a": 20}, log=lambda m: None).run()
+    assert probe.inside_defaults and all(k["a"] == KNOB_DEFAULTS["a"] for k in probe.inside_defaults)
+    assert all(p.held == {"a": 20} for p in margin.points) and fake.knobs == KNOB_DEFAULTS
+
+
 def test_a_dma_knob_is_never_probed_by_resetting_the_c64(fake_station):
     fake, board = fake_station
     dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
@@ -410,6 +456,18 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
     assert "past the sweep limits" in json.loads(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--both", "--to", "200", "--json"]) == EXIT_USAGE
     assert "one of --to, --both and --scan" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "p", "--station", "s1", "--set", "r", "--json"]) == EXIT_USAGE
+    assert "give KNOB=VALUE" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "p", "--station", "s1", "--set", "r=60", "--set", "tr=70", "--json"]) == EXIT_USAGE
+    assert "nS_RWnReady twice" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "p", "--station", "s1", "--set", "x=2", "--json"]) == EXIT_USAGE
+    assert "KSenseMode is a mode" in json.loads(capsys.readouterr().err)["error"], "the reason, not the syntax"
+    assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
+                 "--probe", "idread", "--to", "130", "--set", "nS_RWnReady=120", "--step", "20", "--fine", "5",
+                 "--dwell", "0.2", "--json"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["set"] == {"nS_RWnReady": 120} and payload["limits"] == [120, 270]
+    assert payload["edges"]["down"]["first_fail"] is not None
     # The stored records, read back.
     assert main(["margins", "table", "--reports", str(lab / "reports")]) == EXIT_OK
     out = capsys.readouterr().out

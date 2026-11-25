@@ -15,8 +15,10 @@ search or the scan, alternating which edge or which end goes first, and a
 value counts as clean only if it was clean in every pass; an edge that
 moves between passes marks the record drifting. ``nS_DMASetup`` moves with
 the release and the latch held (``nS_DMADataHold`` and ``nS_DMADataSetup``
-move the other way, from the sums the board's defaults make). The limits
-come from the knob table and its couplings; a spec past them is refused.
+move the other way, from the sums the board's defaults make). Other knobs
+may be set to a value of their own for the whole sweep (``fixed``), and the
+limits, which come from the knob table and its couplings, follow them; a
+spec past them is refused.
 
 The TeensyROM cannot see its own read errors, so the probes are the C64's,
 or the screen's. While a knob that times DMA is off its default, a probe
@@ -281,6 +283,7 @@ class Margin:
     held: dict[str, int] | None = None                 # the sums held, by name (release, latch)
     limits: tuple[int, int] | None = None
     probe_info: dict[str, dict] = field(default_factory=dict)   # what a probe keeps besides counts (baselines)
+    fixed: dict[str, int] = field(default_factory=dict)         # other knobs set for the whole sweep, by letter
 
     @property
     def probe(self) -> str:
@@ -325,6 +328,7 @@ class Margin:
                      "group": self.knob.group},
             "mode": self.mode, "probes": self.probes, "standard": self.standard, "default": self.default,
             "start": self.start, "defaults": self.defaults, "held": self.held,
+            "set": {KNOBS[l].name: v for l, v in self.fixed.items()},
             "limits": list(self.limits) if self.limits else None,
             "spec": {"stop": s.stop, "step": s.step, "fine": s.fine, "repeat": s.repeat,
                      "scan": list(s.scan) if s.scan else None, "grid": list(s.grid) if s.grid else None},
@@ -342,8 +346,10 @@ class Margin:
                "scan": f"every {s.step} from {s.scan[0] if s.scan else ''} to {s.scan[1] if s.scan else ''}",
                "grid": f"rows {s.scan} by nS_DMADataHold {s.grid}, every {s.step}"}[self.mode]
         held = f", {' and '.join(f'{k} {v}' for k, v in self.held.items())} held" if self.held else ""
+        fixed = (", " + " and ".join(f"{KNOBS[l].name} set to {v}" for l, v in self.fixed.items())
+                 if self.fixed else "")
         lines = [f"{self.knob.name} ({self.probe}): {how}, {s.repeat} sample(s) a point, "
-                 f"{s.passes} pass(es){held}"]
+                 f"{s.passes} pass(es){held}{fixed}"]
         if self.mode == "grid":
             return "\n".join(lines + self.grid_map())
         many = s.passes > 1
@@ -409,8 +415,8 @@ class Sweep:
     restored when it ends."""
 
     def __init__(self, dbg: DebugCommands, knob: Knob, probes: Probe | Sequence[Probe], spec: SearchSpec, *,
-                 standard: str | None = None, hold: bool | None = None, log=print,
-                 on_point: Callable[[Point], None] | None = None):
+                 standard: str | None = None, hold: bool | None = None, fixed: dict[str, int] | None = None,
+                 log=print, on_point: Callable[[Point], None] | None = None):
         self.dbg = dbg
         self.knob = knob
         self.probes = list(probes) if isinstance(probes, (list, tuple)) else [probes]
@@ -427,11 +433,20 @@ class Sweep:
             raise usage_error(f"only nS_DMASetup moves with sums held, not {knob.name}")
         if spec.grid is not None and knob.letter != "e":
             raise usage_error(f"a grid is nS_DMASetup by nS_DMADataHold, not {knob.name}")
-        if knob.times_dma:
-            resets = [p.name for p in self.probes if getattr(p, "resets", False)]
-            if resets:
-                raise usage_error(f"{knob.name} times DMA: the {', '.join(resets)} probe resets the C64 at the "
-                                  f"value under test, and a C128 can hang on DMA right after a reset")
+        self.fixed = dict(fixed or {})
+        moved = {knob.letter} | ({HELD_SUMS[n][0][1] for n in HELD_SUMS} if self.hold or spec.grid else set())
+        for letter, value in self.fixed.items():
+            other = KNOBS[letter]
+            if letter in moved:
+                raise usage_error(f"{other.name} moves with the sweep of {knob.name}; it cannot also be set")
+            if not other.swept or not other.fits(value):
+                raise usage_error(f"{other.name} cannot be set to {value}")
+        for k in [knob] + [KNOBS[l] for l in self.fixed]:
+            if k.times_dma:
+                resets = [p.name for p in self.probes if getattr(p, "resets", False)]
+                if resets:
+                    raise usage_error(f"{k.name} times DMA: the {', '.join(resets)} probe resets the C64 at the "
+                                      f"value under test, and a C128 can hang on DMA right after a reset")
 
     def current(self) -> int:
         return current_value(self.dbg, self.knob)
@@ -466,9 +481,10 @@ class Sweep:
             raise SweepError(f"td not confirmed:\n{reply}")
         self.defaults = parse_listing(reply)
         self._now = dict(self.defaults)
-        if self.knob.letter not in self.defaults:
-            raise SweepError(f"the timing listing has no {self.knob.name}; does the build carry "
-                             f"{self.knob.define}{', and is it a TR+' if self.knob.tr_plus_only else ''}?\n{reply}")
+        for knob in [self.knob] + [KNOBS[l] for l in self.fixed]:
+            if knob.letter not in self.defaults:
+                raise SweepError(f"the timing listing has no {knob.name}; does the build carry "
+                                 f"{knob.define}{', and is it a TR+' if knob.tr_plus_only else ''}?\n{reply}")
         if self.standard is None:
             m = _DEFAULTS_FOR.search(reply)
             if not m:
@@ -478,10 +494,17 @@ class Sweep:
         if held:
             # A grid moves nS_DMADataHold itself, so only the latch stays where the defaults put it.
             self.sums = {name: sum(self.defaults[l] for l in HELD_SUMS[name][0]) for name in held}
+        at_default = self.setting_for(self.defaults[self.knob.letter])
+        for letter, value in self.fixed.items():
+            at = {**self.defaults, **{o: x for o, x in at_default.items() if o != letter}}
+            low, high = knobs.limits(KNOBS[letter], self.standard, at)
+            if not low <= value <= high:
+                raise usage_error(f"{KNOBS[letter].name} {value} is past its limits {low}..{high} for "
+                                  f"{self.standard} with {self.knob.name} at its default")
         self.low, self.high = self._range()
 
     def setting_for(self, value: int) -> dict[str, int]:
-        setting = {self.knob.letter: value}
+        setting = {**self.fixed, self.knob.letter: value}
         for name, total in (self.sums or {}).items():
             setting[HELD_SUMS[name][0][1]] = total - value
         return setting
@@ -535,7 +558,7 @@ class Sweep:
         t0 = time.monotonic()
         setting = setting or self.setting_for(value)
         self.apply(setting)
-        handle = Setting(self, setting, bracket=self.knob.readback_at_defaults)
+        handle = Setting(self, setting, bracket=any(KNOBS[l].readback_at_defaults for l in setting))
         label = self.knob.format(value)[1:]
         main = [p for p in self.probes if not getattr(p, "companion", False)]
         companions = [p for p in self.probes if getattr(p, "companion", False)]
@@ -617,7 +640,7 @@ class Sweep:
             order = cols if (i + pass_no) % 2 else cols[::-1]
             collapses, seen_clean = 0, False
             for w in order:
-                setting = {"e": e, "w": w, "y": latch - e}
+                setting = {**self.fixed, "e": e, "w": w, "y": latch - e}
                 if not self.allowed_setting(setting):
                     continue
                 point = self.probe_at(e, pass_no, setting)
@@ -713,7 +736,7 @@ class Sweep:
             self.check(spec.scan[0], "the grid's first row")
             self.check(spec.scan[1], "the grid's last row")
             latch = self.sums["latch"]
-            if not any(self.allowed_setting({"e": e, "w": w, "y": latch - e})
+            if not any(self.allowed_setting({**self.fixed, "e": e, "w": w, "y": latch - e})
                        for e in steps(*spec.scan, spec.step) for w in steps(*spec.grid, spec.step)):
                 raise usage_error(f"no cell of the grid {spec.scan} by nS_DMADataHold {spec.grid} is inside the "
                                   f"limits")
@@ -769,7 +792,7 @@ class Sweep:
         info = {p.name: p.info() for p in self.probes if hasattr(p, "info")}
         margin = Margin(self.knob, [p.name for p in self.probes], default, start, spec, points, edges, restored,
                         time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high),
-                        info)
+                        info, dict(self.fixed))
         if not restored:
             raise SweepError("td not confirmed: the board is still running the last value\n" + margin.describe())
         return margin

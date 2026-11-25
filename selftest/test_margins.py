@@ -54,6 +54,19 @@ def test_suggest_takes_a_step_inside_the_worst_edge_and_never_past_the_default()
     assert toml == "[margins]\nnS_DataHold = { up = 150 }\nnS_PLAprop = { up = 200, down = 150 }\n"
 
 
+def test_a_record_with_another_knob_set_stands_apart():
+    """A sweep of nS_PLAprop with nS_RWnReady set low is no floor's and is
+    compared only with records that set the same."""
+    from treadmill.report import margin_map
+    plain = _record(commit="old", when="2026-11-18T10:00:00+00:00", down=(140, 139))
+    low_r = {**_record(commit="new", down=(110, 109), up=(160, 165)), "set": {"nS_RWnReady": 60}}
+    assert margins.shrinks(low_r, [plain]) == [] and margins.shrinks(plain, [low_r]) == []
+    assert margins.suggest([plain, low_r], "s1") == {"nS_PLAprop": Floor(up=190, down=150)}
+    assert [row["set"] for row in margins.rows([plain, low_r])] == ["", "nS_RWnReady=60"]
+    assert margin_map.label(low_r).endswith("idread, nS_RWnReady 60, new")
+    assert len(margin_map._latest([plain, low_r])["C64 C64-14 NTSC, tr-plus"]) == 2
+
+
 def test_records_round_trip_and_tabulate(tmp_path: Path):
     margins.write(tmp_path / "run1" / "t1", _record(when="2026-11-19T10:00:00+00:00"))
     margins.write(tmp_path / "run2" / "t1", _record(commit="bbb", when="2026-11-18T10:00:00+00:00", drifting=True))

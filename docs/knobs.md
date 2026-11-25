@@ -77,6 +77,13 @@ knobs move the other way, set in the order that never takes a sum past its
 value on the way. `--free` moves it alone; `--grid` maps it against
 `nS_DMADataHold` with only the latch held.
 
+`--set KNOB=VALUE` holds any other knob at a value of its own for the whole
+sweep, and the limits above follow it. `nS_PLAprop`'s lower edge needs it: at
+the default `nS_RWnReady` (143) the address read already lands where the
+selects are read, so the walk stops there; with `--set nS_RWnReady=0` it goes
+down to 0. A record made that way carries `set`, is compared only with
+records that set the same, and gives no floor.
+
 ## What breaks each way, and what finds it
 
 | Variable | Down | Up | Probes | Test |

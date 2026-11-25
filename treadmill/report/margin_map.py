@@ -73,13 +73,20 @@ def short_build(record: Mapping) -> str:
     return version if version.endswith("*") or not fw.get("dirty") else version + "*"
 
 
+def _set(record: Mapping) -> str:
+    """The other knobs a sweep set, as ``nS_RWnReady 60``; empty when none."""
+    return ", ".join(f"{name} {value}" for name, value in (record.get("set") or {}).items())
+
+
 def label(record: Mapping) -> str:
-    """Machine model, registry id and standard, board, probes and build."""
+    """Machine model, registry id and standard, board, probes, the knobs set
+    and build."""
     m = record.get("machine") or {}
     model = "C128" if m.get("c128") else (m.get("model") or "?")
     probes = "+".join(record.get("probes") or [])
-    return (f"{model} {m.get('id') or '?'} {m.get('standard') or '?'}, {record.get('board') or '?'}, {probes}, "
-            f"{short_build(record)}")
+    fixed = f", {_set(record)}" if record.get("set") else ""
+    return (f"{model} {m.get('id') or '?'} {m.get('standard') or '?'}, {record.get('board') or '?'}, {probes}"
+            f"{fixed}, {short_build(record)}")
 
 
 def _values(record: Mapping) -> list[int]:
@@ -244,13 +251,13 @@ def _machine(record: Mapping) -> str:
 
 
 def _latest(records: Iterable[Mapping]) -> dict[str, list[Mapping]]:
-    """Per machine, the newest record of each image, knob and probe set
-    (records come oldest first)."""
+    """Per machine, the newest record of each image, knob, probe set and
+    knobs set (records come oldest first)."""
     newest: dict[tuple, Mapping] = {}
     for r in records:
         if r.get("mode") == "grid":
             continue
-        key = (_machine(r), _image(r), (r.get("knob") or {}).get("name"), "+".join(r.get("probes") or []))
+        key = (_machine(r), _image(r), (r.get("knob") or {}).get("name"), "+".join(r.get("probes") or []), _set(r))
         newest[key] = r
     out: dict[str, list[Mapping]] = defaultdict(list)
     for (machine, *_), r in newest.items():
@@ -360,7 +367,8 @@ def _overview(machine: str, records: list[Mapping]) -> str:
         y += OV_HEAD
         for r in rows:
             out.append(_row(r, y, x, lambda v, r=r: (v - r["default"]) * _scale(r),
-                            r["knob"]["name"] + (" \u00b7 USB load" if _usb(r) else "")))
+                            r["knob"]["name"] + (" \u00b7 USB load" if _usb(r) else "")
+                            + (f" \u00b7 {_set(r)}" if r.get("set") else "")))
             y += OV_ROW
     height = y + 30
     axis = _axis(lo, hi, 50, x, height, lambda t: "default" if t == 0 else f"{t:+d}".replace("-", "\u2212"))
@@ -378,9 +386,9 @@ def _cycle_chart(machine: str, records: list[Mapping]) -> str:
     the point it counts from, rows in the order their defaults come. A DMA
     cycle starts at the fall (drawn at half the cycle) and moves its data in
     the next high half, so the axis runs on into the next cycle. Records
-    under USB load are left out."""
-    rows = [r for r in records if _image(r) == "main" and not _usb(r) and r.get("default") is not None
-            and (r.get("knob") or {}).get("name") in _BY_NAME]
+    under USB load or with another knob set are left out."""
+    rows = [r for r in records if _image(r) == "main" and not _usb(r) and not r.get("set")
+            and r.get("default") is not None and (r.get("knob") or {}).get("name") in _BY_NAME]
     if not rows:
         return ""
     m = rows[0].get("machine") or {}

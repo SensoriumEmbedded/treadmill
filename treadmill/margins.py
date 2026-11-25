@@ -3,13 +3,13 @@
 Every sweep writes ``margins.json`` (schema 1) in its folder: the station,
 the machine and its standard, the board, the firmware (commit, dirty,
 defines, tag, image), the knob, the mode, the probes, the held sums, the
-default, each edge with the probe that found it, and every point of every
-pass. ``treadmill margins`` reads them back from a reports folder as a
+other knobs set for the sweep (``set``), the default, each edge with the
+probe that found it, and every point of every pass. ``treadmill margins`` reads them back from a reports folder as a
 table, CSV, a map, or the floors a station's runs support (``suggest``).
 
 A test holds each edge to the station's floor for that direction (below it
 the test fails) and compares it with the newest earlier record for the same
-station, knob, edge and probes on another build: a shrink past
+station, knob, edge, probes and set knobs on another build: a shrink past
 ``shrink_limit`` is a warning, not a failure, since machines drift (PR #99's
 C128s moved 10x between passes).
 """
@@ -107,6 +107,7 @@ def _same(a: Mapping, b: Mapping, way: str) -> bool:
             and (a.get("knob") or {}).get("name") == (b.get("knob") or {}).get("name")
             and sorted(a.get("probes") or []) == sorted(b.get("probes") or [])
             and (a.get("firmware") or {}).get("image") == (b.get("firmware") or {}).get("image")
+            and (a.get("set") or {}) == (b.get("set") or {})
             and edge(a, way) is not None and edge(b, way) is not None)
 
 
@@ -161,11 +162,12 @@ def under_load(record: Mapping) -> bool:
 def suggest(records: Iterable[Mapping], station: str, *, last: int = 5) -> dict[str, Floor]:
     """Floors a station's last ``last`` records of each knob support: one
     coarse step inside the worst edge each way, never past the default. A
-    station's floors are for its knobs without load, so sweeps made under
-    USB load are left out."""
+    station's floors are for its knobs without load and with the others at
+    their defaults, so sweeps made under USB load or with another knob set
+    are left out."""
     by_knob: dict[str, list[Mapping]] = {}
     for r in records:
-        if r.get("station") == station and not under_load(r):
+        if r.get("station") == station and not under_load(r) and not r.get("set"):
             by_knob.setdefault((r.get("knob") or {}).get("name"), []).append(r)
     floors: dict[str, Floor] = {}
     for name, rs in sorted(by_knob.items()):
@@ -194,8 +196,13 @@ def floors_toml(floors: Mapping[str, Floor]) -> str:
     return "\n".join(lines) + "\n"
 
 
-COLUMNS = ("when", "station", "machine", "standard", "board", "build", "image", "knob", "probes", "mode",
+COLUMNS = ("when", "station", "machine", "standard", "board", "build", "image", "knob", "probes", "set", "mode",
            "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "path")
+
+
+def set_text(record: Mapping) -> str:
+    """The other knobs a sweep set, as ``nS_RWnReady=60``; empty when none."""
+    return ",".join(f"{name}={value}" for name, value in (record.get("set") or {}).items())
 
 
 def rows(records: Iterable[Mapping]) -> list[dict]:
@@ -209,7 +216,7 @@ def rows(records: Iterable[Mapping]) -> list[dict]:
             "standard": ("NTSC C128" if m.get("c128") and m.get("standard") == "NTSC" else m.get("standard")),
             "board": r.get("board"), "build": build_id(r), "image": (r.get("firmware") or {}).get("image"),
             "knob": (r.get("knob") or {}).get("name"), "probes": "+".join(r.get("probes") or []),
-            "mode": r.get("mode"), "passes": r.get("passes"), "default": r.get("default"),
+            "set": set_text(r), "mode": r.get("mode"), "passes": r.get("passes"), "default": r.get("default"),
             "down_clean": down.get("clean_to"), "down_fail": down.get("first_fail"),
             "up_clean": up.get("clean_to"), "up_fail": up.get("first_fail"),
             "drifting": ",".join(drifting), "path": r.get("_path"),

@@ -209,6 +209,20 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                           both=args.both, passes=args.passes, scan=scan, grid=grid)
     except SweepError as e:
         raise CommandError(str(e), EXIT_USAGE) from e
+    fixed: dict[str, int] = {}
+    for text in args.set or []:
+        name, _, value = text.partition("=")
+        try:
+            value = int(value)
+        except ValueError:
+            raise CommandError(f"--set {text!r}: give KNOB=VALUE, as nS_RWnReady=60", EXIT_USAGE) from None
+        try:
+            other = knob_named(name)
+        except SweepError as e:
+            raise CommandError(f"--set {text!r}: {e}", EXIT_USAGE) from None
+        if other.letter in fixed:
+            raise CommandError(f"--set gives {other.name} twice", EXIT_USAGE)
+        fixed[other.letter] = value
     log = _log_for(args)
     with Harness(_harness_options(args), f"sweep-{knob.letter}", log) as h:
         ns = h.namespace
@@ -282,7 +296,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             # MinimalBoot's td names no standard: the main image's banner gives it before the hand-off.
             standard = (standard_of(board.banner.machine, board.banner.video)
                         if args.image == "minimal" and board.banner else None)
-            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, standard=standard, log=log).run()
+            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, fixed=fixed, standard=standard, log=log).run()
         record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None,
                                                                      image=args.image))
         h.run_dir.write_json(margins.NAME, record, h.folder)
@@ -844,6 +858,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="nS_DMASetup: hold the release and latch sums (the default for it)")
     hold.add_argument("--free", dest="hold", action="store_const", const=False,
                       help="nS_DMASetup: move it alone")
+    s.add_argument("--set", action="append", metavar="KNOB=VALUE",
+                   help="another knob at VALUE for the whole sweep, put back with the defaults (repeatable); the "
+                        "swept knob's limits follow it, so nS_PLAprop goes down to an nS_RWnReady set low")
     s.add_argument("--step", type=int, default=10, help="the coarse step (default 10)")
     s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
     s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")

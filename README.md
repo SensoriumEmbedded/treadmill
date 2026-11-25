@@ -378,8 +378,12 @@ goes no lower than `nS_RWnReady` (both waits count from the cycle's start, so
 below it the knob changes nothing), and `nS_DMASetup` moves with
 `nS_DMADataHold` and `nS_DMADataSetup` the other way, so the release and the
 latch, as the board's defaults put them, stay where they are (`--free` moves
-it alone). A spec past the limits is refused. `KSenseMode` is a mode, set
-with `tx`, not swept, and `td` leaves it where it was.
+it alone). `--set KNOB=VALUE` holds another knob at a value of its own for
+the whole sweep, and the limits follow it: `nS_PLAprop`'s lower edge lies
+below the default `nS_RWnReady`, so it is swept with `--set nS_RWnReady=0`.
+Such a record carries `set`, is compared only with records that set the
+same, and gives no floor. A spec past the limits is refused. `KSenseMode` is
+a mode, set with `tx`, not swept, and `td` leaves it where it was.
 
 The TeensyROM cannot see its own read errors, so the probes are the C64's,
 in `treadmill/probes/`: `idread` launches a one-bank EasyFlash cartridge

@@ -68,7 +68,7 @@ def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, prog
     if video is not None and calibration is not None:
         probes.append(NoiseProbe(video, calibration, pattern, log=print))
     passes = C128_PASSES if board.is_c128 else 1
-    spec = SearchSpec(both=True, step=pace.slow_step, fine=pace.slow_fine, passes=passes)
+    spec = SearchSpec(both=True, step=pace.slow_step, fine=pace.slow_fine, repeat=pace.slow_repeat, passes=passes)
     with Settings(screen, keys, log=print).special_io(REU):
         margin = Sweep(dbg, knob, probes, spec, log=print).run()
     print(margin.describe())
@@ -82,7 +82,7 @@ def test_dma_assert_where_its_wait_is_live(probe_name, at_menu, dbg, screen, key
                                            margin_check):
     board = at_menu
     knob = KNOBS["a"]
-    spec = SearchSpec(stop=0, step=pace.slow_step, fine=pace.slow_fine)
+    spec = SearchSpec(stop=0, step=pace.slow_step, fine=pace.slow_fine, repeat=pace.slow_repeat)
     settings = Settings(screen, keys, log=print)
     if probe_name == "reuloop":
         probe = ReuLoopProbe(board, programs("reuclient"), dwell=pace.loop_dwell, log=print)

@@ -100,6 +100,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     g.addoption("--power-check", action="store_true", default=False,
                 help="one power cycle before the first test, through the ladder's own rung: proves the "
                      "station's recovery by mains before an unattended run")
+    g.addoption("--margin-fine", action="store", type=int, default=None, metavar="NS",
+                help="the margin tests bisect every edge to NS ns (default 5) and take 3 samples a point "
+                     "everywhere: 2 resolves a build whose waits land within about 4 ns")
 
 
 def pytest_configure(config: pytest.Config) -> None:

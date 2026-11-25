@@ -42,3 +42,15 @@ def test_the_baseline_tier_runs_without_dma(pytester: pytest.Pytester, lab: Path
     assert outcomes.get("failed", 0) == 0 and outcomes.get("errors", 0) == 0, result.stdout.str()
     assert outcomes.get("passed", 0) >= 10, outcomes
     assert not list((lab / "reports").rglob("xcheck.json")), "a cross-check ran with DMA masked"
+
+
+def test_margin_fine_narrows_every_edge_with_three_samples(pytester: pytest.Pytester, lab: Path):  # noqa: F811
+    import json
+    result = _run(pytester, lab, "--margin-fine", "2", "-k", "test_cpu_margin and nS_PLAprop")
+    outcomes = result.parseoutcomes()
+    assert outcomes.get("passed", 0) == 1 and outcomes.get("failed", 0) == 0, result.stdout.str()
+    record = json.loads(next((lab / "reports").rglob("margins.json")).read_text(encoding="utf-8"))
+    assert (record["spec"]["fine"], record["spec"]["repeat"]) == (2, 3)
+    for edge in record["edges"].values():
+        if edge["first_fail"] is not None:
+            assert abs(edge["first_fail"] - edge["clean_to"]) <= 2, edge

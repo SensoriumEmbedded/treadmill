@@ -45,8 +45,8 @@ def test_minimalboot_margin(letter, load, at_menu, dbg, screen, programs, reques
     shown = programs("idread", SHOW=1)
     probe = MinimalIdReadProbe(board, screen, shown, dwell=pace.video_dwell, usb_load=load, log=print)
     step = pace.slow_step * (2 if letter == "m" else 1)      # nS_MaxAdj's range is about 350 ns wide
-    margin = Sweep(dbg, knob, probe, SearchSpec(both=True, step=step, fine=pace.slow_fine), standard=standard,
-                   log=print).run()
+    spec = SearchSpec(both=True, step=step, fine=pace.slow_fine, repeat=pace.slow_repeat)
+    margin = Sweep(dbg, knob, probe, spec, standard=standard, log=print).run()
     print(margin.describe())
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails under MinimalBoot: "
                                          f"{'; '.join(margin.points[0].notes)}")

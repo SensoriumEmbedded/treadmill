@@ -136,7 +136,11 @@ treadmill run --station <id> --fw ref=main --define Dbg_SerTimChg --define Dbg_S
 ```
 
 about 90 minutes a TR+ station, less on a plain TR, which skips the DMA and
-Kernal Replace tests. Each sweep leaves a `margins.json` in its test's
+Kernal Replace tests. Edges are bisected to 5 ns, enough for a build whose
+waits move in steps of about 12 ns; a build whose waits convert to cycles
+once lands within about 4 ns, so its runs take `-- --margin-fine 2`, which
+bisects every edge to 2 ns with three samples a point on every knob (the
+slow knobs' points take three times as long). Each sweep leaves a `margins.json` in its test's
 folder; `treadmill margins table` lists them, `treadmill margins map` charts
 them (an overview per machine with every knob's window around its default,
 red where it failed and green at a limit, and the same windows on a time line

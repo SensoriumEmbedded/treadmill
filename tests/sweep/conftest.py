@@ -3,7 +3,7 @@ the floor and the shrink check."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -22,10 +22,12 @@ class Pace:
     kr_dwell: float               # krread: seconds of HIRAM toggling a sample
     slow_step: int                # the DMA and VIC knobs, whose points take seconds: coarse step, bisection grain
     slow_fine: int
+    fine: int = 5                 # idread's CPU-cycle sweeps: the bisection grain
+    slow_repeat: int = 1          # the slow knobs' samples a point
 
 
 @pytest.fixture
-def pace() -> Pace:
+def pace(request) -> Pace:
     """A board: a second of idread counting and three samples a point, since
     an edge wanders a few ns between runs (one wrong read in 24,064 at 260,
     none the next); z100, about 20 s; ten seconds of the REU loop, about
@@ -34,10 +36,19 @@ def pace() -> Pace:
     the DMA and VIC knobs by 10 ns, bisected to 5. The fake: a fraction of
     each, one sample, and twice the steps, since every DMA point costs about
     ten commands; its counts are a rate and its edges hold still, so the
-    result is the same in far less time."""
-    if fake_requested():
-        return Pace(0.1, 1, 4, 0.2, 0.2, 0.3, 20, 10)
-    return Pace(1.0, 3, 100, 10.0, 2.0, 2.0, 10, 5)
+    result is the same in far less time.
+
+    ``--margin-fine NS`` bisects every edge to NS ns instead, with three
+    samples a point on every knob: 5 ns is enough for a build whose waits
+    move in steps of about 12 ns, but a wait that converts to cycles once
+    lands within about 4 ns, and 2 resolves it."""
+    pace = Pace(0.1, 1, 4, 0.2, 0.2, 0.3, 20, 10) if fake_requested() else Pace(1.0, 3, 100, 10.0, 2.0, 2.0, 10, 5)
+    fine = request.config.getoption("--margin-fine")
+    if fine is None:
+        return pace
+    if fine < 1:
+        raise pytest.UsageError(f"--margin-fine {fine}: give 1 ns or more")
+    return replace(pace, fine=fine, slow_fine=fine, repeat=max(pace.repeat, 3), slow_repeat=3)
 
 
 @pytest.fixture

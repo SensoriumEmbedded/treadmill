@@ -47,7 +47,7 @@ def test_kernal_sense_margin(letter, at_menu, dbg, screen, keys, menu, programs,
     board.link.push_file(image, PROBE_KERNAL, "sd")
     probe = KrReadProbe(board, screen, programs("krread", **defines), defines["LEN"], dwell=pace.kr_dwell, log=print)
     step = STEPS.get(letter, pace.slow_step)
-    spec = SearchSpec(both=True, step=step, fine=1 if letter == "k" else pace.slow_fine)
+    spec = SearchSpec(both=True, step=step, fine=1 if letter == "k" else pace.slow_fine, repeat=pace.slow_repeat)
     settings = Settings(screen, keys, log=print)
     with settings.kernal_file(menu, "SD:" + PROBE_KERNAL), settings.special_io(KERNAL_REPLACE), \
             ksense_mode(dbg, SKOE if letter == "k" else DMA):

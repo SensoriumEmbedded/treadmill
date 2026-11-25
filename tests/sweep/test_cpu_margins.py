@@ -34,7 +34,6 @@ from treadmill.sweeps import SearchSpec, Sweep
 
 pytestmark = [pytest.mark.needs_fw("Dbg_SerTimChg"), pytest.mark.timing_sensitive, pytest.mark.duration(4)]
 
-FINE = 5
 STEPS = {"r": 10, "p": 10, "s": 10, "h": 10, "m": 20}   # nS_MaxAdj's range is about 350 ns wide
 # nS_PLAprop and nS_MaxAdj under load take every path of this test between them (the menu at a floor,
 # a loaded default, the readback at the defaults with load); the rest differ only in the knob.
@@ -58,7 +57,7 @@ def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artif
         probe = IdReadProbe(board, programs("idread"), dwell=pace.dwell, usb_load=load, log=print)
     else:
         probe = menu
-    spec = SearchSpec(both=True, step=STEPS[letter], fine=FINE, repeat=pace.repeat)
+    spec = SearchSpec(both=True, step=STEPS[letter], fine=pace.fine, repeat=pace.repeat)
     margin = Sweep(dbg, knob, probe, spec, log=print).run()
     print(margin.describe())
     assert not margin.points[0].failed, f"the default {knob.name} {margin.default} fails the {probe.name} probe"

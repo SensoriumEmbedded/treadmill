@@ -354,7 +354,9 @@ treadmill run --station <id> --fw ref=main --define Dbg_SerTimChg --define Dbg_S
 ```
 
 about 90 minutes a TR+ station; a plain TR skips the DMA and Kernal Replace
-tests.
+tests. `-- --margin-fine 2` bisects every edge to 2 ns instead of 5, with
+three samples a point on every knob, for a build whose waits land within a
+few ns.
 
 `treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --both`
 finds a bus timing knob's margin each way: the knob (`p`, `tp` or

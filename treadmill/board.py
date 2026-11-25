@@ -4,10 +4,14 @@ It owns the rig lock, the serial link, the event log, the recovery ladder,
 and the keyboard board when the station's machine has one, and it is what
 the pytest fixtures and the driver's ``exec`` and ``shell`` hand out. The
 ladder, run before every test, climbs only as far as
-it must: a reset; then, on a TR+ whose machine has a keyboard board with
+it must: when the board has left USB, first finding it again, since it may
+be back by itself (the host slept, or the board restarted on its own); a
+reset; then, on a TR+ whose machine has a keyboard board with
 its reset fitted, a reset on the C64's /RESET line, which the TR+ senses
 from any handler; then the 134-baud USB reboot with a loader relaunch of the
-firmware already on the board, when the run knows which hex that is; then a
+firmware already on the board, when the run knows which hex that is (with no
+loader on the host, a board left waiting in the bootloader is written again
+without its chip id when it is the only one waiting there); then a
 mains cycle when the rig has power control; else the station is marked wedged
 and the rest of the run skips with that reason. A mains cycle takes the
 keyboard board down with the machine and undoes a Kawari's standard switch,
@@ -335,9 +339,14 @@ class Board:
         except (LinkError, TransportError):
             pass
         rungs: list[tuple[str, Callable[[], None]]] = []
+        deaf = self.events.current_handler() in SERIAL_DEAF_HANDLERS
+        if self.reconnect_hook and self.link.stream.ended and not deaf:
+            # The board left USB and may be back by itself (the host slept, or the board restarted on its own):
+            # found again, it needs no rung that resets or reboots it, and the reboot can strand it (backlog 42).
+            rungs.append(("reconnect", self._rung_reconnect))
         # Without reset sensing, a reset the TR doesn't make leaves it in its handler: no way back to the menu.
         ext = self.kbd is not None and self.station.has("ext_reset", "reset_sense")
-        if not ((self.reboot_hook or ext) and self.events.current_handler() in SERIAL_DEAF_HANDLERS):
+        if not ((self.reboot_hook or ext) and deaf):
             rungs.append(("reset", self._rung_reset))
         if ext:
             rungs.append(("ext-reset", self.ext_reset))
@@ -362,6 +371,11 @@ class Board:
 
     def _rung_reset(self) -> None:
         self.reset()
+
+    def _rung_reconnect(self) -> None:
+        self.reconnect()
+        if self.link.stream.ended:
+            raise LinkError("the board is not back on USB")
 
     def _rung_reboot(self) -> None:
         assert self.reboot_hook is not None
@@ -462,5 +476,6 @@ class Board:
         self.link = self.reconnect_hook()
         self.link._on_unsolicited = self.events.feed
         self.link.drain_when_pending = old.drain_when_pending
-        self.link.stream.tap.chunks[:0] = old.stream.tap.chunks
+        if self.link.stream is not old.stream:      # the same stream back would copy its log into itself
+            self.link.stream.tap.chunks[:0] = old.stream.tap.chunks
         self.probe_pending = True

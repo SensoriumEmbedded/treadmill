@@ -121,7 +121,17 @@ cost or a wart with a known, small fix.
    the same hardware. Fix: one helper in `kawari.py` that reads J1 and
    flips it from the standard the banner shows, used by both, with
    `kawari_open` dropped from the `region_switch` rule.
-42. **high** The reboot rung strands the board in the Teensy bootloader.
+42. **closed 2026-11-25, with the reconnect rung and the unnamed rewrite.**
+   When the board has left USB, the ladder now first finds it again (the
+   `reconnect` rung), so a board the host's sleep dropped, or one that
+   restarted on its own, is back without a reboot. And `relaunch()`, with
+   no `teensy_loader_cli`, looks for the board in the bootloader by the
+   serial HalfKay shows (`bootloader_serial()`: the chip id over ten, in
+   hex; `halfkay_serials()` reads it from Windows' devices or Linux's
+   sysfs) and, when it is the only board waiting there, writes it without
+   `--uid`. Beside another board on the host the flasher still refuses
+   one waiting in the bootloader, and then the rung fails as before. The
+   item as it was: The reboot rung strands the board in the Teensy bootloader.
    `Board._rung_reboot()` (`treadmill/board.py`) calls `relaunch()`
    (`treadmill/firmware/flash.py`), which opens the port at 134 baud and so
    sends the Teensy into the bootloader. Without `teensy_loader_cli` on the

@@ -25,11 +25,13 @@ def test_reconnect_probes_again_and_keeps_the_caps(lab):  # noqa: F811
         board.link.drain_when_pending = True
         before = list(board.link.stream.tap.chunks)
         assert before
-        board.reboot_hook = lambda: None
+        reboots = []
+        board.reboot_hook = lambda: reboots.append("reboot")
         board.reconnect_hook = lambda: Link(second)
         first.close()                                   # the USB went away under the link
         board.ensure_menu()
-        assert board.recoveries == ["usb-reboot"] and board.link.stream is second
+        assert board.recoveries == ["reconnect"] and board.link.stream is second
+        assert reboots == [], "a board back on USB by itself needs no reboot (backlog 42)"
         assert board.link.dma_allowed and not board.probe_pending and board.link.drain_when_pending
         assert board.station.has("dma", "fw:Dbg_SerDMA") and not board.station.has("screen_dma")
         assert board.link.stream.tap.chunks[:len(before)] == before
@@ -121,6 +123,31 @@ def test_open_on_a_port_attaches_the_ladder_s_upper_rungs(lab, monkeypatch):  # 
         assert board.reconnect_hook is not None and board.reboot_hook is not None
     finally:
         board.close()
+
+
+def test_the_reboot_rung_writes_a_board_waiting_alone_in_the_bootloader_unnamed(monkeypatch):
+    """The 134-baud request sends the board into HalfKay, where it cannot say
+    its chip id, so the flasher refuses it by --uid (backlog 42). When it is
+    the one board waiting there, by the serial HalfKay shows (the chip id
+    over ten, in hex), it is written without --uid; otherwise as before."""
+    from pathlib import Path
+
+    import treadmill.firmware.flash as flash_mod
+
+    calls = []                                          # no port: no 134-baud request and no wait after it
+    monkeypatch.setattr(flash_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(flash_mod, "flash", lambda info, uid, primary, **kw: calls.append(kw)
+                        or flash_mod.Flashed(info, "banner", 0.0, False))
+    assert flash_mod.bootloader_serial("123456780") == "BC614E"
+    monkeypatch.setattr(flash_mod, "halfkay_serials", lambda: ["BC614E"])
+    assert flash_mod.relaunch("hex", "123456780", Path("."), None, log=lambda m: None) == "banner"
+    assert calls[-1]["named"] is False and calls[-1]["force"]
+    for others in (["BC614E", "1234"], ["1234"], []):
+        monkeypatch.setattr(flash_mod, "halfkay_serials", lambda others=others: others)
+        assert not flash_mod.waiting_alone("123456780", timeout=0)
+    monkeypatch.setattr(flash_mod, "waiting_alone", lambda uid: False)
+    flash_mod.relaunch("hex", "123456780", Path("."), None, log=lambda m: None)
+    assert "named" not in calls[-1], "still running, or beside another waiting board: by --uid, as before"
 
 
 def test_open_holds_nothing_when_the_probe_fails(lab):  # noqa: F811

@@ -68,8 +68,8 @@ machine_line), `firmware` (spec,
 commit, describe, dirty, defines, tag, version, stamp, flashed, cached,
 build_log), `video` and `calibration`, `tests`, `summary`, `exit_status`,
 `aborted` (why a run ended before its tests: a station or firmware problem),
-`recoveries` (the ladder rungs the run needed: `reset`, `ext-reset`,
-`usb-reboot`, `power-cycle`). `report.html` renders it for
+`recoveries` (the ladder rungs the run needed: `reconnect`, `reset`,
+`ext-reset`, `usb-reboot`, `power-cycle`). `report.html` renders it for
 a person. Each test's folder holds `serial.log` (the board's raw output
 during the test), `events.json`, `kbd.log` (the keyboard board's lines both
 ways), the screens a golden check read

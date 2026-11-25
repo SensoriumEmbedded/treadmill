@@ -427,7 +427,10 @@ in turn, as a map rather than edges (backlog 23).
 `zpattern`, the REU loop (with sprites for `nS_DMABAWait`; `cpuwatch` in its
 place for `nS_DMAAssert`, since the C64 runs one program at a time) and
 `noise` where the station has video, Special IO set to the REU for the test
-and put back; a C128 gets three passes.
+and put back; a C128 gets three passes. `nS_DMAAssert`'s wait is live only
+where the code latches the cycle's start just before it, in `DirectREU` and
+Kernal Replace's `KDS_Begin`, so its lower edge is swept there as well, down
+to 0: with the REU loop, and on a C128 with krread under the DMA sense.
 
 Two probes time paths the CPU does not use. `vicrom` launches an 8K Ultimax
 cartridge, which the TeensyROM serves with its VIC cycles on, whose charset

@@ -95,7 +95,7 @@ records that set the same, and gives no floor.
 | `nS_DataHold` | data released before the C64 latches | drive into the VIC's half (capped) | idread | the same two |
 | `nS_VICStart` | ROMH sampled before the VIC's address is valid | the VIC latches before the data arrives | vicrom | `test_vic_margins.py` |
 | `nS_VICDHold` | released before the VIC latches | drives into the CPU's half | vicrom; vicrom-cpu counts the CPU's wrong reads before the C64 hangs | `test_vic_margins.py` |
-| `nS_DMAAssert` | nothing below the code's own floor | /DMA lands in the CPU's cycle | zpattern, cpuwatch, noise | `test_dma_margins.py` |
+| `nS_DMAAssert` | in the Phi2 interrupt nothing: the wait has run out before the code reaches it; in `DirectREU` and `KDS_Begin`, where it is live, /DMA too soon after the write that started the transfer | /DMA lands in the CPU's cycle | zpattern, cpuwatch, noise; reuloop and krread (a C128's DMA sense) for the lower edge | `test_dma_margins.py` |
 | `nS_DMABAWait` | wrong steal decision on badline and sprite cycles | the same | zpattern, reuloop-sprites, noise | `test_dma_margins.py` |
 | `nS_DMASetup` | the drive lands in the VIC's half: noise first, 30-50 ns before data errors | R/W and address late: write errors | zpattern, reuloop, noise | `test_dma_margins.py` |
 | `nS_DMADataHold` | write data released too early | the release reaches the next fall: collapse | zpattern, reuloop, noise | `test_dma_margins.py` |

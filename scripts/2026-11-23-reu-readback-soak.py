@@ -28,8 +28,19 @@ interrupt mask (v0.9.0.1's SampleWatchStart) misses there.
 ``--hammer`` runs the client's read loop instead of its transfers:
 $DF02-$DF08 set once and read back every 9 cycles, so a late
 isrPHI2 shows on an IO2 read about 60 times as often (rounds are then 256
-passes, and a register's last read is the wrong value itself). The counters
-are read every 2 s, with the last payload read back to check it landed.
+passes, and a register's last read is the wrong value itself). A wrong read
+is read again 14 to 17 cycles later, as TeensyROM PR #119's reuhammer.a
+does: right then, the first read was answered late (``late``); wrong again
+(``twice``), the client also sets the register again in case it really
+changed. Each register's wrong reads are counted by value (``values``, the
+eight commonest, marked when the value is what the register read just
+before holds, or that OR'd with the register's own: the TR's last answer
+still on the bus when the C64 sampled). The counters are read every 2 s,
+with the last payload read back to check it landed. The value counts take
+one 3.5 KB DMA read as each phase starts; after that a register's are read
+only once it has missed 16,384 times since the last read, and at the
+phase's end if it missed at all, so a phase with no misses sees no other
+extra host reads.
 
 ``--tap`` needs a build with DbgSnoopTap (TeensyROM PR #114 or later): it
 arms the snoop tap's bus timing records and takes the ring every second, so
@@ -56,7 +67,10 @@ hammer reads per 300 s run:
   three 2,373, a cause in the lock-to-store path that none of them touches;
   ``--unlocked`` (about 30k jobs) v0.9.0.1 14 and 24, #108 49 and 33,
   #109+#110 0, all three 0. Wrong reads there are mostly the right value
-  with extra bits set: late data.
+  with extra bits set: late data. With the second read and the value
+  counts (2026-11-24), v0.9.0.1 locked missed 4,731 times in 39,250 jobs,
+  every one right on the second read; each register's commonest wrong
+  value was its own OR'd with the previous register's, 1,983 of the 4,731.
 
 ``--tap`` costs ISR time. On sys14 a DbgSnoopTap build of PR #114 made
 446,070 wrong reads under locked jobs and 7,709 with none, so it cannot
@@ -67,8 +81,10 @@ the sweep (a build of all three plus #114).
 Puts back Special IO and leaves the board at the menu. ``result`` holds,
 per phase: seconds, jobs and bytes sent, refused jobs (with the last
 reason), payloads that did not land, REU rounds and bad pages, and each
-register's misses with the value a second read found after its last one;
-``misses`` is the jobs phase's total.
+register's misses with the value a second read found after its last one
+(with ``--hammer``: also ``late``, ``twice`` and ``values``, and the phase's
+``late`` and ``twice`` totals); ``misses`` is the jobs phase's total, and
+``held`` (``--hammer``) what each register read back once set.
 """
 
 import argparse
@@ -83,8 +99,12 @@ from treadmill.probes.usbload import usb_load
 from treadmill.programs.build import assemble
 
 READY, READY_VALUE = 0xC104, 0x5A
-COUNTERS = 0xC110                # rounds, bad pages; then misses (low, high) and last reads per register
-COUNTER_BYTES = 0x27
+COUNTERS = 0xC110                # rounds, bad pages; then per register misses, last reads, second misses
+COUNTER_BYTES = 0x37
+MISSES, LAST_READ, TWICE = 0x10, 0x20, 0x28  # offsets; a 16-bit count's high bytes are 8 on
+HISTOGRAM, HISTOGRAM_BYTES = 0xC200, 0x200  # --hammer: per register, low then high bytes by value
+HISTOGRAM_READ_AFTER = 0x4000    # misses before a register's 16-bit value counts could wrap between reads
+HELD = 0xF7                      # --hammer: what each register read back once set
 REGISTERS = ["$DF02", "$DF03", "$DF04", "$DF05", "$DF06", "$DF07", "$DF08"]
 CIA2_TA, CIA2_ICR, CIA2_CRA = 0xDD04, 0xDD0D, 0xDD0E
 SAMPLE_STORE = 0xD418
@@ -136,32 +156,80 @@ class Counters:
         self.last = self._read()
         self.rounds = self.bad = 0
         self.misses = [0] * len(REGISTERS)
+        self.twice = [0] * len(REGISTERS)
         self.last_read = [None] * len(REGISTERS)
+        self.values = collections.Counter()
+        self.unread = [0] * len(REGISTERS)
+        self.histograms = self._histograms(range(len(REGISTERS))) if opts.hammer else {}
 
     @staticmethod
     def _read() -> bytes:
         return link.read_memory(COUNTERS, COUNTER_BYTES, drain=0.0)
 
-    def sample(self) -> int:
-        """Reads the counters; returns the rounds since the last read."""
+    @staticmethod
+    def _histograms(registers) -> dict[int, bytes]:
+        """The value counts of ``registers``, in one read when it is all of them."""
+        registers = list(registers)
+        if len(registers) == len(REGISTERS):
+            block = link.read_memory(HISTOGRAM, HISTOGRAM_BYTES * len(REGISTERS), drain=0.0)
+            return {k: block[k * HISTOGRAM_BYTES:(k + 1) * HISTOGRAM_BYTES] for k in registers}
+        return {k: link.read_memory(HISTOGRAM + k * HISTOGRAM_BYTES, HISTOGRAM_BYTES, drain=0.0) for k in registers}
+
+    def sample(self, final: bool = False) -> int:
+        """Reads the counters; returns the rounds since the last read. ``final`` also reads
+        the value counts of every register that missed since they were last read."""
         now = self._read()
         word = lambda b, at: b[at] | b[at + 1] << 8
+        count = lambda b, at: b[at] | b[at + 8] << 8
         rounds = (word(now, 0) - word(self.last, 0)) & 0xFFFF
         self.rounds += rounds
         self.bad += (word(now, 2) - word(self.last, 2)) & 0xFFFF
         for k in range(len(REGISTERS)):
-            n = ((now[0x10 + k] | now[0x18 + k] << 8) - (self.last[0x10 + k] | self.last[0x18 + k] << 8)) & 0xFFFF
-            if n:
-                self.misses[k] += n
-                self.last_read[k] = f"${now[0x20 + k]:02X}"
+            # With --hammer the client counts a miss as one or the other, so the split never tears.
+            first = (count(now, MISSES + k) - count(self.last, MISSES + k)) & 0xFFFF
+            twice = (count(now, TWICE + k) - count(self.last, TWICE + k)) & 0xFFFF
+            if first or twice:
+                self.misses[k] += first + twice
+                self.twice[k] += twice
+                self.unread[k] += first + twice
+                self.last_read[k] = f"${now[LAST_READ + k]:02X}"
         self.last = now
+        if opts.hammer:
+            due = [k for k, n in enumerate(self.unread) if n >= HISTOGRAM_READ_AFTER or final and n]
+            for k, pages in self._histograms(due).items():
+                old = self.histograms[k]
+                for v in range(256):
+                    n = ((pages[v] | pages[0x100 + v] << 8) - (old[v] | old[0x100 + v] << 8)) & 0xFFFF
+                    if n:
+                        self.values[k, v] += n
+                self.histograms[k] = pages
+                self.unread[k] = 0
         return rounds
 
+    def describe(self, k: int, value: int) -> str:
+        before = (k - 1) % len(REGISTERS)
+        text = f"${value:02X}"
+        if held is not None and value == held[before]:
+            text += f" ({REGISTERS[before]}'s, the IO2 read before)"
+        elif held is not None and value == held[k] | held[before]:
+            text += f" (its own OR {REGISTERS[before]}'s, the IO2 read before)"
+        return text
+
     def summary(self) -> dict:
-        return {"rounds": self.rounds, "bad_pages": self.bad,
-                "registers": {name: {"misses": n, "last_read": self.last_read[k]}
-                              for k, (name, n) in enumerate(zip(REGISTERS, self.misses)) if n},
-                "misses": sum(self.misses)}
+        registers = {}
+        for k, (name, n) in enumerate(zip(REGISTERS, self.misses)):
+            if not n:
+                continue
+            row = registers[name] = {"misses": n, "last_read": self.last_read[k]}
+            if opts.hammer:
+                found = sorted(((v, c) for (r, v), c in self.values.items() if r == k), key=lambda item: -item[1])
+                row.update(late=n - self.twice[k], twice=self.twice[k],
+                           values={self.describe(k, v): c for v, c in found[:8]})
+        summary = {"rounds": self.rounds, "bad_pages": self.bad, "registers": registers,
+                   "misses": sum(self.misses)}
+        if opts.hammer:
+            summary.update(late=sum(self.misses) - sum(self.twice), twice=sum(self.twice))
+        return summary
 
 
 class Tap:
@@ -233,7 +301,7 @@ def run_phase(name: str, seconds: float, jobs: bool) -> dict:
                 break
             if data is not None and link.read_memory(TARGET, len(data), drain=0.0) != data:
                 row["not_landed"] += 1
-    counters.sample()
+    counters.sample(final=True)
     row.update(seconds=round(time.monotonic() - start, 1), **counters.summary())
     if tap:
         tap.take(SNOOP_STOP)
@@ -247,6 +315,7 @@ prg = assemble("reureadback" + ("_hammer" if opts.hammer else "") + ("_sprites" 
 link.push_file(prg.read_bytes(), REMOTE, "sd")
 settings = Settings(screen, keys, log=log)
 result = {"options": vars(opts), "phases": {}}
+held = None
 with contextlib.ExitStack() as stack:
     stack.enter_context(settings.special_io(REU))
     try:
@@ -262,6 +331,9 @@ with contextlib.ExitStack() as stack:
                 break
             if time.monotonic() > deadline:
                 raise SystemExit("the client never reported ready")
+        if opts.hammer:
+            held = link.read_memory(HELD, len(REGISTERS), drain=0.0)
+            result["held"] = {name: f"${value:02X}" for name, value in zip(REGISTERS, held)}
         latch = opts.nmi_period - 1
         link.write_memory(CIA2_TA, bytes([latch & 0xFF, latch >> 8]))
         link.write_memory(CIA2_ICR, b"\x81")

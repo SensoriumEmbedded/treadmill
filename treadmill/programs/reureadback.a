@@ -12,8 +12,12 @@
 ;
 ; With -DHAMMER=1 there are no transfers: $DF02-$DF08 are set once, and the loop reads them
 ; back over and over, an IO2 read every 9 cycles, so a cycle isrPHI2 answers late is caught
-; about 60 times as often as by the transfer loop. A read that differs is counted against
-; its register, with the wrong value itself kept; rounds counts 256 passes over the seven.
+; about 60 times as often as by the transfer loop; rounds counts 256 passes over the seven.
+; A read that differs is read again 14 to 17 cycles later. Right then, the first read was
+; answered late, and it counts in the register's misses; wrong again, it counts in its
+; second misses instead, and the register is set again in case it really changed. The
+; wrong value itself is kept, and counted by value in the register's histogram. The split
+; and the histogram follow TeensyROM PR #119's reuhammer.a.
 ;
 ; Copied from TeensyROM's tools/bench/reuclient.a as PR #111 extends it, so the soak stays
 ; the same whatever firmware is under test. MIT License, Copyright (c) 2023 Travis Smith.
@@ -31,10 +35,15 @@ seed   = $c114
 misslo = $c120          ; per register $DF02-$DF08: read-back misses, low bytes
 misshi = $c128          ; and high bytes
 lastrd = $c130          ; the value a second read found after the last miss
+twicelo = $c138         ; HAMMER: per register, misses read wrong a second time, low bytes
+twicehi = $c140         ; and high bytes
+hist    = $c200         ; HAMMER: per register a page of low bytes and one of high, by value
+histend = hist + 14 * 256
 source = $4000
 dest   = $5000
 expect = $f7            ; HAMMER: what each register read back once set, 7 bytes
 pass   = $fe            ; HAMMER: passes toward the next round
+ptr    = $f5            ; HAMMER: the histogram page being counted in
 
 reu_cmd  = $df01
 reu_regs = $df02        ; C64 address, REU address and bank, length: 7 registers
@@ -55,7 +64,7 @@ fetch    = $91          ; execute now, REU to C64
         sta errors
         sta errors+1
         sta seed
-        ldx #$17
+        ldx #$26
 -       sta misslo,x
         dex
         bpl -
@@ -92,6 +101,16 @@ fetch    = $91          ; execute now, REU to C64
         bpl -
         lda #0
         sta pass
+        sta ptr
+        tay
+        ldx #>hist
+--      stx ptr+1
+-       sta (ptr),y
+        iny
+        bne -
+        inx
+        cpx #>histend
+        bne --
 }
         lda #$5a
         sta ready
@@ -137,11 +156,36 @@ m4      ldx #4
 m5      ldx #5
         bne hmiss
 m6      ldx #6
-hmiss   sta lastrd,x
-        inc misslo,x
-        bne hammer
+hmiss   tay                     ; the wrong read
+        lda reu_regs,x
+        cmp expect,x
+        bne htwice
+        inc misslo,x            ; right this time: the first read was answered late
+        bne hcount
         inc misshi,x
-        jmp hammer
+        jmp hcount
+htwice  inc twicelo,x
+        bne +
+        inc twicehi,x
++       lda hvals,x
+        sta reu_regs,x
+hcount  tya
+        sta lastrd,x
+        txa
+        asl
+        adc #>hist              ; carry is clear: X is 0-6
+        sta ptr+1
+        lda (ptr),y
+        clc
+        adc #1
+        sta (ptr),y
+        bne +
+        inc ptr+1
+        lda (ptr),y
+        clc
+        adc #1
+        sta (ptr),y
++       jmp hammer
 
 hvals   !byte $a5, $3c, $c3, $5a, $01, $96, $69
 }

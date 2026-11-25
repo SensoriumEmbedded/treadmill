@@ -358,6 +358,21 @@ tests. `-- --margin-fine 2` bisects every edge to 2 ns instead of 5, with
 three samples a point on every knob, for a build whose waits land within a
 few ns.
 
+An acceptance soak runs each probe for `--soak N` minutes at the values the
+flashed build ships with, and fails on a single wrong count or hang:
+
+```
+treadmill run --station <id> --fw ref=<branch> --tests tests/soak --soak 10
+```
+
+idread, the REU loop with and without sprites, vicrom, vicrom-high and
+idread under MinimalBoot, each where the station can run it. The C64's
+round and pass counters are 16-bit (the REU client's wrap about every
+460 s), so a soak reads them every 10 s and adds the differences, back to
+back with no gap between readings (`treadmill/soaks.py`); a hang counts, the
+probe is relaunched, and the soak goes on. `soak.json` in each test's folder
+keeps every interval. No knob moves, so the build needs no debug define.
+
 `treadmill sweep p --station <id> --fw ref=main --define Dbg_SerTimChg --both`
 finds a bus timing knob's margin each way: the knob (`p`, `tp` or
 `nS_PLAprop`; any of the firmware's `t` knobs) is probed once at its default,

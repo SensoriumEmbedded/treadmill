@@ -797,7 +797,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--region", type=str.upper, choices=("PAL", "NTSC", "BOTH"),
                    help="the video standard to run in, switched first when the station has region_switch; "
                         "both = a PAL run, then an NTSC run; default: whatever the C64 runs now")
-    s.add_argument("--soak", type=int, default=0, metavar="N", help="run soak tests with N iterations")
+    s.add_argument("--soak", type=int, default=0, metavar="N", help="run the soak tests (tests/soak), N minutes each")
     s.add_argument("--estimate", action="store_true", help="print the expected duration and run nothing")
     s.add_argument("--include-tolerant", action="store_true",
                    help="run timing_sensitive tests on timing-tolerant machines too")

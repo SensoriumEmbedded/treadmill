@@ -282,15 +282,17 @@ cost or a wart with a known, small fix.
    release and latch sums (`--free` drops them), `--probe` takes
    `zpattern`, `reuloop`, `reuloop-sprites`, `cpuwatch` and `noise`, and
    `--passes` alternates the order.
-21. **medium, before soak runs** No DMA soak runs under the suite.
-   `tools/bench/reuspans.py` (the REU loop beside host write jobs, 600 s a
-   phase) is the quickest check of a DMA timing change, but the bench
-   library opens the port with `termios`, so it does not run on Windows,
-   and `Link` (`treadmill/link/trlink.py`) has no WriteC64Spans to run its
-   jobs. The PR #99 soak ran through a pyserial shim. The REU client's
-   16-bit counters wrapped once in each 600 s phase (about 67,000 rounds),
-   which reuspans prints modulo 65,536. Fix: a soak test that samples the
-   counters often enough to unwrap them, and WriteC64Spans in `Link`.
+21. **medium** No soak runs the REU loop beside host write jobs. The
+   soak itself landed on 2026-11-25: `tests/soak/test_soak.py` runs each
+   probe for `--soak N` minutes at the build's own values and reads the
+   C64's 16-bit counters every 10 s, so the REU client's (which wrapped once
+   in each 600 s phase of the PR #99 soak, about 67,000 rounds) unwrap.
+   Left: `tools/bench/reuspans.py`'s load, host WriteC64Spans jobs beside
+   the REU loop, the quickest check of a DMA timing change. `Link`
+   (`treadmill/link/trlink.py`) has no WriteC64Spans to run its jobs, and
+   the bench library opens the port with `termios`, so the script does not
+   run on Windows (the PR #99 soak ran through a pyserial shim). Fix:
+   WriteC64Spans in `Link`, and the REU-loop soak with jobs beside it.
 22. **closed 2026-11-19, with the DMA probes and the margin map.** No
    view compared a knob's margins across machines. `treadmill margins map`
    draws every stored `margins.json` (`treadmill/report/margin_map.py`),

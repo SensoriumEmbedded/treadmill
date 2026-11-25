@@ -87,12 +87,20 @@ class IdReadProbe:
                 self.setup()
         with at_defaults(setting):
             before = self.counters()
+        self.workload()
+        with at_defaults(setting):
+            after = self.counters()
+        return self.delta(before, after)
+
+    def workload(self) -> None:
+        """What runs while the C64 counts: ``dwell`` seconds, under USB load if asked."""
         if self.usb_load:
             usb_load(self.board.link, self.dwell)
         else:
             time.sleep(self.dwell)
-        with at_defaults(setting):
-            after = self.counters()
+
+    def delta(self, before: tuple[int, int, int], after: tuple[int, int, int]) -> Sample:
+        """The counts between two readings, each modulo its counter's width."""
         passes = (after[0] - before[0]) & 0xFFFF
         rom = (after[1] - before[1]) & 0xFFFFFF
         io = (after[2] - before[2]) & 0xFFFFFF

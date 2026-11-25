@@ -83,10 +83,15 @@ class ReuLoopProbe:
                 self.board.wait_for_menu()
                 self.setup()
         with at_defaults(setting):
-            r0, e0 = self.counters()
+            before = self.counters()
         self.workload()
         with at_defaults(setting):
-            r1, e1 = self.counters()
+            after = self.counters()
+        return self.delta(before, after)
+
+    def delta(self, before: tuple[int, int], after: tuple[int, int]) -> Sample:
+        """The rounds between two readings, each modulo 16 bits."""
+        (r0, e0), (r1, e1) = before, after
         good, bad = (r1 - r0) & 0xFFFF, (e1 - e0) & 0xFFFF
         if good + bad == 0:
             self._stalled = True

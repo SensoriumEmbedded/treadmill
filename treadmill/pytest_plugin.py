@@ -66,7 +66,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     g.addoption("--include-tolerant", action="store_true", default=False,
                 help="run timing_sensitive tests on timing-tolerant machines too")
     g.addoption("--soak", action="store", type=int, default=0,
-                help="run soak tests with this many iterations (0 = skip them)")
+                help="run the soak tests, this many minutes each (0 = skip them)")
     g.addoption("--estimate", action="store_true", default=False,
                 help="print the expected duration of the selected tests and exit")
     g.addoption("--reports", action="store", default="reports",
@@ -114,7 +114,7 @@ def pytest_configure(config: pytest.Config) -> None:
         "needs_asset(*names): private assets the test needs",
         "timing_sensitive: skipped on timing-tolerant machines",
         "destructive: changes board settings and restores them",
-        "soak: long-running; selected only with --soak N",
+        "soak: long-running, --soak N minutes; selected only with --soak N",
         "client_path: drives the board through TeensyROM-Web and trom",
         "duration(minutes): the declared estimate",
         "alike: covers another case's code path with another knob; the self-tests leave it out",

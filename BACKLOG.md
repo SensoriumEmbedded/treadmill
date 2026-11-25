@@ -557,3 +557,18 @@ cost or a wart with a known, small fix.
    Fix: after a sweep whose walk failed, check the probe at the defaults;
    if it fails there, restart the Teensy (the ladder's USB reboot rung) and
    check again before the next case, and record that it was needed.
+54. **low** The game probe copies vicrom's picture helpers.
+   `GameProbe` (`treadmill/probes/game.py`) repeats `VicRomProbe`'s
+   text-area crop (`_text`), frame grabbing (`_frames`) and noise limit
+   (`limit`, the noise probe's `FACTOR` and `FLOOR`) line for line, so a
+   change to how vicrom judges a picture (item 45's percentile, say) misses
+   the game probe. Fix: one helper both probes call, in `vicrom.py` or a
+   small picture module beside the probes.
+55. **low** A sweep re-sends every `--set` knob at every point.
+   `Sweep.setting_for()` (`treadmill/sweeps.py`) puts the knobs `--set`
+   holds into each point's setting, and `apply()` sends a `t` command for
+   each one every time, though their values never change: about 0.6 s a
+   knob a point with the fixed drain (item 4), some 25 s over a 40-point
+   sweep with one knob set. Fix: `apply()` skips a letter whose last listed
+   value (`_now`) already holds it, and still checks the reply's listing
+   for every letter of the setting.

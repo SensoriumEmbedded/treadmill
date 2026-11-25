@@ -517,6 +517,14 @@ failing values as red ticks, the default across the bar, `--mark
 nS_DMASetup=414` for a value under review, and under each row a cell for
 every value probed, per pass and probe; a grid is a heatmap. `--mermaid`
 prints the same windows as a Mermaid gantt block per knob, for a PR.
+`treadmill margins svg --out <folder>` writes each knob's chart as a static
+SVG file of its own (`margin-<knob>.svg`), for a public doc: it draws the
+same in a browser or on GitHub, has no tooltips, and labels its rows by
+machine model and standard only, adding the board, the probes, the knobs set
+or the build where two rows would otherwise read the same (`--build
+88f5c805=main` names a build; `--mark` draws a value as a dashed line, as on
+the map). Point `--reports` at the records the chart is for; a later export
+writes over the files.
 `treadmill margins import <run>...` turns runs of
 `scripts/2026-11-12-dmasetup-sweep.py` into records beside each run, the
 screen noise judged as the `noise` probe judges it, so PR #99's sweeps are

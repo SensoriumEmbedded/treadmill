@@ -142,7 +142,9 @@ them (an overview per machine with every knob's window around its default,
 red where it failed and green at a limit, and the same windows on a time line
 from the Phi2 rise, a section per firmware routine; then, collapsed, a row per
 record, its clean
-window and every value probed beneath it; `--mermaid` for a PR), and
+window and every value probed beneath it; `--mermaid` for a PR;
+`treadmill margins svg --out <folder>` a static SVG per knob for a public
+doc, rows by machine model and standard), and
 `treadmill margins suggest --station <id>`
 prints the `[margins]` floors to copy into the station file. A test fails an
 edge short of its floor and warns when an edge shrank against the newest

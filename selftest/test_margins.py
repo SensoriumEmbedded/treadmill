@@ -138,6 +138,41 @@ def test_the_map_and_the_mermaid_export(tmp_path: Path):
     assert margin_map.render([], tmp_path / "none.html").read_text(encoding="utf-8").count("No margin records") == 1
 
 
+def test_the_static_svgs_draw_alone_and_name_no_station_or_registry_id(tmp_path: Path, capsys):
+    import re
+    from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+    from treadmill.report import margin_map
+
+    def rec(commit, default, down, up, machine="C64-14", model="C64", standard="NTSC", station="s1"):
+        r = _record(station=station, commit=commit, default=default, down=down, up=up)
+        r["machine"] = {"id": machine, "model": model, "standard": standard, "c128": False}
+        return r
+
+    rs = [rec("88f5c805aa", 135, (60, None), (200, 205)), rec("d024038fbb", 143, (60, None), (210, 215)),
+          rec("88f5c805aa", 135, (60, None), (190, 195), machine="C64-07", station="s2"),
+          rec("88f5c805aa", 135, (60, None), (230, 235), machine="C64C-24", model="C64C", standard="PAL",
+              station="s3"),
+          {**rec("88f5c805aa", 220, (100, None), (460, 465)), "knob": {"name": "nS_DataSetup", "unit": "ns"}}]
+    paths = margin_map.export_svgs(rs, tmp_path / "images", {"nS_PLAprop": [148]},
+                                   builds={"88f5c805": "main", "d024038f": "fine wait"})
+    assert [p.name for p in paths] == ["margin-nS_DataSetup.svg", "margin-nS_PLAprop.svg"]
+    svg = paths[1].read_text(encoding="utf-8")
+    assert svg.startswith('<svg xmlns="http://www.w3.org/2000/svg"') and "<title>" not in svg and "var(--" not in svg
+    labels = re.findall(r'<text x="0" y="\d+" fill="#222" font-size="12">([^<]*)</text>', svg)
+    assert labels == ["C64 NTSC (1), main", "C64 NTSC (1), fine wait", "C64 NTSC (2), main", "C64C PAL, main"]
+    assert not any(s in svg for s in ("C64-14", "C64-07", "s1", "s2", "tr-plus")), "no registry id or station"
+    assert 'stroke="#3366cc" stroke-dasharray="4 3"' in svg and "dashed: 148" in svg
+    assert margin_map.public_labels(rs[:1]) == ["C64 NTSC"], "one row: model and standard alone"
+    reports = tmp_path / "reports"
+    for i, r in enumerate(rs):
+        margins.write(reports / f"run{i}" / "t", r)
+    assert main(["margins", "svg", "--reports", str(reports), "--json"]) == EXIT_USAGE
+    assert "needs --out" in capsys.readouterr().err
+    assert main(["margins", "svg", "--reports", str(reports), "--out", str(tmp_path / "out"), "--knob", "p",
+                 "--build", "88f5c805=main", "--mark", "nS_PLAprop=148", "--json"]) == EXIT_OK
+    assert [Path(p).name for p in json.loads(capsys.readouterr().out)["svgs"]] == ["margin-nS_PLAprop.svg"]
+
+
 def test_the_map_opens_with_an_overview_of_each_machine(tmp_path: Path):
     from treadmill.report import margin_map
 

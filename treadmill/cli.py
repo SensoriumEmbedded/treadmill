@@ -349,7 +349,7 @@ def cmd_margins(args: argparse.Namespace) -> int:
         _emit({"records": margins.rows(records)}, args.json, margins.table(records))
     elif args.what == "csv":
         _emit({"records": margins.rows(records)}, args.json, margins.to_csv(records).rstrip("\n"))
-    elif args.what == "map":
+    elif args.what in ("map", "svg"):
         marks: dict[str, list[int]] = {}
         for text in args.mark or []:
             name, sep, value = text.partition("=")
@@ -357,7 +357,19 @@ def cmd_margins(args: argparse.Namespace) -> int:
                 marks.setdefault(knobs.knob_named(name).name, []).append(int(value))
             except (KeyError, ValueError):
                 raise CommandError(f"--mark {text!r}: give KNOB=VALUE, as nS_DMASetup=414", EXIT_USAGE) from None
-        if args.mermaid:
+        if args.what == "svg":
+            if not args.out:
+                raise CommandError("svg needs --out: the folder for a file per knob", EXIT_USAGE)
+            builds = {}
+            for text in args.build or []:
+                prefix, sep, name = text.partition("=")
+                if not (sep and prefix and name):
+                    raise CommandError(f"--build {text!r}: give COMMIT=NAME, as 88f5c805=main", EXIT_USAGE)
+                builds[prefix] = name
+            paths = margin_map.export_svgs(records, Path(args.out), marks, builds=builds)
+            _emit({"svgs": [str(p) for p in paths], "records": len(records)}, args.json,
+                  "\n".join(str(p) for p in paths) or "no margin records")
+        elif args.mermaid:
             text = margin_map.mermaid(records, marks)
             _emit({"mermaid": text}, args.json, text.rstrip("\n") or "no margin records")
         else:
@@ -893,21 +905,26 @@ def build_parser() -> argparse.ArgumentParser:
                        description="Reads every margins.json under --reports. table: one line a record, the clean "
                                    "window and where each side fails; csv: the same as CSV; map: an HTML chart per "
                                    "knob, a row per record, its clean window as a bar and every value probed "
-                                   "beneath it (--mermaid: a gantt block per knob for a PR instead); suggest: the "
+                                   "beneath it (--mermaid: a gantt block per knob for a PR instead); svg: the same "
+                                   "charts as a file per knob in --out, for a public doc: no tooltips, rows labeled "
+                                   "by machine model and standard, never a station or registry id; suggest: the "
                                    "[margins] floors a station's last --last records of each knob support, one "
                                    "coarse step inside the worst edge each way, never past the default, to copy "
                                    "into its file; import RUN...: records from runs of "
                                    "scripts/2026-11-12-dmasetup-sweep.py, written beside each run.")
-    s.add_argument("what", choices=["table", "csv", "map", "suggest", "import"])
+    s.add_argument("what", choices=["table", "csv", "map", "svg", "suggest", "import"])
     s.add_argument("runs", nargs="*", help="import: the run folders")
     s.add_argument("--reports", default="reports", help="where run folders are (default: reports/)")
     s.add_argument("--station", help="only this station's records (suggest needs it)")
     s.add_argument("--knob", help="only this knob's records")
     s.add_argument("--last", type=int, default=5, help="suggest: the records per knob it weighs (default 5)")
     s.add_argument("--mark", action="append", metavar="KNOB=VALUE",
-                   help="map: a value under review, drawn across the knob's chart (repeatable)")
+                   help="map, svg: a value under review, drawn across the knob's chart (repeatable)")
+    s.add_argument("--build", action="append", metavar="COMMIT=NAME",
+                   help="svg: a name for a build's rows, by its commit's first digits (repeatable); otherwise "
+                        "the short commit")
     s.add_argument("--mermaid", action="store_true", help="map: print Mermaid gantt blocks instead of the HTML")
-    s.add_argument("--out", help="map: the HTML file (default: <reports>/margin-map.html)")
+    s.add_argument("--out", help="map: the HTML file (default: <reports>/margin-map.html); svg: the folder")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_margins)
 

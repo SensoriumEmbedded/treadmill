@@ -29,6 +29,13 @@ nS_DMASetup by nS_DMADataHold, a value per cell.
 numeric axis, the form of the PR #99 charts, for pasting into a PR. Rows
 are labelled by machine model, registry id and standard, never by station
 or rig.
+
+``export_svgs()`` writes each knob's chart as a static SVG file of its own,
+for a public doc (``treadmill margins svg``): an ``xmlns``, its colors as
+attributes over a white ground, its heading and key inside, no tooltips,
+and rows labeled by machine model and standard alone, with the board, the
+probes, the knobs set and the build (named with ``--build``) added only
+where two rows would otherwise read the same.
 """
 
 from __future__ import annotations
@@ -108,20 +115,80 @@ def _window(record: Mapping) -> tuple[int | None, int | None]:
     return low, high
 
 
-def _cell_color(failures: int, samples: int, hung: bool) -> str:
+def _cell_color(failures: int, samples: int, hung: bool, clean: str = "var(--bar)") -> str:
     if hung:
         return "#000"
     if not failures:
-        return "var(--bar)"
+        return clean
     share = min(1.0, failures / samples) if samples else 1.0
     lightness = 70 - int(40 * min(1.0, share * 10))      # a few bad reads already show
     return f"hsl(0, 70%, {lightness}%)"
 
 
-def _knob_chart(name: str, records: list[Mapping], marks: list[int]) -> str:
+# The per-knob chart's colors: the page's CSS variables, or, in a static SVG file that must draw the
+# same on its own (GitHub shows one as an image, on a light or a dark page), the light theme's values.
+_LIVE = {"fg": "var(--fg)", "muted": "var(--muted)", "grid": "var(--grid)", "bar": "var(--bar)",
+         "drift": "var(--drift)", "fail": "var(--fail)", "mark": "var(--mark)"}
+_STATIC = {"fg": "#222", "muted": "#666", "grid": "#ddd", "bar": "#2e8b57", "drift": "#e08a1e", "fail": "#b22222",
+           "mark": "#3366cc", "bg": "#fff"}
+_FONT = "-apple-system, Segoe UI, Helvetica, Arial, sans-serif"
+HEAD_H = 26                       # a static file's own heading, above the chart
+
+
+def public_labels(records: list[Mapping], builds: Mapping[str, str] | None = None) -> list[str]:
+    """Row labels for public text: machine model and video standard, never a
+    station or a registry id. What else tells two rows apart is added only
+    where the chart needs it: a number for each of several machines of one
+    model and standard, the board, the probes, the knobs set, and the build
+    (``builds`` names a commit by its first digits, as ``88f5c805=main``)."""
+    builds = builds or {}
+
+    def build(r: Mapping) -> str:
+        commit = (r.get("firmware") or {}).get("commit") or ""
+        named = next((text for prefix, text in builds.items() if prefix and commit.startswith(prefix)), None)
+        return named or short_build(r)
+
+    def board(r: Mapping) -> str:
+        return {"tr-plus": "TR+", "tr": "TR"}.get(r.get("board"), r.get("board") or "?")
+
+    def base(r: Mapping) -> str:
+        m = r.get("machine") or {}
+        return f"{'C128' if m.get('c128') else (m.get('model') or '?')} {m.get('standard') or '?'}"
+
+    machines: dict[str, list] = defaultdict(list)
+    for r in records:
+        mid = (r.get("machine") or {}).get("id")
+        if mid not in machines[base(r)]:
+            machines[base(r)].append(mid)
+    parts = {"board": board, "probes": lambda r: "+".join(r.get("probes") or []), "set": _set, "build": build}
+    shown = {k for k, f in parts.items() if len({f(r) for r in records}) > 1 or (k == "build" and builds)}
+    labels = []
+    for r in records:
+        ids = machines[base(r)]
+        text = base(r) + (f" ({ids.index((r.get('machine') or {}).get('id')) + 1})" if len(ids) > 1 else "")
+        labels.append(", ".join([text] + [f(r) for k, f in parts.items() if k in shown and f(r)]))
+    return labels
+
+
+def _knob_chart(name: str, records: list[Mapping], marks: list[int], *, static: bool = False,
+                builds: Mapping[str, str] | None = None) -> str:
+    """One knob's chart, a row per record. ``static``: a file of its own
+    (``xmlns``, its colors as attributes over a white ground, its heading
+    inside, no tooltips, rows by ``public_labels``), else a part of the map's
+    page."""
     lines = [r for r in records if r.get("mode") != "grid"]
     if not lines:
         return ""
+    c = _STATIC if static else _LIVE
+    names = public_labels(lines, builds) if static else [label(r) for r in lines]
+
+    def tip(text: str) -> str:
+        return "" if static else f"<title>{_e(text)}</title>"
+
+    def muted(anchor: str = "") -> str:
+        end = f' text-anchor="{anchor}"' if anchor else ""
+        return (f'fill="{c["muted"]}" font-size="11"' if static else 'class="muted"') + end
+
     values = [v for r in lines for v in _values(r)] + list(marks)
     lo, hi = min(values), max(values)
     span = max(hi - lo, 1)
@@ -131,28 +198,29 @@ def _knob_chart(name: str, records: list[Mapping], marks: list[int]) -> str:
         return PLOT_X0 + (v - lo) / (hi - lo) * (PLOT_X1 - PLOT_X0)
 
     rows_svg, y = [], 30
-    for r in lines:
+    for r, row_name in zip(lines, names):
         passes = sorted({p["pass"] for p in r.get("points") or []}) or [1]
         probes = r.get("probes") or []
         strip_lines = len(passes) * max(1, len(probes))
-        rows_svg.append(f'<text x="0" y="{y + 15}">{_e(label(r))}</text>')
+        plain = f' fill="{c["fg"]}" font-size="12"' if static else ""
+        rows_svg.append(f'<text x="0" y="{y + 15}"{plain}>{_e(row_name)}</text>')
         low, high = _window(r)
         drifting = any((e or {}).get("drifting") for e in (r.get("edges") or {}).values())
         if low is not None and high is not None and low <= high:
-            color = "var(--drift)" if drifting else "var(--bar)"
+            color = c["drift"] if drifting else c["bar"]
             title = f"clean {low} to {high}" + (" (drifting between passes)" if drifting else "")
             rows_svg.append(f'<rect x="{x(low):.1f}" y="{y + 4}" width="{max(2.0, x(high) - x(low)):.1f}" '
-                            f'height="{ROW_H - 8}" fill="{color}"><title>{_e(title)}</title></rect>')
+                            f'height="{ROW_H - 8}" fill="{color}">{tip(title)}</rect>')
         for e in (r.get("edges") or {}).values():
             if e.get("first_fail") is not None:
+                fail_tip = tip(f"fails from {e['first_fail']} ({'+'.join(e.get('probes') or [])})")
                 rows_svg.append(f'<line x1="{x(e["first_fail"]):.1f}" x2="{x(e["first_fail"]):.1f}" y1="{y + 2}" '
-                                f'y2="{y + ROW_H - 2}" stroke="var(--fail)" stroke-width="2">'
-                                f'<title>fails from {e["first_fail"]} ({_e("+".join(e.get("probes") or []))})'
-                                f'</title></line>')
+                                f'y2="{y + ROW_H - 2}" stroke="{c["fail"]}" stroke-width="2">{fail_tip}</line>')
         if r.get("default") is not None:
             d = x(r["default"])
-            rows_svg.append(f'<line x1="{d:.1f}" x2="{d:.1f}" y1="{y}" y2="{y + ROW_H}" stroke="var(--fg)" '
-                            f'stroke-width="2"><title>default {r["default"]}</title></line>')
+            default_tip = tip(f"default {r['default']}")
+            rows_svg.append(f'<line x1="{d:.1f}" x2="{d:.1f}" y1="{y}" y2="{y + ROW_H}" stroke="{c["fg"]}" '
+                            f'stroke-width="2">{default_tip}</line>')
         y += ROW_H
         step = (r.get("spec") or {}).get("step") or 10
         cell_w = max(2.0, (x(lo + step) - x(lo)) * 0.9)
@@ -163,28 +231,58 @@ def _knob_chart(name: str, records: list[Mapping], marks: list[int]) -> str:
                     if p["pass"] != n:
                         continue
                     f, s = (p.get("by_probe") or {}).get(probe, [p["failures"], p["samples"]])
-                    tip = (f"{probe}, pass {n}, {p['value']}: {f}/{s} failed"
-                           + (f" ({'; '.join(p.get('notes') or [])})" if p.get("notes") else ""))
+                    cell_tip = tip(f"{probe}, pass {n}, {p['value']}: {f}/{s} failed"
+                                   + (f" ({'; '.join(p.get('notes') or [])})" if p.get("notes") else ""))
                     rows_svg.append(f'<rect x="{x(p["value"]) - cell_w / 2:.1f}" y="{y + k * STRIP_H}" '
                                     f'width="{cell_w:.1f}" height="{STRIP_H - 1}" '
-                                    f'fill="{_cell_color(f, s, p.get("hung", False))}"><title>{_e(tip)}</title></rect>')
+                                    f'fill="{_cell_color(f, s, p.get("hung", False), c["bar"])}">{cell_tip}</rect>')
                 k += 1
-        rows_svg.append(f'<text class="muted" x="0" y="{y + STRIP_H * strip_lines - 1}">'
+        rows_svg.append(f'<text {muted()} x="0" y="{y + STRIP_H * strip_lines - 1}">'
                         f'{_e(", ".join(f"pass {n}" for n in passes))}: {_e(", ".join(probes))}</text>')
         y += STRIP_H * strip_lines + 10
     height = y + 10
     axis = []
     tick = next((t for t in (5, 10, 20, 25, 50, 100, 200, 500) if (hi - lo) / t <= 12), 1000)
     for v in range(int(lo // tick + 1) * tick, int(hi) + 1, tick):
-        axis.append(f'<line x1="{x(v):.1f}" x2="{x(v):.1f}" y1="20" y2="{height - 10}" stroke="var(--grid)"/>'
-                    f'<text class="muted" x="{x(v):.1f}" y="14" text-anchor="middle">{v:.0f}</text>')
+        axis.append(f'<line x1="{x(v):.1f}" x2="{x(v):.1f}" y1="20" y2="{height - 10}" stroke="{c["grid"]}"/>'
+                    f'<text {muted("middle")} x="{x(v):.1f}" y="14">{v:.0f}</text>')
     for m in marks:
-        axis.append(f'<line x1="{x(m):.1f}" x2="{x(m):.1f}" y1="20" y2="{height - 10}" stroke="var(--mark)" '
-                    f'stroke-dasharray="4 3" stroke-width="2"><title>under review: {m}</title></line>')
+        axis.append(f'<line x1="{x(m):.1f}" x2="{x(m):.1f}" y1="20" y2="{height - 10}" stroke="{c["mark"]}" '
+                    f'stroke-dasharray="4 3" stroke-width="2">{tip(f"under review: {m}")}</line>')
     unit = (lines[0].get("knob") or {}).get("unit", "ns")
-    return (f"<h2>{_e(name)} ({_e(unit)})</h2>"
-            f'<svg width="{WIDTH}" height="{height}" role="img" aria-label="{_e(name)} clean windows">'
-            + "".join(axis) + "".join(rows_svg) + "</svg>")
+    body = "".join(axis) + "".join(rows_svg)
+    if not static:
+        return (f"<h2>{_e(name)} ({_e(unit)})</h2>"
+                f'<svg width="{WIDTH}" height="{height}" role="img" aria-label="{_e(name)} clean windows">'
+                + body + "</svg>")
+    full = height + HEAD_H
+    key = ("bar: clean window; tick across a bar: its build's default; red tick: first failing value"
+           + (f"; dashed: {', '.join(str(m) for m in marks)}" if marks else ""))
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{full}" viewBox="0 0 {WIDTH} {full}" '
+            f'font-family="{_FONT}" role="img" aria-label="{_e(name)} clean windows">'
+            f'<rect width="{WIDTH}" height="{full}" fill="{c["bg"]}"/>'
+            f'<text x="0" y="17" fill="{c["fg"]}" font-size="14" font-weight="600">{_e(name)} ({_e(unit)})</text>'
+            f'<text x="{WIDTH}" y="17" fill="{c["muted"]}" font-size="11" text-anchor="end">{_e(key)}</text>'
+            f'<g transform="translate(0,{HEAD_H})">{body}</g></svg>\n')
+
+
+def export_svgs(records: Iterable[Mapping], folder: Path, marks: Mapping[str, list[int]] | None = None, *,
+                builds: Mapping[str, str] | None = None, prefix: str = "margin-") -> list[Path]:
+    """A static SVG file per knob, ``<prefix><knob>.svg`` in ``folder``, each
+    drawing the same on its own, for a public doc: rows labeled by machine
+    model and standard (``public_labels``). A later export writes over them."""
+    marks = marks or {}
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    written = []
+    for name, rs in by_knob(records).items():
+        svg = _knob_chart(name, rs, marks.get(name, []), static=True, builds=builds)
+        if not svg:
+            continue
+        path = folder / f"{prefix}{name}.svg"
+        path.write_text(svg, encoding="utf-8", newline="\n")
+        written.append(path)
+    return written
 
 
 def _grid_chart(record: Mapping) -> str:

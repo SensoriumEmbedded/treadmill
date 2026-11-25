@@ -16,6 +16,12 @@ and a C64 that stopped is a hang.
 eight sprites are in ROMH too, and the VIC reads those while Phi2 is high,
 in cycles the TeensyROM serves as it does the CPU's (``nS_RWnReady``,
 ``nS_PLAprop``), so the picture also shows those knobs' edges.
+
+``vicrom-cpu`` and ``vicrom-high`` are built with ``CPU`` as well: the C64
+reads two pages of ROMH in a loop running from RAM and counts the wrong
+answers, as idread does, so a VIC-cycle drive held into the CPU's half
+shows as wrong reads before it hangs the C64. The counts are read by DMA,
+so on a plain TR those probes judge the picture alone.
 """
 
 from __future__ import annotations
@@ -33,6 +39,8 @@ from treadmill.probes.noise import FACTOR, FLOOR, LEVEL
 from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
 
 PASSES, READY, READY_VALUE = 0x0F00, 0x0F04, 0x5A
+COUNTERS = 10                     # $0F00-$0F09: frames, ready, wrong CPU reads (24-bit), rounds (16-bit)
+READS_PER_ROUND = 512             # CPU: two ROMH pages a round
 START_S = 15.0
 REFERENCE_FRAMES = 15
 FRAME_WAIT_S = 2.0
@@ -44,8 +52,9 @@ class VicRomProbe:
 
     def __init__(self, board: Board, video: FrameSource | None, calibration: Calibration | None, program: Path,
                  *, dwell: float = 2.0, drive: str = "sd", name: str = "vicrom", remote: str | None = None,
-                 log=print):
+                 cpu: bool = False, log=print):
         self.name = name
+        self.cpu = cpu                   # the program counts its CPU's reads of ROMH (built with CPU)
         self.board = board
         self.video = video
         self.calibration = calibration
@@ -90,9 +99,12 @@ class VicRomProbe:
 
     # -- the C64 ----------------------------------------------------------------------
 
-    def _passes(self) -> int:
-        b = self.board.link.read_memory(PASSES, 2)
-        return b[0] | b[1] << 8
+    def _counters(self) -> tuple[int, int, int]:
+        """(frames, wrong CPU reads, rounds); the last two stay 0 without CPU."""
+        b = self.board.link.read_memory(PASSES, COUNTERS if self.cpu else 2)
+        if not self.cpu:
+            return b[0] | b[1] << 8, 0, 0
+        return b[0] | b[1] << 8, b[5] | b[6] << 8 | b[7] << 16, b[8] | b[9] << 8
 
     def _launch(self) -> None:
         self.board.ensure_menu()
@@ -122,6 +134,8 @@ class VicRomProbe:
         self._stalled = False
         self.log(f"[sweep] {self.name} reference at the defaults; baseline {self.baseline} pixels "
                  f"(limit {self.limit()})")
+        if self.cpu and not self.board.dma_allowed():
+            self.log(f"[sweep] {self.name}: no DMA, so the CPU's reads are not counted; the picture alone judges")
 
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
@@ -131,23 +145,32 @@ class VicRomProbe:
                 self.board.wait_for_menu()
                 self._launch()
         dma = self.board.dma_allowed()
-        before = self._passes() if dma else None
+        before = self._counters() if dma else None
         frames = self._frames(self.dwell)
         if dma:
-            alive = self._passes() != before
+            after = self._counters()
+            rounds = (after[2] - before[2]) & 0xFFFF
+            alive = after[0] != before[0] and (not self.cpu or rounds > 0)
         else:
             alive = len({round(self._border(f)) for f in frames}) > 1
         if not alive:
             self._stalled = True
             return Sample(1, 1, f"{self.name} stopped: the C64 hung", hung=True)
+        failures, samples, notes = 0, 1, []
         worst = self._worst(frames)
         if worst > self.limit():
-            return Sample(1, 1, f"glyphs {worst} pixels off the reference, over the limit {self.limit()}")
-        return Sample(0, 1)
+            failures = 1
+            notes.append(f"glyphs {worst} pixels off the reference, over the limit {self.limit()}")
+        if self.cpu and dma:
+            wrong, reads = (after[1] - before[1]) & 0xFFFFFF, rounds * READS_PER_ROUND
+            failures, samples = failures + wrong, samples + reads
+            notes.append(f"cpu {wrong}/{reads}")
+        return Sample(failures, samples, "; ".join(notes) or None)
 
     def teardown(self) -> None:
         self.board.reset()
         self.board.wait_for_menu()
 
     def info(self) -> dict:
-        return {"baseline": self.baseline, "limit": self.limit(), "level": LEVEL, "factor": FACTOR, "floor": FLOOR}
+        return {"baseline": self.baseline, "limit": self.limit(), "level": LEVEL, "factor": FACTOR, "floor": FLOOR,
+                "cpu_counted": self.cpu and self.board.dma_allowed()}

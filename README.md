@@ -436,7 +436,10 @@ the VIC fetches from ROMH: every glyph comes through `nS_VICStart` and
 (half a cell in from the border, which steps once a frame to show the C64
 is alive) is taken at the defaults, and a point fails when its worst frame
 strays from it by three times the defaults' own stray and 100 pixels more.
-`vicrom-high` puts the screen matrix and eight sprites in ROMH as well; the
+`vicrom-cpu` also has the C64 read two pages of ROMH from a loop in RAM and
+count the wrong answers (by DMA, on a TR+), so a VIC-cycle drive held into
+the CPU's half shows as wrong reads before it hangs the C64. `vicrom-high`
+is `vicrom-cpu` with the screen matrix and eight sprites in ROMH as well; the
 VIC reads those while Phi2 is high, in cycles the TeensyROM serves as it does
 the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`.
 `krread` times Kernal Replace's HIRAM sense (`Cyc_KernProp` for Skoe,

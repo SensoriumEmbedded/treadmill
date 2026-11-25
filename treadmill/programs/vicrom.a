@@ -13,10 +13,19 @@
 ; $3C00) are in ROMH as well. The VIC reads those while Phi2 is high, in cycles the
 ; TeensyROM serves as it does the CPU's, timed by nS_RWnReady and nS_PLAprop; the
 ; charset is still read while Phi2 is low.
-
+;
+; With CPU, the CPU reads two pages of ROMH in a loop that runs from RAM and counts
+; the wrong answers, as idread does, so a VIC-cycle drive held into the CPU's half
+; shows as wrong reads before it hangs the C64; the frames are then counted by a
+; raster interrupt whose handler is in RAM too, so only the vectors come from ROMH.
+;   $0F05-7  wrong CPU reads of ROMH, 24-bit
+;   $0F08/9  rounds, 16-bit (512 reads each)
 
 passes = $0f00
 ready  = $0f04
+wrong  = $0f05
+rounds = $0f08
+LOOP   = $0c00                  ; the CPU check's code in RAM, under the counters
 
 !ifdef HIGH {
 SCREEN = $3800                  ; as the VIC sees it: ROMH $F800
@@ -100,8 +109,31 @@ reset   sei
         lda #0
         sta passes
         sta passes+1
+!ifdef CPU {
+        ldx #9
+-       sta passes,x            ; ready and the CPU counters too
+        dex
+        bpl -
+}
         lda #$1b
         sta $d011
+!ifdef CPU {
+        ldx #0
+-       lda loop_image,x
+        sta LOOP,x
+        inx
+        cpx #loop_end - loop_image
+        bne -
+        lda #0                  ; a raster interrupt on line 0 counts the frames
+        sta $d012
+        lda #$01
+        sta $d01a
+        sta $d019
+        lda #$5a
+        sta ready
+        cli
+        jmp LOOP
+} else {
         lda #$5a
         sta ready
 
@@ -115,6 +147,54 @@ frame   lda $d012               ; once a frame: line 0 (and 256, on PAL)
 -       lda $d012
         beq -
         jmp frame
+}
+
+!ifdef CPU {
+loop_image:
+!pseudopc LOOP {
+round   ldy #0
+-       tya
+        cmp up,y
+        beq +
+        jsr miss
++       tya
+        eor #$ff
+        cmp down,y
+        beq +
+        jsr miss
++       iny
+        bne -
+        inc rounds
+        bne round
+        inc rounds+1
+        jmp round
+
+miss    inc wrong
+        bne +
+        inc wrong+1
+        bne +
+        inc wrong+2
++       rts
+
+frameirq
+        pha
+        inc $d020
+        inc passes
+        bne +
+        inc passes+1
++       lda #$01
+        sta $d019
+        pla
+        rti
+}
+loop_end:
+
+        !align $ff, 0, $ff
+up                              ; up[i] = i
+        !for i, 0, 255 { !byte i }
+down                            ; down[i] = i XOR $ff
+        !for i, 0, 255 { !byte i XOR $ff }
+}
 
 nmi
 irq     rti
@@ -141,4 +221,8 @@ irq     rti
 }
 
 * = $fffa
+!ifdef CPU {
+        !word nmi, reset, frameirq
+} else {
         !word nmi, reset, irq
+}

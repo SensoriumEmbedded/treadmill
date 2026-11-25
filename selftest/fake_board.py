@@ -198,6 +198,7 @@ class FakeBoard:
     vic_windows: dict = field(default_factory=lambda: {"v": (150, 290), "i": (300, 430)})
     ultimax_since: float | None = None
     vicrom_high: bool = False            # vicrom-high: its screen and sprites read while Phi2 is high
+    vicread: IdRead | None = field(default=None, repr=False)    # vicrom-cpu/-high: the CPU's ROMH reads
     idread: IdRead | None = field(default=None, repr=False)
     idread_show: bool = False            # idread built with SHOW: its counters in hex on the top row
     host_stream: object = field(default=None, repr=False)   # the host's side of the pipe now (a re-enumeration
@@ -263,6 +264,7 @@ class FakeBoard:
             self.memory[0xC104] = 0x5A
         if path.lower().rsplit("/", 1)[-1].startswith("vicrom"):
             self.vicrom_high = "high" in path.lower()
+            self.vicread = IdRead(time.monotonic()) if "-" in path.rsplit("/", 1)[-1] else None
             screen = bytes(i & 0xFF for i in range(SCREEN_BYTES))
             self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = screen
             self.memory[0xD018] = 0x1C
@@ -514,6 +516,10 @@ class FakeBoard:
             self.c64loop.advance(time.monotonic(), self.special_io in REU_NAMES, self.dma_outside())
         if self.krloop is not None:
             self.krloop.advance(time.monotonic(), self.sense_outside())
+        if self.vicread is not None and self.ultimax_since is not None:
+            # The CPU's reads of ROMH go wrong on its own path, or with a VIC-cycle drive held into its half.
+            held = max(0, self.knobs["i"] - self.vic_windows["i"][1])
+            self.vicread.advance(time.monotonic(), max(held, self.outside("rom")), 0)
 
     def serve(self, end: PipeEnd) -> None:
         self.end = end
@@ -755,6 +761,9 @@ class FakeBoard:
         if self.ultimax_since is not None and not self.vic_outside() > self.faults.get("vic_hang_ns", 10 ** 6):
             frames = int((time.monotonic() - self.ultimax_since) * 60) & 0xFFFF
             self.memory[0x0F00:0x0F02] = frames.to_bytes(2, "little")
+            if self.vicread is not None:          # wrong CPU reads (24-bit), then rounds of 512 reads
+                b = self.vicread.bytes()
+                self.memory[0x0F05:0x0F0A] = b[2:5] + b[0:2]
         if address == VIC_MEMPTR and self.key_on_screen_read:
             keys, self.key_on_screen_read = self.key_on_screen_read, ""
             self.type_keys(keys)

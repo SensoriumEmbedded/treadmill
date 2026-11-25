@@ -94,7 +94,7 @@ records that set the same, and gives no floor.
 | `nS_DataSetup` | write latched before the data is valid | latched after the fall | idread (a wrong IO2 write is a wrong IO2 read; a wrong `$DE00` write a pass of wrong ROM reads) | the same two |
 | `nS_DataHold` | data released before the C64 latches | drive into the VIC's half (capped) | idread | the same two |
 | `nS_VICStart` | ROMH sampled before the VIC's address is valid | the VIC latches before the data arrives | vicrom | `test_vic_margins.py` |
-| `nS_VICDHold` | released before the VIC latches | drives into the CPU's half | vicrom | `test_vic_margins.py` |
+| `nS_VICDHold` | released before the VIC latches | drives into the CPU's half | vicrom; vicrom-cpu counts the CPU's wrong reads before the C64 hangs | `test_vic_margins.py` |
 | `nS_DMAAssert` | nothing below the code's own floor | /DMA lands in the CPU's cycle | zpattern, cpuwatch, noise | `test_dma_margins.py` |
 | `nS_DMABAWait` | wrong steal decision on badline and sprite cycles | the same | zpattern, reuloop-sprites, noise | `test_dma_margins.py` |
 | `nS_DMASetup` | the drive lands in the VIC's half: noise first, 30-50 ns before data errors | R/W and address late: write errors | zpattern, reuloop, noise | `test_dma_margins.py` |
@@ -121,7 +121,8 @@ nothing resets the C64 (a C128 can hang on DMA right after a reset).
 | `cpuwatch` | `cpuwatch.a` checks its own writes while `z###` runs beside it | passes with a wrong byte | `Dbg_SerDMA`, a TR+ |
 | `noise` | beside another probe: pixels that change by more than 48 levels between frames | three times the baseline and 100 pixels above it | video |
 | `vicrom` | `vicrom.a`, an Ultimax cartridge whose glyphs the VIC fetches from ROMH | frames off the reference picture by the noise rule | video, any TR |
-| `vicrom-high` | the same with the screen matrix and eight sprites in ROMH too, which the VIC reads while Phi2 is high, through the CPU cycle's path | the same | video, any TR |
+| `vicrom-cpu` | the same, and the C64 reads two pages of ROMH from a loop in RAM, counting the wrong answers | the picture, or wrong CPU reads | video, any TR; the CPU's counts by DMA, on a TR+ |
+| `vicrom-high` | `vicrom-cpu` with the screen matrix and eight sprites in ROMH too, which the VIC reads while Phi2 is high, through the CPU cycle's path | the same | the same |
 | `krread` | `krread.a` under Kernal Replace, the probe KERNAL its own with the filler inverted; its counts on the top row, read by video, so no host DMA reaches it while it runs | reads without the replacement, or with it over RAM | a TR+ with video; the Kernal file, Special IO and `KSenseMode` set and put back |
 
 `--usb-load` (and the tests' loaded cases) runs version requests through

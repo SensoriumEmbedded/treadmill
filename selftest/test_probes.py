@@ -246,6 +246,28 @@ def test_vicrom_high_also_shows_the_cpu_cycle_knobs(fake_station, tmp_path: Path
     assert "/treadmill/vicrom-high.crt" in fake.files and fake.knobs == KNOB_DEFAULTS
 
 
+def test_vicrom_cpu_counts_the_cpus_own_reads_of_romh(fake_station, tmp_path: Path):
+    """The C64 counts its reads of ROMH, so the CPU's path fails as a count
+    while the picture is still clean, and a VIC-cycle drive held into the
+    CPU's half shows as wrong reads."""
+    fake, board, dbg = fake_station
+    probe = _vicrom(fake, board, tmp_path, name="vicrom-cpu", cpu=True)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), log=lambda m: None).run()
+    assert margin.last_clean <= fake.windows["rom"][1] < margin.first_fail
+    assert margin.points[0].samples > 1 and margin.points[0].notes[0].startswith("cpu 0/")
+    bad = next(p for p in margin.points if p.failed)
+    assert bad.notes[0].startswith("cpu ") and "glyphs" not in bad.notes[0], bad.notes
+    assert margin.probe_info["vicrom-cpu"]["cpu_counted"]
+    probe.setup()
+    try:
+        fake.knobs["i"] = fake.vic_windows["i"][1] + 20
+        held = probe.sample("i450")
+    finally:
+        fake.knobs["i"] = KNOB_DEFAULTS["i"]
+        probe.teardown()
+    assert held.failures > 1 and "cpu " in held.note
+
+
 def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
     fake, board, dbg = fake_station
     fake.faults["vic_hang_ns"] = 30

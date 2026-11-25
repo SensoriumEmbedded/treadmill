@@ -89,8 +89,8 @@ records that set the same, and gives no floor.
 | Variable | Down | Up | Probes | Test |
 |---|---|---|---|---|
 | `nS_MaxAdj` | below the cycle every cycle is pulled back; reads fail when the shift eats a margin | late interrupts go uncorrected; shows only under USB load | idread, and idread under USB load | `test_cpu_margins.py`, `test_minimalboot_margins.py` (both without load and under it) |
-| `nS_RWnReady` | address or R/W read before valid: a write taken as a read is dropped | stops at `nS_PLAprop` | idread | the same two |
-| `nS_PLAprop` | selects sampled before asserted (IO first) | data leaves late (IO first) | idread; the menu at the floors | the same two |
+| `nS_RWnReady` | address or R/W read before valid: a write taken as a read is dropped | stops at `nS_PLAprop` | idread; vicrom-high | the same two |
+| `nS_PLAprop` | selects sampled before asserted (IO first) | data leaves late (IO first) | idread; the menu at the floors; vicrom-high | the same two |
 | `nS_DataSetup` | write latched before the data is valid | latched after the fall | idread (a wrong IO2 write is a wrong IO2 read; a wrong `$DE00` write a pass of wrong ROM reads) | the same two |
 | `nS_DataHold` | data released before the C64 latches | drive into the VIC's half (capped) | idread | the same two |
 | `nS_VICStart` | ROMH sampled before the VIC's address is valid | the VIC latches before the data arrives | vicrom | `test_vic_margins.py` |
@@ -121,6 +121,7 @@ nothing resets the C64 (a C128 can hang on DMA right after a reset).
 | `cpuwatch` | `cpuwatch.a` checks its own writes while `z###` runs beside it | passes with a wrong byte | `Dbg_SerDMA`, a TR+ |
 | `noise` | beside another probe: pixels that change by more than 48 levels between frames | three times the baseline and 100 pixels above it | video |
 | `vicrom` | `vicrom.a`, an Ultimax cartridge whose glyphs the VIC fetches from ROMH | frames off the reference picture by the noise rule | video, any TR |
+| `vicrom-high` | the same with the screen matrix and eight sprites in ROMH too, which the VIC reads while Phi2 is high, through the CPU cycle's path | the same | video, any TR |
 | `krread` | `krread.a` under Kernal Replace, the probe KERNAL its own with the filler inverted; its counts on the top row, read by video, so no host DMA reaches it while it runs | reads without the replacement, or with it over RAM | a TR+ with video; the Kernal file, Special IO and `KSenseMode` set and put back |
 
 `--usb-load` (and the tests' loaded cases) runs version requests through

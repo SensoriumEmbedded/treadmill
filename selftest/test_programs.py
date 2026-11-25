@@ -41,6 +41,11 @@ def test_cartridges_assemble_to_crt_files(tmp_path: Path):
     vicrom = (tmp_path / "vicrom.crt").read_bytes()
     assert vicrom[0x18:0x1A] == bytes([1, 0]) and vicrom[0x50 + 0x1000:0x50 + 0x1008] != bytes(8), \
         "EXROM high, GAME low (8K-Hi), and a charset at $F000, where the VIC sees ROMH"
+    high = (tmp_path / "vicrom-high.crt").read_bytes()[0x50:]
+    assert high[0x1000:0x1800] == vicrom[0x50 + 0x1000:0x50 + 0x1800], "the same charset"
+    assert high[0x1800:0x1BE8] == bytes(i & 0xFF for i in range(1000)), "the screen matrix at $F800 ($3800)"
+    assert high[0x1BF8:0x1C00] == bytes(range(240, 248)) and all(high[0x1C00:0x1E00]), "eight sprites at $FC00"
+    assert bytes([0xA9, 0xEC, 0x8D, 0x18, 0xD0]) in high, "lda #$ec, sta $d018: screen $3800, charset $3000"
     data = (tmp_path / "idread.crt").read_bytes()
     roml, romh, roml1 = data[0x50:0x2050], data[0x2060:0x4060], data[0x4070:]
     assert roml[0x100:0x200] == bytes(range(256)) and roml[0x200:0x300] == bytes(i ^ 0xFF for i in range(256))

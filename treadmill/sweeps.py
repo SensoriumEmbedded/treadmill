@@ -93,8 +93,12 @@ class Setting:
         self.bracket = bracket
 
     @contextmanager
-    def at_defaults(self) -> Iterator[None]:
-        if not self.bracket:
+    def at_defaults(self, always: bool = False) -> Iterator[None]:
+        """The defaults back for the block, then the values again: for a
+        read by DMA while a DMA-timing knob is off (``bracket``), or
+        ``always``, for a relaunch through a reset and the menu, which a
+        CPU knob past its edge can keep from booting."""
+        if not (self.bracket or always):
             yield
             return
         self.sweep.restore()
@@ -105,12 +109,12 @@ class Setting:
 
 
 @contextmanager
-def at_defaults(setting: Setting | None) -> Iterator[None]:
+def at_defaults(setting: Setting | None, always: bool = False) -> Iterator[None]:
     """``setting.at_defaults()``, or nothing when a probe runs on its own."""
     if setting is None:
         yield
     else:
-        with setting.at_defaults():
+        with setting.at_defaults(always):
             yield
 
 

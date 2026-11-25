@@ -233,11 +233,27 @@ def test_vicrom_finds_the_vic_start_window_from_the_picture(fake_station, tmp_pa
     assert fake.ultimax_since is None and fake.knobs == KNOB_DEFAULTS, "back at the menu with the defaults"
 
 
+def test_vicrom_high_also_shows_the_cpu_cycle_knobs(fake_station, tmp_path: Path):
+    """With its screen and sprites in ROMH, the VIC reads the cartridge while
+    Phi2 is high too, through the CPU cycle's path: nS_PLAprop's upper edge
+    shows in the picture, where plain vicrom stays clean."""
+    fake, board, dbg = fake_station
+    spec = SearchSpec(stop=260, step=20, fine=5)
+    plain = Sweep(dbg, KNOBS["p"], _vicrom(fake, board, tmp_path), spec, log=lambda m: None).run()
+    assert plain.first_fail is None
+    high = Sweep(dbg, KNOBS["p"], _vicrom(fake, board, tmp_path, name="vicrom-high"), spec, log=lambda m: None).run()
+    assert high.probe == "vicrom-high" and high.last_clean <= fake.windows["rom"][1] < high.first_fail
+    assert "/treadmill/vicrom-high.crt" in fake.files and fake.knobs == KNOB_DEFAULTS
+
+
 def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
     fake, board, dbg = fake_station
     fake.faults["vic_hang_ns"] = 30
     probe = _vicrom(fake, board, tmp_path)
+    reset, at_reset = board.reset, []
+    board.reset = lambda *a, **kw: (at_reset.append(fake.knobs["i"]), reset(*a, **kw))[1]
     margin = Sweep(dbg, KNOBS["i"], probe, SearchSpec(scan=(250, 370), step=40), log=lambda m: None).run()
+    assert at_reset[0] == KNOB_DEFAULTS["i"], "relaunched with the defaults back: a knob past its edge may not boot"
     first, second = margin.points[0], margin.points[1]
     assert (first.value, first.hung) == (250, True) and "stopped" in first.notes[0]
     assert (second.value, second.hung, second.failed) == (290, False, True), "relaunched, counting, glyphs wrong"

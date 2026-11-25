@@ -63,6 +63,8 @@ CARTRIDGES = {
                         (0, 0, 1)),
     # An 8K Ultimax image (EXROM high, GAME low): the TeensyROM serves it with its VIC cycles on.
     "vicrom": Cartridge("vicrom.a", {}, CRT_NORMAL, "TREADMILL VICROM", (0xE000,), (1, 0)),
+    # The same with the screen matrix and sprites in ROMH: the VIC reads those while Phi2 is high.
+    "vicrom-high": Cartridge("vicrom.a", {"HIGH": 1}, CRT_NORMAL, "TREADMILL VICROM HIGH", (0xE000,), (1, 0)),
 }
 # The sparse grid allcodes.a draws: cell i of page p shows code p * 228 + i.
 SPARSE_ROWS, SPARSE_COLS, SPARSE_CELLS = 12, 19, 228

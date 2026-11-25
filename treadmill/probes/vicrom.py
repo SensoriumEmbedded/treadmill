@@ -11,6 +11,11 @@ and fails past ``FACTOR`` times that baseline and ``FLOOR`` above it, as the
 noise probe judges. The C64 counts frames at $0F00 and steps the border once
 a frame: the probe reads the count by DMA on a TR+, else watches the border,
 and a C64 that stopped is a hang.
+
+``vicrom-high`` is ``vicrom.a`` built with ``HIGH``: the screen matrix and
+eight sprites are in ROMH too, and the VIC reads those while Phi2 is high,
+in cycles the TeensyROM serves as it does the CPU's (``nS_RWnReady``,
+``nS_PLAprop``), so the picture also shows those knobs' edges.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ from treadmill.board import Board
 from treadmill.observe.calibrate import Calibration
 from treadmill.observe.capture import FrameSource
 from treadmill.probes.noise import FACTOR, FLOOR, LEVEL
-from treadmill.sweeps import Sample, Setting, SweepError
+from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
 
 PASSES, READY, READY_VALUE = 0x0F00, 0x0F04, 0x5A
 START_S = 15.0
@@ -38,14 +43,16 @@ class VicRomProbe:
     name = "vicrom"
 
     def __init__(self, board: Board, video: FrameSource | None, calibration: Calibration | None, program: Path,
-                 *, dwell: float = 2.0, drive: str = "sd", remote: str = "/treadmill/vicrom.crt", log=print):
+                 *, dwell: float = 2.0, drive: str = "sd", name: str = "vicrom", remote: str | None = None,
+                 log=print):
+        self.name = name
         self.board = board
         self.video = video
         self.calibration = calibration
         self.program = Path(program)
         self.dwell = dwell
         self.drive = drive
-        self.remote = remote
+        self.remote = remote or f"/treadmill/{name}.crt"
         self.log = log
         self.reference: np.ndarray | None = None
         self.baseline: int | None = None
@@ -113,14 +120,16 @@ class VicRomProbe:
         self.reference = np.median(np.stack(frames), axis=0).astype(np.uint8)
         self.baseline = self._worst(self._frames(self.dwell))
         self._stalled = False
-        self.log(f"[sweep] vicrom reference at the defaults; baseline {self.baseline} pixels (limit {self.limit()})")
+        self.log(f"[sweep] {self.name} reference at the defaults; baseline {self.baseline} pixels "
+                 f"(limit {self.limit()})")
 
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
-            self.log(f"[sweep] vicrom stopped at the last value; relaunching for {label}")
-            self.board.reset()
-            self.board.wait_for_menu()
-            self._launch()
+            self.log(f"[sweep] {self.name} stopped at the last value; relaunching for {label}")
+            with at_defaults(setting, always=True):
+                self.board.reset()
+                self.board.wait_for_menu()
+                self._launch()
         dma = self.board.dma_allowed()
         before = self._passes() if dma else None
         frames = self._frames(self.dwell)
@@ -130,7 +139,7 @@ class VicRomProbe:
             alive = len({round(self._border(f)) for f in frames}) > 1
         if not alive:
             self._stalled = True
-            return Sample(1, 1, "vicrom stopped: the C64 hung", hung=True)
+            return Sample(1, 1, f"{self.name} stopped: the C64 hung", hung=True)
         worst = self._worst(frames)
         if worst > self.limit():
             return Sample(1, 1, f"glyphs {worst} pixels off the reference, over the limit {self.limit()}")

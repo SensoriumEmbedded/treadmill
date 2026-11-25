@@ -197,6 +197,7 @@ class FakeBoard:
     # wrong cell a frame for every ns outside one, and when it started, for its frame counter at $0F00.
     vic_windows: dict = field(default_factory=lambda: {"v": (150, 290), "i": (300, 430)})
     ultimax_since: float | None = None
+    vicrom_high: bool = False            # vicrom-high: its screen and sprites read while Phi2 is high
     idread: IdRead | None = field(default=None, repr=False)
     idread_show: bool = False            # idread built with SHOW: its counters in hex on the top row
     host_stream: object = field(default=None, repr=False)   # the host's side of the pipe now (a re-enumeration
@@ -260,7 +261,8 @@ class FakeBoard:
             self.krloop = KrLoop(time.monotonic(), self.special_io == "Kernal Replace" and self.kernal_file is not None,
                                  first_miss=bool(self.faults.get("kr_first_read_miss")))
             self.memory[0xC104] = 0x5A
-        if path.lower().endswith("vicrom.crt"):
+        if path.lower().rsplit("/", 1)[-1].startswith("vicrom"):
+            self.vicrom_high = "high" in path.lower()
             screen = bytes(i & 0xFF for i in range(SCREEN_BYTES))
             self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = screen
             self.memory[0xD018] = 0x1C
@@ -473,10 +475,12 @@ class FakeBoard:
                 self.memory[SCREEN_RAM_DEFAULT + cell + i] = code
 
     def vic_outside(self) -> int:
-        """How far, in ns, the VIC knobs lie outside their windows while vicrom runs."""
+        """How far, in ns, the VIC knobs lie outside their windows while vicrom
+        runs; with vicrom-high, the CPU cycle's knobs on the ROM path too."""
         if self.ultimax_since is None:
             return 0
-        return max(0, *(max(lo - self.knobs[k], self.knobs[k] - hi) for k, (lo, hi) in self.vic_windows.items()))
+        vic = max(0, *(max(lo - self.knobs[k], self.knobs[k] - hi) for k, (lo, hi) in self.vic_windows.items()))
+        return max(vic, self.outside("rom")) if self.vicrom_high else vic
 
     def vic_glitches(self) -> int:
         """How many screen cells the capture shows wrong in a frame."""

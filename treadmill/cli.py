@@ -270,9 +270,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                                            dwell=args.dwell, sprites=sprites, log=log))
             elif name == "cpuwatch":
                 probes.append(CpuWatchProbe(board, dbg, program("cpuwatch"), pages=args.z_pages, log=log))
-            elif name == "vicrom":
-                probes.append(VicRomProbe(board, ns["video"], getattr(ns["screen"], "calib", None), program("vicrom"),
-                                          dwell=args.dwell, log=log))
+            elif name in ("vicrom", "vicrom-high"):
+                probes.append(VicRomProbe(board, ns["video"], getattr(ns["screen"], "calib", None), program(name),
+                                          dwell=args.dwell, name=name, log=log))
             elif name == "krread":
                 image, defines = probe_kernal(board.link.read_memory(KERNAL, KERNAL_SIZE))
                 board.link.push_file(image, KRREAD_KERNAL, "sd")
@@ -830,11 +830,12 @@ def build_parser() -> argparse.ArgumentParser:
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
     s.add_argument("--probe", choices=["idread", "menu", "zpattern", "reuloop", "reuloop-sprites", "cpuwatch",
-                                       "noise", "vicrom", "krread"], action="append",
+                                       "noise", "vicrom", "vicrom-high", "krread"], action="append",
                    help="idread (default), menu, zpattern (z###, needs Dbg_SerDMA), reuloop or reuloop-sprites (the "
                         "C64's REU loop; Special IO is set to the REU for the sweep and put back), cpuwatch (the "
                         "C64's writes beside z###), noise (screen noise beside the first of the others), vicrom "
-                        "(an Ultimax cartridge's glyphs fetched in VIC cycles, by video), krread (Kernal Replace's "
+                        "(an Ultimax cartridge's glyphs fetched in VIC cycles, by video), vicrom-high (its screen "
+                        "and sprites fetched from ROMH too, while Phi2 is high), krread (Kernal Replace's "
                         "HIRAM sense, its counters read by video: the probe KERNAL, Special IO and KSenseMode are "
                         "set for the sweep and put back); repeat it for several probes at each point")
     s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")

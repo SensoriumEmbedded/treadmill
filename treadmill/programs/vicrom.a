@@ -8,9 +8,24 @@
 ; is at $0400 and the counters at $0F00: frames counted (16-bit) and $5A at $0F04
 ; once running. The border steps once a frame, so a hung C64 shows on video too.
 ; The firmware blanks $D011 before an Ultimax launch; the code turns the screen on.
+;
+; With HIGH, the screen matrix ($F800, $3800 to the VIC) and eight sprites ($FC00,
+; $3C00) are in ROMH as well. The VIC reads those while Phi2 is high, in cycles the
+; TeensyROM serves as it does the CPU's, timed by nS_RWnReady and nS_PLAprop; the
+; charset is still read while Phi2 is low.
+
 
 passes = $0f00
 ready  = $0f04
+
+!ifdef HIGH {
+SCREEN = $3800                  ; as the VIC sees it: ROMH $F800
+D018   = $ec                    ; screen $3800, charset $3000
+} else {
+SCREEN = $0400
+D018   = $1c                    ; screen $0400, charset $3000: ROMH as the VIC sees it
+}
+SPRITES = $3c00                 ; HIGH: eight sprites' data, blocks 240-247 (ROMH $FC00)
 
 * = $e000
 reset   sei
@@ -33,14 +48,17 @@ reset   sei
         sta $d021
         lda #$c8
         sta $d016
-        lda #$1c                ; screen $0400, charset $3000: ROMH as the VIC sees it
+        lda #D018
         sta $d018
         ldx #0
--       txa
+-
+!ifndef HIGH {
+        txa
         sta $0400,x
         sta $0500,x
         sta $0600,x
         sta $06e8,x
+}
         lda #1
         sta $d800,x
         sta $d900,x
@@ -48,6 +66,37 @@ reset   sei
         sta $dae8,x
         inx
         bne -
+!ifdef HIGH {
+        ldx #7                  ; eight sprites in a row across the text area, each its own color
+-       txa
+        clc
+        adc #2
+        sta $d027,x
+        dex
+        bpl -
+        ldx #14
+        lda #40 + 7 * 26
+-       sta $d000,x
+        sec
+        sbc #26
+        dex
+        dex
+        bpl -
+        lda #120
+        ldx #14
+-       sta $d001,x
+        dex
+        dex
+        bpl -
+        lda #0
+        sta $d010
+        sta $d017
+        sta $d01b
+        sta $d01c
+        sta $d01d
+        lda #$ff
+        sta $d015
+}
         lda #0
         sta passes
         sta passes+1
@@ -76,6 +125,19 @@ irq     rti
         !for r, 0, 7 {
                 !byte (i * 7 + r * 29 + (i >> 2) + 1) & $ff
         }
+}
+
+!ifdef HIGH {
+* = $f800                      ; the screen matrix: cell i shows code i AND $FF, as $0400 does without HIGH
+!for i, 0, 999 { !byte i & $ff }
+* = $fbf8                      ; sprite pointers, at the screen's end
+!for s, 0, 7 { !byte (SPRITES & $3fff) / 64 + s }
+* = $fc00                      ; sprite data, no row blank, each sprite its own
+!for s, 0, 7 {
+        !for b, 0, 63 {
+                !byte ((s * 37 + b * 11 + (b >> 3) + 3) & $ff) | $01
+        }
+}
 }
 
 * = $fffa

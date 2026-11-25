@@ -89,9 +89,9 @@ records that set the same, and gives no floor.
 | Variable | Down | Up | Probes | Test |
 |---|---|---|---|---|
 | `nS_MaxAdj` | below the cycle every cycle is pulled back; reads fail when the shift eats a margin | late interrupts go uncorrected; shows only under USB load | idread, and idread under USB load | `test_cpu_margins.py`, `test_minimalboot_margins.py` (both without load and under it) |
-| `nS_RWnReady` | address or R/W read before valid | stops at `nS_PLAprop` | idread | the same two |
+| `nS_RWnReady` | address or R/W read before valid: a write taken as a read is dropped | stops at `nS_PLAprop` | idread | the same two |
 | `nS_PLAprop` | selects sampled before asserted (IO first) | data leaves late (IO first) | idread; the menu at the floors | the same two |
-| `nS_DataSetup` | write latched before the data is valid | latched after the fall | idread (IO2 counts the writes) | the same two |
+| `nS_DataSetup` | write latched before the data is valid | latched after the fall | idread (a wrong IO2 write is a wrong IO2 read; a wrong `$DE00` write a pass of wrong ROM reads) | the same two |
 | `nS_DataHold` | data released before the C64 latches | drive into the VIC's half (capped) | idread | the same two |
 | `nS_VICStart` | ROMH sampled before the VIC's address is valid | the VIC latches before the data arrives | vicrom | `test_vic_margins.py` |
 | `nS_VICDHold` | released before the VIC latches | drives into the CPU's half | vicrom | `test_vic_margins.py` |
@@ -113,7 +113,7 @@ nothing resets the C64 (a C128 can hang on DMA right after a reset).
 
 | Probe | Workload | Fails on | Needs |
 |---|---|---|---|
-| `idread` | an EasyFlash cartridge reading its ROM and its IO2 page, counted apart | wrong reads | a TR+ (counters by DMA) |
+| `idread` | an EasyFlash cartridge reading its ROM and its IO2 page, counted apart; every pass it writes the IO2 page a new pattern and `$DE00` the other bank, whose ROM pages differ, so a dropped or wrong write shows as wrong reads | wrong reads | a TR+ (counters by DMA) |
 | `idread-minimal` | the same, handed to MinimalBoot with a bank-64 chip, counters on the top row | wrong reads | video, any TR |
 | `menu` | reset, boot, compare the root listing with its golden | cells that differ; no boot | video or DMA; not for a DMA knob |
 | `zpattern` | the firmware's `z###`: host DMA writes and reads at $C000, five patterns | bad bytes, pre-fill included; a stall is a hang | `Dbg_SerDMA`, a TR+ |

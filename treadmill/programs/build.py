@@ -44,20 +44,23 @@ PAYLOADS = {
 
 
 class Cartridge(NamedTuple):
-    """8 KB chips of bank 0 assembled back to back, wrapped as a .crt."""
+    """8 KB chips assembled back to back, wrapped as a .crt."""
     source: str
     defines: dict[str, int]
     hardware: int                   # the CRT hardware type
     name: str                       # the CRT name, 32 characters at most
     loads: tuple[int, ...]          # each chip's load address, in the order assembled
     lines: tuple[int, int]          # (EXROM, GAME) as the header gives them
+    banks: tuple[int, ...] = ()     # each chip's bank; all 0 when empty
 
 
 # An EasyFlash image's header names Ultimax mode and its ROMH chips load at $A000.
 CRT_EASYFLASH = 32
 CRT_NORMAL = 0
 CARTRIDGES = {
-    "idread": Cartridge("idread.a", {}, CRT_EASYFLASH, "TREADMILL IDREAD", (0x8000, 0xA000), (1, 0)),
+    # Bank 1 has a ROML only: the loop alternates the bank through $DE00 in 8K mode.
+    "idread": Cartridge("idread.a", {}, CRT_EASYFLASH, "TREADMILL IDREAD", (0x8000, 0xA000, 0x8000), (1, 0),
+                        (0, 0, 1)),
     # An 8K Ultimax image (EXROM high, GAME low): the TeensyROM serves it with its VIC cycles on.
     "vicrom": Cartridge("vicrom.a", {}, CRT_NORMAL, "TREADMILL VICROM", (0xE000,), (1, 0)),
 }
@@ -104,18 +107,23 @@ def find_acme(primary: Path | None = None) -> Path | None:
     return None
 
 
-def crt_image(rom: bytes, name: str, hardware: int, loads: tuple[int, ...], lines: tuple[int, int]) -> bytes:
+def crt_image(rom: bytes, name: str, hardware: int, loads: tuple[int, ...], lines: tuple[int, int],
+              banks: tuple[int, ...] = ()) -> bytes:
     """A .crt file: the 64-byte header (version 1.0, ``lines`` as EXROM and
-    GAME) and one CHIP packet per 8 KB of ``rom``, all bank 0, loading at
-    ``loads`` in order. The format's multi-byte fields are big-endian."""
+    GAME) and one CHIP packet per 8 KB of ``rom``, loading at ``loads`` in
+    order, in ``banks`` (all bank 0 when empty). The format's multi-byte
+    fields are big-endian."""
     if len(rom) != CHIP_SIZE * len(loads):
         raise AssembleError(f"{len(loads)} chip(s) are {CHIP_SIZE * len(loads)} bytes, not {len(rom)}")
+    banks = banks or (0,) * len(loads)
+    if len(banks) != len(loads):
+        raise AssembleError(f"{len(loads)} chip(s) but {len(banks)} bank(s)")
     header = (CRT_SIGNATURE + CRT_HEADER.to_bytes(4, "big") + (0x0100).to_bytes(2, "big")
               + hardware.to_bytes(2, "big") + bytes(lines) + bytes(6)
               + name.encode("ascii")[:32].ljust(32, bytes(1)))
-    chips = b"".join(b"CHIP" + (0x10 + CHIP_SIZE).to_bytes(4, "big") + bytes(4) + load.to_bytes(2, "big")
-                     + CHIP_SIZE.to_bytes(2, "big") + rom[i * CHIP_SIZE:(i + 1) * CHIP_SIZE]
-                     for i, load in enumerate(loads))
+    chips = b"".join(b"CHIP" + (0x10 + CHIP_SIZE).to_bytes(4, "big") + bytes(2) + bank.to_bytes(2, "big")
+                     + load.to_bytes(2, "big") + CHIP_SIZE.to_bytes(2, "big") + rom[i * CHIP_SIZE:(i + 1) * CHIP_SIZE]
+                     for i, (load, bank) in enumerate(zip(loads, banks)))
     return header + chips
 
 
@@ -155,7 +163,8 @@ def assemble(name: str, out_dir: Path | None = None, primary: Path | None = None
     data = out.read_bytes()
     if cartridge:
         crt = out.with_suffix(".crt")
-        crt.write_bytes(crt_image(data, cartridge.name, cartridge.hardware, cartridge.loads, cartridge.lines))
+        crt.write_bytes(crt_image(data, cartridge.name, cartridge.hardware, cartridge.loads, cartridge.lines,
+                                  cartridge.banks))
         return crt
     if payload:
         if not data:

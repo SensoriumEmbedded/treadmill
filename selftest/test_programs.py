@@ -42,10 +42,15 @@ def test_cartridges_assemble_to_crt_files(tmp_path: Path):
     assert vicrom[0x18:0x1A] == bytes([1, 0]) and vicrom[0x50 + 0x1000:0x50 + 0x1008] != bytes(8), \
         "EXROM high, GAME low (8K-Hi), and a charset at $F000, where the VIC sees ROMH"
     data = (tmp_path / "idread.crt").read_bytes()
-    roml, romh = data[0x50:0x2050], data[0x2060:]
+    roml, romh, roml1 = data[0x50:0x2050], data[0x2060:0x4060], data[0x4070:]
     assert roml[0x100:0x200] == bytes(range(256)) and roml[0x200:0x300] == bytes(i ^ 0xFF for i in range(256))
     assert romh[-4:-2] == bytes([0x00, 0xE0])                                       # Ultimax reset into ROMH
     assert roml[2:4] == bytes([0xBC, 0xFE])          # RESTORE returns through the KERNAL's NMI exit, counters kept
+    assert data[0x4060 + 10:0x4060 + 12] == bytes([0, 1]), "the third chip is bank 1"
+    assert roml1[:0x11] == roml[:0x11], "a reset finds the same entry in either bank, which selects bank 0"
+    assert roml[9:14] == bytes([0xA9, 0x00, 0x8D, 0x00, 0xDE])                     # lda #0, sta $DE00
+    assert roml1[0x100:0x200] == bytes(i ^ 0xC0 for i in range(256))
+    assert roml1[0x200:0x300] == bytes(i ^ 0x3F for i in range(256))
 
 
 @pytest.mark.skipif(_acme() is None, reason="no ACME: set TREADMILL_ACME or TREADMILL_FW_REPO")
@@ -76,6 +81,10 @@ def test_crt_image_lays_out_the_header_and_chips():
     assert data[0x2060:] == rom[0x2000:]
     with pytest.raises(AssembleError):
         crt_image(rom[:100], "SHORT", CRT_EASYFLASH, (0x8000,), (0, 1))
+    banked = crt_image(rom, "NAME", CRT_EASYFLASH, (0x8000, 0x8000), (1, 0), (0, 5))
+    assert banked[0x2050 + 10:0x2050 + 14] == bytes([0, 5, 0x80, 0])                  # bank 5, at $8000
+    with pytest.raises(AssembleError):
+        crt_image(rom, "NAME", CRT_EASYFLASH, (0x8000, 0x8000), (1, 0), (0,))
 
 
 def test_sparse_layout_covers_every_code_with_blank_neighbors():

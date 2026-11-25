@@ -31,10 +31,13 @@ SHOW_READS = 5
 
 
 class IdReadProbe:
-    """idread.a, a one-bank EasyFlash cartridge, reads its own ROM and the
-    EasyFlash handler's IO2 page on the C64 and counts wrong answers per
-    path; a sample is the counts added over ``dwell`` seconds, read by DMA,
-    with both paths' shares in its note."""
+    """idread.a, an EasyFlash cartridge, reads its own ROM and the EasyFlash
+    handler's IO2 page on the C64 and counts wrong answers per path; a
+    sample is the counts added over ``dwell`` seconds, read by DMA, with
+    both paths' shares in its note. Its writes count through the reads:
+    each pass writes the IO2 page a new pattern and ``$DE00`` the other
+    bank, so a wrong IO2 write is a wrong IO2 read and a wrong bank write
+    a pass of wrong ROM reads (512)."""
 
     name = "idread"
 

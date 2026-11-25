@@ -386,11 +386,14 @@ same, and gives no floor. A spec past the limits is refused. `KSenseMode` is
 a mode, set with `tx`, not swept, and `td` leaves it where it was.
 
 The TeensyROM cannot see its own read errors, so the probes are the C64's,
-in `treadmill/probes/`: `idread` launches a one-bank EasyFlash cartridge
-that reads its own ROM and the EasyFlash IO2 page in a loop and counts wrong
-answers per path, read back by DMA over `--dwell` seconds per sample (a TR+;
-a launched PRG would run under the None IO handler, with nothing answering
-at IO1); `menu` resets, lets the menu boot and compares it with its golden
+in `treadmill/probes/`: `idread` launches an EasyFlash cartridge that reads
+its own ROM and the EasyFlash IO2 page in a loop and counts wrong answers
+per path, read back by DMA over `--dwell` seconds per sample (a TR+; a
+launched PRG would run under the None IO handler, with nothing answering at
+IO1). Its writes are checked through what they leave: every pass it writes
+the IO2 page a new pattern and the bank register `$DE00` the other of two
+banks, whose ROM pages differ, so a write dropped or latched wrong shows as
+wrong IO2 reads or a pass of wrong ROM reads; `menu` resets, lets the menu boot and compares it with its golden
 (any TR, by video). `--probe` repeats for several probes at each point: the
 point fails if any fails, and the record keeps each one's counts. While a
 knob that times DMA (or `nS_MaxAdj`, which moves every cycle's start) is off

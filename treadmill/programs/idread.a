@@ -8,12 +8,19 @@
 ; The EasyFlash handler starts the cartridge in Ultimax mode, as the hardware
 ; boots, so bank 0's ROMH (at $E000 then) carries the reset vector and a stub
 ; that switches to 8K mode from RAM and restarts the KERNAL's reset, which finds
-; the CBM80 entry at $8000. The image is ROML ($8000) then ROMH, 8 KB each.
+; the CBM80 entry at $8000. The image is bank 0's ROML ($8000) and ROMH, then
+; bank 1's ROML, 8 KB each.
 ; A loop copied to RAM rewrites the IO2 page each pass, reads two pages of ROM
 ; and the IO2 page whose bytes it knows, and counts wrong answers at $C000,
 ; where the sweep reads them by DMA: the TeensyROM cannot see its own read
 ; errors, only the C64 can. Only data reads go through the cartridge, so a read
 ; that fails is counted rather than executed.
+; The C64's writes are checked through what they leave behind. The IO2 page's
+; pattern changes every pass, so a write that is dropped, or taken as a read,
+; leaves last pass's byte and shows as a wrong IO2 read. Each pass also writes
+; the bank register $DE00, banks 0 and 1 in turn, and bank 1's ROM pages hold
+; bank 0's XOR BANK1, so a bank write dropped or latched with the wrong data
+; turns that pass's ROM reads wrong.
 ;   $C000/1  passes, 16-bit (256 rounds each: two ROM reads, one IO2 read)
 ;   $C002-4  wrong ROM reads, 24-bit
 ;   $C005-7  wrong IO2 reads, 24-bit
@@ -27,16 +34,28 @@ RES  = $c000
 SCREEN = $0400
 LOOP = $c100
 IO2  = $df00
-MARK = $5a                          ; the IO2 page holds i XOR MARK, unlike either ROM page
+EFBANK = $de00                      ; EasyFlash bank register, write-only
 EFCTL = $de02                       ; EasyFlash control: $06 is 8K mode (EXROM low, GAME high)
+BANK1 = $c0                         ; bank 1's ROM pages are bank 0's XOR this; the IO2 page's
+                                    ; keys ($40-$7F) are never a ROM page's (0, $FF, $C0, $3F)
+ENTRY = $8009                       ; the reset entry, after the vectors and CBM80, in both banks
 STUB = $0200                        ; Ultimax mode leaves RAM at $0000-$0FFF only
 KRESET = $fce2                      ; the KERNAL's reset: checks $8004 for CBM80 and jumps through $8000
 NMIEXIT = $febc                     ; the KERNAL's NMI exit: pulls Y, X, A, then RTI
 
-* = $8000
-    !word cold, NMIEXIT             ; reset; NMI: RESTORE reaches $8002 with A, X, Y pushed,
+; The start of both banks' ROML, byte for byte: a reset can find either bank selected.
+!macro header {
+    !word ENTRY, NMIEXIT            ; reset; NMI: RESTORE reaches $8002 with A, X, Y pushed,
                                     ; and must not restart the counters mid-sample
     !byte $c3, $c2, $cd, $38, $30   ; "CBM80": the KERNAL's reset jumps through $8000
+    !if * != ENTRY { !error "the entry moved: set ENTRY" }
+    lda #$00
+    sta EFBANK                      ; bank 0; the jmp is then fetched from bank 0, which holds
+    jmp cold                        ; the same bytes here
+}
+
+* = $8000
+    +header
 
 cold:
     sei
@@ -71,24 +90,42 @@ cold:
 loop_image:
 !pseudopc LOOP {
 pass:
+    lda RES                         ; the pass count's low byte picks the bank and the IO2 pattern
+    and #$01
+    sta EFBANK
+    beq +
+    lda #BANK1
++   sta upkey+1                     ; the ROM pages' keys for the bank just selected
+    eor #$ff
+    sta downkey+1
+    lda RES
+    and #$3f
+    ora #$40                        ; $40-$7F, and never last pass's
+    sta wkey+1
+    sta rkey+1
     ldy #$00
 -   tya
-    eor #MARK
+wkey:
+    eor #$00
     sta IO2,y
     iny
     bne -
 round:
     tya
+upkey:
+    eor #$00
     cmp up,y
     beq +
     jsr wrong_rom
 +   tya
+downkey:
     eor #$ff
     cmp down,y
     beq +
     jsr wrong_rom
 +   tya
-    eor #MARK
+rkey:
+    eor #$00
     cmp IO2,y
     beq +
     jsr wrong_io
@@ -206,4 +243,13 @@ nmi:
     rti
     !fill $fffa - *, $ff
     !word nmi, boot, nmi            ; NMI, reset, IRQ
+}
+
+; Bank 1's ROML: the same start, then the ROM pages XOR BANK1 where bank 0 has them.
+!pseudopc $8000 {
+    +header
+    !fill up - *, $ff
+    !for i, 0, 255 { !byte i XOR BANK1 }
+    !for i, 0, 255 { !byte i XOR $ff XOR BANK1 }
+    !fill $a000 - *, $ff
 }

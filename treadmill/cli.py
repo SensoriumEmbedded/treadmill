@@ -190,6 +190,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     from treadmill.c64.menu import MenuDriver
     from treadmill.c64.settings import KERNAL_REPLACE
     from treadmill.probes.cpuwatch import CpuWatchProbe
+    from treadmill.probes.game import GameProbe
     from treadmill.probes.krread import DMA, KERNAL, KERNAL_SIZE, SKOE, KrReadProbe, ksense_mode, probe_kernal
     from treadmill.probes.noise import NoiseProbe
     from treadmill.probes.reuloop import ReuLoopProbe
@@ -235,6 +236,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         if args.image == "minimal" and names != ["idread"]:
             raise CommandError("under MinimalBoot the probe is idread, read by video: leave out --probe or give "
                                "only --probe idread", EXIT_USAGE)
+        if "game" in names and not args.game:
+            raise CommandError("the game probe needs --game: the cartridge to launch", EXIT_USAGE)
         if names == ["noise"]:
             raise CommandError("the noise probe runs beside another: add --probe idread, zpattern, reuloop, "
                                "reuloop-sprites or cpuwatch", EXIT_USAGE)
@@ -273,6 +276,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             elif name in ("vicrom", "vicrom-cpu", "vicrom-high"):
                 probes.append(VicRomProbe(board, ns["video"], getattr(ns["screen"], "calib", None), program(name),
                                           dwell=args.dwell, name=name, cpu=name != "vicrom", log=log))
+            elif name == "game":
+                probes.append(GameProbe(board, ns["video"], getattr(ns["screen"], "calib", None), args.game,
+                                        kbd=ns.get("kbd"), keys=args.game_keys, settle=args.game_settle,
+                                        learn=args.game_learn, dwell=args.dwell, log=log))
             elif name == "krread":
                 image, defines = probe_kernal(board.link.read_memory(KERNAL, KERNAL_SIZE))
                 board.link.push_file(image, KRREAD_KERNAL, "sd")
@@ -830,16 +837,28 @@ def build_parser() -> argparse.ArgumentParser:
     _harness_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
     s.add_argument("--probe", choices=["idread", "menu", "zpattern", "reuloop", "reuloop-sprites", "cpuwatch",
-                                       "noise", "vicrom", "vicrom-cpu", "vicrom-high", "krread"], action="append",
+                                       "noise", "vicrom", "vicrom-cpu", "vicrom-high", "game", "krread"],
+                   action="append",
                    help="idread (default), menu, zpattern (z###, needs Dbg_SerDMA), reuloop or reuloop-sprites (the "
                         "C64's REU loop; Special IO is set to the REU for the sweep and put back), cpuwatch (the "
                         "C64's writes beside z###), noise (screen noise beside the first of the others), vicrom "
                         "(an Ultimax cartridge's glyphs fetched in VIC cycles, by video), vicrom-cpu (the same, "
                         "and the C64 counts its own reads of ROMH, by DMA on a TR+), vicrom-high (vicrom-cpu with "
-                        "its screen and sprites fetched from ROMH too, while Phi2 is high), krread (Kernal Replace's "
+                        "its screen and sprites fetched from ROMH too, while Phi2 is high), game (a game cartridge "
+                        "by video, what moves on its own masked out: --game), krread (Kernal Replace's "
                         "HIRAM sense, its counters read by video: the probe KERNAL, Special IO and KSenseMode are "
                         "set for the sweep and put back); repeat it for several probes at each point")
     s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")
+    s.add_argument("--game", metavar="FILE|sd:/PATH",
+                   help="game probe: the cartridge, a file here (pushed to the card) or one on the board's card or "
+                        "stick (sd:/Games/x.crt, usb:/...)")
+    s.add_argument("--game-keys", metavar="TEXT",
+                   help="game probe: keys the keyboard board types once the game is up, for a game whose sprites "
+                        "appear only in play (its S syntax: {f1}, {return})")
+    s.add_argument("--game-settle", type=float, default=8.0,
+                   help="game probe: seconds from the launch to its title or attract screen (default 8)")
+    s.add_argument("--game-learn", type=float, default=5.0,
+                   help="game probe: seconds at the defaults to learn what moves on its own (default 5)")
     s.add_argument("--image", choices=["main", "minimal"], default="main",
                    help="minimal: sweep MinimalBoot's knobs (m r p s h v): idread with a bank-64 chip, which the "
                         "main image hands to MinimalBoot, its counters read by video")
@@ -867,7 +886,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
     s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")
     s.add_argument("--dwell", type=float, default=1.0,
-                   help="idread, reuloop, vicrom, krread: seconds of counting per sample (default 1)")
+                   help="idread, reuloop, vicrom, game, krread: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep, screen_on=True)
 
     s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, the map, floors for a station",

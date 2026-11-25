@@ -199,6 +199,7 @@ class FakeBoard:
     ultimax_since: float | None = None
     vicrom_high: bool = False            # vicrom-high: its screen and sprites read while Phi2 is high
     vicread: IdRead | None = field(default=None, repr=False)    # vicrom-cpu/-high: the CPU's ROMH reads
+    game: bool = False                   # a game: an Ultimax picture with a cell that moves on its own
     idread: IdRead | None = field(default=None, repr=False)
     idread_show: bool = False            # idread built with SHOW: its counters in hex on the top row
     host_stream: object = field(default=None, repr=False)   # the host's side of the pipe now (a re-enumeration
@@ -262,7 +263,8 @@ class FakeBoard:
             self.krloop = KrLoop(time.monotonic(), self.special_io == "Kernal Replace" and self.kernal_file is not None,
                                  first_miss=bool(self.faults.get("kr_first_read_miss")))
             self.memory[0xC104] = 0x5A
-        if path.lower().rsplit("/", 1)[-1].startswith("vicrom"):
+        self.game = name.startswith("game")
+        if name.startswith(("vicrom", "game")):
             self.vicrom_high = "high" in path.lower()
             self.vicread = IdRead(time.monotonic()) if "-" in path.rsplit("/", 1)[-1] else None
             screen = bytes(i & 0xFF for i in range(SCREEN_BYTES))

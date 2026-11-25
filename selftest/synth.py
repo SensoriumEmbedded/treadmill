@@ -92,6 +92,9 @@ def fake_frame_source(fake):
             fake.memory[0x07E7] = (fake.memory[0x07E7] + 1) & 0xFF
         memptr, cia2 = fake.memory[VIC_MEMPTR], fake.memory[CIA2_PORT_A]
         address = screen_address(memptr, cia2)
+        if fake.game and fake.ultimax_since is not None:     # a game: one cell moves on its own until a hang
+            if not fake.vic_outside() > fake.faults.get("vic_hang_ns", 10 ** 6):
+                fake.memory[0x0400 + 12 * 40 + 20] = int((time.monotonic() - fake.ultimax_since) * 120) & 0xFF
         codes = np.frombuffer(bytes(fake.memory[address:address + SCREEN_BYTES]), np.uint8)
         glitches = fake.vic_glitches()
         if glitches:                             # a DMA drive in the VIC's half: stray cells, new each frame

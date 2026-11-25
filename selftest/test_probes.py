@@ -268,6 +268,69 @@ def test_vicrom_cpu_counts_the_cpus_own_reads_of_romh(fake_station, tmp_path: Pa
     assert held.failures > 1 and "cpu " in held.note
 
 
+def _game(fake, board, tmp_path: Path, **kw) -> "GameProbe":
+    from selftest.synth import calibrated, fake_frame_source
+    from treadmill.probes.game import GameProbe
+    crt = tmp_path / "game.crt"
+    crt.write_bytes(b"C64 CARTRIDGE   " + bytes(64))
+    return GameProbe(board, fake_frame_source(fake), calibrated(), str(crt), settle=0.2, learn=1.0, dwell=0.3,
+                     log=lambda m: None, **kw)
+
+
+def test_the_game_probe_masks_what_moves_on_its_own(fake_station, tmp_path: Path):
+    """The fake's game moves one cell by itself: learned at the defaults and
+    masked, it fails no point, and the VIC knobs' edges show as vicrom's do."""
+    fake, board, dbg = fake_station
+    probe = _game(fake, board, tmp_path)
+    margin = Sweep(dbg, KNOBS["v"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (150, 145, 290, 295)
+    info = margin.probe_info["game"]
+    assert 0 < info["masked"] < 0.05 and info["motion"] >= 50 and info["game"] == "game.crt"
+    bad = next(p for p in margin.points if p.failed)
+    assert "still pixels off the reference" in bad.notes[0]
+    assert fake.ultimax_since is None and fake.knobs == KNOB_DEFAULTS
+
+
+def test_a_game_that_stops_moving_is_relaunched_and_a_hang_if_it_stays_still(fake_station, tmp_path: Path):
+    from treadmill.sweeps import Setting
+    fake, board, dbg = fake_station
+    probe = _game(fake, board, tmp_path)
+    sweep = Sweep(dbg, KNOBS["v"], probe, SearchSpec(stop=150), log=lambda m: None)
+    sweep.prepare()
+    reset, at_reset = board.reset, []
+    board.reset = lambda *a, **kw: (at_reset.append(fake.knobs["v"]), reset(*a, **kw))[1]
+    probe.setup()
+    try:
+        sweep.apply({"v": 200})
+        fake.game = False                        # its cell stops: it hung at some earlier value
+        got = probe.sample("tv200", Setting(sweep, {"v": 200}, bracket=False))
+        assert tuple(got) == (0, 1, None, False) and fake.game, "relaunched, moving, clean"
+        assert at_reset == [KNOB_DEFAULTS["v"]] and fake.knobs["v"] == 200, "relaunched at the defaults, then back"
+        sweep.restore()
+        probe.remote = "/treadmill/still.crt"    # a relaunch that never moves
+        fake.game = False
+        hung = probe.sample("tv215")
+        assert hung.hung and "stopped moving" in hung.note
+    finally:
+        probe.teardown()
+
+
+def test_the_game_probe_takes_a_file_or_a_card_path(fake_station, tmp_path: Path):
+    from treadmill.probes.game import game_source
+    assert game_source("sd:/Games/Lander.crt") == (None, "sd", "/Games/Lander.crt")
+    assert game_source("USB:/x.crt")[1:] == ("usb", "/x.crt")
+    local, drive, remote = game_source(str(tmp_path / "g.crt"))
+    assert local == tmp_path / "g.crt" and (drive, remote) == ("sd", "/treadmill/game.crt")
+    fake, board, dbg = fake_station
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["e"], _game(fake, board, tmp_path), SearchSpec(stop=440))
+    assert "times DMA" in str(e.value)
+    with pytest.raises(SweepError) as e:
+        _game(fake, board, tmp_path, keys="{f1}").setup()
+    assert "keyboard board" in str(e.value)
+
+
 def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
     fake, board, dbg = fake_station
     fake.faults["vic_hang_ns"] = 30
@@ -461,8 +524,8 @@ def test_the_settings_keys_are_the_menus(top, source, comment, code):
     assert getattr(settings, code) == _pet(char), f"{source} compares '{char}', {_pet(char):#04x}"
 
 
-def test_sweep_command_with_vicrom_and_krread(lab: Path, capsys):  # noqa: F811
-    from treadmill.cli import EXIT_OK, main
+def test_sweep_command_with_vicrom_krread_and_a_game(lab: Path, capsys):  # noqa: F811
+    from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     import json
     base = ["--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg", "--json",
             "--dwell", "0.3", "--both", "--step", "20", "--fine", "10"]
@@ -472,6 +535,14 @@ def test_sweep_command_with_vicrom_and_krread(lab: Path, capsys):  # noqa: F811
     assert main(["sweep", "n", "--probe", "krread", *base]) == EXIT_OK, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["probes"] == ["krread"] and payload["edges"]["up"]["clean_to"] == 330
+    assert main(["sweep", "v", "--probe", "game", *base]) == EXIT_USAGE
+    assert "needs --game" in json.loads(capsys.readouterr().err)["error"]
+    game = lab / "game.crt"
+    game.write_bytes(b"C64 CARTRIDGE   " + bytes(64))
+    assert main(["sweep", "v", "--probe", "game", "--game", str(game), "--game-settle", "0.2", "--game-learn", "1",
+                 *base]) == EXIT_OK, capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["probes"] == ["game"] and payload["probe_info"]["game"]["masked"] > 0
 
 
 def test_sweep_command_under_minimalboot(lab: Path, capsys):  # noqa: F811

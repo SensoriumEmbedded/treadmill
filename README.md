@@ -17,7 +17,7 @@ treadmill/            the package: station model, link, observation, firmware, d
   driver.py           run, exec and shell as library calls
   knobs.py            the firmware's timing knobs: letters, defaults per standard, sweep limits
   sweeps.py           the timing-knob sweep engine: knob x probes x search, and the margins it reports
-  probes/             what a sweep samples with: idread, menu, zpattern, reuloop, cpuwatch, noise, vicrom, krread
+  probes/             what a sweep samples with: idread, menu, zpattern, reuloop, cpuwatch, noise, vicrom, game, krread
   margins.py          margin records (margins.json), floors, the shrink check, PR #99's runs imported
   mfg.py              the manufacturing test of new TR+ boards, one after another
 tests/                the hardware tests, one concern per file, selected by markers and --station
@@ -441,7 +441,14 @@ count the wrong answers (by DMA, on a TR+), so a VIC-cycle drive held into
 the CPU's half shows as wrong reads before it hangs the C64. `vicrom-high`
 is `vicrom-cpu` with the screen matrix and eight sprites in ROMH as well; the
 VIC reads those while Phi2 is high, in cycles the TeensyROM serves as it does
-the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`.
+the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`. `game`
+judges a real game the same way (`--game` names the cartridge, a file here
+or `sd:/...` on the card): at the defaults it learns over `--game-learn`
+seconds which pixels of the title or attract screen move on their own,
+masks them, and counts the still pixels that change; `--game-keys` has the
+keyboard board start play for a game whose sprites appear only then. A
+game's picture is a weaker witness than vicrom's, so its edges count on a
+machine only once it has failed where vicrom fails there.
 `krread` times Kernal Replace's HIRAM sense (`Cyc_KernProp` for Skoe,
 `nS_KSenseSample` for the DMA method): its KERNAL is the machine's own, read
 by DMA, with its longest filler run inverted, chosen as the Kernal Replace

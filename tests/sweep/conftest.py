@@ -52,11 +52,21 @@ def pace(request) -> Pace:
 
 
 @pytest.fixture
+def restart(board):
+    """The Teensy restarted through the USB reboot, for a sweep whose walk
+    left the TeensyROM's own state bad (``Sweep(restart=...)``, backlog 53);
+    None when the run does not know the hex the board carries."""
+    return board.restart_teensy if board.reboot_hook else None
+
+
+@pytest.fixture
 def margin_check(station, firmware, run_dir, artifacts, warn):
     """Writes a sweep's ``margins.json`` and holds it to the station: an edge
     short of the station's floor for that direction fails the test, and one
     more than ``margins.shrink_limit`` inside the newest earlier record of
     the same station, knob, edge and probes on another build is a warning.
+    A default that still fails after the walk, with the Teensy restarted
+    or no restart at hand, fails the test: what runs next would fail too.
     ``floor=False`` for a sweep the knob's floor is not for (one under USB
     load). Returns the record."""
 
@@ -68,6 +78,8 @@ def margin_check(station, firmware, run_dir, artifacts, warn):
         for text in margins.shrinks(record, earlier):
             warn(text)
         assert margin.restored, "td not confirmed: the board still runs the last value"
+        assert (margin.after or {}).get("clean", True), (f"{margin.knob.name} fails at its default after the walk: "
+                                                         + "; ".join(margin.after.get("notes") or []))
         problems = margins.floor_problems(record, station.margins.get(margin.knob.name) if floor else None)
         assert not problems, "\n".join(problems) + "\n" + margin.describe()
         return record

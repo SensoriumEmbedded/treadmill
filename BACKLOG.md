@@ -537,8 +537,16 @@ cost or a wart with a known, small fix.
    MinimalBoot idread ones. Fix: count only cells read confidently wrong,
    and report the unsure ones in the sample's note; keep the golden's own
    `?` wildcards as they are.
-53. **medium** A sweep past an IO1 edge can leave the TeensyROM's state bad
-   for the rest of the run. On the plain TR in C64 #14 on 2026-11-24,
+53. **closed 2026-11-25, with the check after a failed walk.** A sweep
+   whose walk failed anywhere now puts the defaults back and probes the
+   default once more (`Sweep._after_walk()` in `treadmill/sweeps.py`); a
+   failure there restarts the Teensy through the ladder's USB reboot
+   (`Board.restart_teensy()`), sets the probes up again and checks once
+   more, and the record keeps what happened (`after_walk`). A margin test
+   whose default still fails afterwards fails, and a run that does not
+   know the board's hex has no restart and says so. The item as it was: A
+   sweep past an IO1 edge can leave the TeensyROM's state bad for the rest
+   of the run. On the plain TR in C64 #14 on 2026-11-24,
    `nS_PLAprop` 215 and 220 (main image, menu probe) garbled the menu's
    banner, `Src:` row and F-key legend, which the Teensy composes and the
    menu reads over IO1, and they stayed garbled across C64 resets with the

@@ -377,6 +377,17 @@ class Board:
         if self.link.stream.ended:
             raise LinkError("the board is not back on USB")
 
+    def restart_teensy(self) -> None:
+        """The Teensy restarted through the ladder's USB reboot (its own state
+        gone, as a power cycle would leave it), back at the menu, and counted
+        as a recovery: what a sweep needs when its walk left the TeensyROM's
+        state bad (backlog 53)."""
+        if self.reboot_hook is None:
+            raise LinkError("no USB reboot: the run does not know the hex the board carries")
+        self._rung_reboot()
+        self.wait_for_menu()
+        self.recoveries.append("usb-reboot")
+
     def _rung_reboot(self) -> None:
         assert self.reboot_hook is not None
         self.link.close()                    # the hook opens the port itself, at 134 baud

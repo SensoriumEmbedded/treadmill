@@ -288,6 +288,7 @@ class Margin:
     limits: tuple[int, int] | None = None
     probe_info: dict[str, dict] = field(default_factory=dict)   # what a probe keeps besides counts (baselines)
     fixed: dict[str, int] = field(default_factory=dict)         # other knobs set for the whole sweep, by letter
+    after: dict | None = None     # a walk that failed: the default checked after it (clean, restarted, notes)
 
     @property
     def probe(self) -> str:
@@ -338,7 +339,7 @@ class Margin:
                      "scan": list(s.scan) if s.scan else None, "grid": list(s.grid) if s.grid else None},
             "passes": s.passes, "restored": self.restored, "seconds": round(self.seconds, 1),
             "edges": {way: e.to_dict(self.default) for way, e in self.edges.items()},
-            "probe_info": self.probe_info,
+            "probe_info": self.probe_info, "after_walk": self.after,
             "points": [p.to_dict() for p in self.points],
         }
 
@@ -374,6 +375,13 @@ class Margin:
             if e.drifting:
                 lines.append(f"  drifting between passes: " + ", ".join(
                     f"pass {x['pass']} clean to {x['clean_to']}, fails from {x['first_fail']}" for x in e.per_pass))
+        if self.after and self.after.get("restarted"):
+            lines.append("after the walk the default failed (" + "; ".join(self.after.get("notes") or []) + "): "
+                         + ("the Teensy was restarted and the default ran clean" if self.after["clean"]
+                            else "it failed again after a Teensy restart"))
+        elif self.after and not self.after["clean"]:
+            lines.append("after the walk the default failed, and no restart was at hand: the TeensyROM's state "
+                         "may be bad for what runs next")
         if not self.restored:
             lines.append("DEFAULTS NOT RESTORED: the board still runs the last value")
         return "\n".join(lines)
@@ -420,7 +428,8 @@ class Sweep:
 
     def __init__(self, dbg: DebugCommands, knob: Knob, probes: Probe | Sequence[Probe], spec: SearchSpec, *,
                  standard: str | None = None, hold: bool | None = None, fixed: dict[str, int] | None = None,
-                 log=print, on_point: Callable[[Point], None] | None = None):
+                 restart: Callable[[], None] | None = None, log=print,
+                 on_point: Callable[[Point], None] | None = None):
         self.dbg = dbg
         self.knob = knob
         self.probes = list(probes) if isinstance(probes, (list, tuple)) else [probes]
@@ -429,6 +438,7 @@ class Sweep:
         self.hold = (knob.letter == "e") if hold is None else hold
         self.log = log
         self.on_point = on_point
+        self.restart = restart            # the Teensy restarted and back at its menu, for _after_walk
         self.defaults: dict[str, int] = {}
         self.sums: dict[str, int] | None = None
         self.low = self.high = 0
@@ -751,6 +761,36 @@ class Sweep:
                 raise usage_error(f"the scan {spec.scan[0]}:{spec.scan[1]} must take in the default {default}: "
                                   f"the edges are measured from it")
 
+    def _after_walk(self, started: list[Probe]) -> dict:
+        """After a walk that failed somewhere: the defaults back, one point at
+        the default. A failure there is the TeensyROM's own state left bad,
+        not the knob (an IO1 read past its edge garbled the menu until the
+        Teensy restarted, backlog 53), and the next sweep would fail at its
+        default too: restart the Teensy, set the probes up again, and check
+        once more."""
+        default = self.defaults[self.knob.letter]
+        at_defaults = {letter: self.defaults[letter] for letter in self.setting_for(default)}
+        self.restore()
+        first = self.probe_at(default, 0, at_defaults)
+        if not first.failed:
+            return {"clean": True, "restarted": False, "notes": []}
+        if self.restart is None:
+            self.log(f"[sweep] {self.knob.name} fails at its default after the walk, and no restart is at hand")
+            return {"clean": False, "restarted": False, "notes": first.notes}
+        self.log(f"[sweep] {self.knob.name} fails at its default after the walk; restarting the Teensy")
+        try:
+            while started:
+                started.pop().teardown()
+            self.restart()
+            for probe in self.ordered():
+                self._start(probe, started)
+            self.restore()
+        except TreadmillError as e:          # the walk's record stands; what the restart left is said in it
+            self.log(f"[sweep] the restart after the walk failed: {e}")
+            return {"clean": False, "restarted": False, "notes": first.notes + [f"the restart failed: {e}"]}
+        again = self.probe_at(default, 0, at_defaults)
+        return {"clean": not again.failed, "restarted": True, "notes": first.notes + again.notes}
+
     def run(self) -> Margin:
         t0 = time.monotonic()
         started = self._early(self._checks)
@@ -758,6 +798,7 @@ class Sweep:
         default = self.defaults[self.knob.letter]
         start = default if spec.start is None else spec.start
         points: list[Point] = []
+        after = None
         restored = False
         try:
             for probe in self.ordered():
@@ -774,6 +815,8 @@ class Sweep:
             else:
                 for n in range(1, spec.passes + 1):
                     points += self._scan(n)
+            if any(p.failed for p in points):
+                after = self._after_walk(started)
         finally:
             try:
                 self.restore()
@@ -796,7 +839,7 @@ class Sweep:
         info = {p.name: p.info() for p in self.probes if hasattr(p, "info")}
         margin = Margin(self.knob, [p.name for p in self.probes], default, start, spec, points, edges, restored,
                         time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high),
-                        info, dict(self.fixed))
+                        info, dict(self.fixed), after)
         if not restored:
             raise SweepError("td not confirmed: the board is still running the last value\n" + margin.describe())
         return margin

@@ -45,7 +45,7 @@ CASES = [pytest.param(letter, load, id=KNOBS[letter].name + ("-usbload" if load 
 
 @pytest.mark.parametrize("letter, load", CASES)
 def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artifacts, station, request, pace,
-                    margin_check):
+                    margin_check, restart):
     board = at_menu
     knob = KNOBS[letter]
     dma = board.station.has("dma")
@@ -58,7 +58,7 @@ def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artif
     else:
         probe = menu
     spec = SearchSpec(both=True, step=STEPS[letter], fine=pace.fine, repeat=pace.repeat)
-    margin = Sweep(dbg, knob, probe, spec, log=print).run()
+    margin = Sweep(dbg, knob, probe, spec, restart=restart, log=print).run()
     print(margin.describe())
     assert not margin.points[0].failed, f"the default {knob.name} {margin.default} fails the {probe.name} probe"
     floor = station.margins.get(knob.name)

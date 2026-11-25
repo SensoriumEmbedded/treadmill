@@ -48,7 +48,9 @@ def test_zpattern_finds_the_dmasetup_window_with_the_sums_held(fake_station):
     margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
     down, up = margin.edges["down"], margin.edges["up"]
     assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (380, 375, 480, 485)
-    assert up.probes == ["zpattern"] and fake.letters.count("z004") == len(margin.points)
+    assert up.probes == ["zpattern"] and fake.letters.count("z004") == len(margin.points) + 1, \
+        "a z004 a point, and one at the default after the walk"
+    assert margin.after == {"clean": True, "restarted": False, "notes": []}
     bad = next(p for p in margin.points if p.failed)
     assert bad.samples == 2 * 5 * 4 * 256 and "pre-fill 0" in bad.notes[0] and "$ff over $ff" not in bad.notes[0]
     assert fake.knobs == KNOB_DEFAULTS and margin.restored

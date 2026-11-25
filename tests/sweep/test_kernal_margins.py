@@ -37,7 +37,8 @@ STEPS = {"k": 4}                  # Teensy cycles, 1.23 ns each at 816 MHz
 
 
 @pytest.mark.parametrize("letter", ["k", "n"], ids=[KNOBS["k"].name, KNOBS["n"].name])
-def test_kernal_sense_margin(letter, at_menu, dbg, screen, keys, menu, programs, request, pace, margin_check):
+def test_kernal_sense_margin(letter, at_menu, dbg, screen, keys, menu, programs, request, pace, margin_check,
+                             restart):
     board = at_menu
     knob = KNOBS[letter]
     if letter == "k" and board.is_c128:
@@ -51,7 +52,7 @@ def test_kernal_sense_margin(letter, at_menu, dbg, screen, keys, menu, programs,
     settings = Settings(screen, keys, log=print)
     with settings.kernal_file(menu, "SD:" + PROBE_KERNAL), settings.special_io(KERNAL_REPLACE), \
             ksense_mode(dbg, SKOE if letter == "k" else DMA):
-        margin = Sweep(dbg, knob, probe, spec, log=print).run()
+        margin = Sweep(dbg, knob, probe, spec, restart=restart, log=print).run()
     print(margin.describe())
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails: "
                                          f"{'; '.join(margin.points[0].notes)}")

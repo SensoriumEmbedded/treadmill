@@ -54,7 +54,8 @@ ASSERT_LIVE = [pytest.param("reuloop", id="nS_DMAAssert-reuloop"),
 
 
 @pytest.mark.parametrize("letter", CASES)
-def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, programs, pace, margin_check):
+def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, programs, pace, margin_check,
+                    restart):
     board = at_menu
     knob = KNOBS[letter]
     pattern = ZPatternProbe(board, dbg, pages=pace.z_pages, log=print)
@@ -70,7 +71,7 @@ def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, prog
     passes = C128_PASSES if board.is_c128 else 1
     spec = SearchSpec(both=True, step=pace.slow_step, fine=pace.slow_fine, repeat=pace.slow_repeat, passes=passes)
     with Settings(screen, keys, log=print).special_io(REU):
-        margin = Sweep(dbg, knob, probes, spec, log=print).run()
+        margin = Sweep(dbg, knob, probes, spec, restart=restart, log=print).run()
     print(margin.describe())
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails: "
                                          f"{'; '.join(margin.points[0].notes)}")
@@ -79,7 +80,7 @@ def test_dma_margin(letter, at_menu, dbg, screen, keys, video, calibration, prog
 
 @pytest.mark.parametrize("probe_name", ASSERT_LIVE)
 def test_dma_assert_where_its_wait_is_live(probe_name, at_menu, dbg, screen, keys, menu, programs, request, pace,
-                                           margin_check):
+                                           margin_check, restart):
     board = at_menu
     knob = KNOBS["a"]
     spec = SearchSpec(stop=0, step=pace.slow_step, fine=pace.slow_fine, repeat=pace.slow_repeat)
@@ -87,7 +88,7 @@ def test_dma_assert_where_its_wait_is_live(probe_name, at_menu, dbg, screen, key
     if probe_name == "reuloop":
         probe = ReuLoopProbe(board, programs("reuclient"), dwell=pace.loop_dwell, log=print)
         with settings.special_io(REU):
-            margin = Sweep(dbg, knob, probe, spec, log=print).run()
+            margin = Sweep(dbg, knob, probe, spec, restart=restart, log=print).run()
     else:
         if not board.is_c128:
             pytest.skip("krread times KDS_Begin's assert on a C128, whose Kernal Replace sense is DMA")
@@ -98,7 +99,7 @@ def test_dma_assert_where_its_wait_is_live(probe_name, at_menu, dbg, screen, key
                             log=print)
         with settings.kernal_file(menu, "SD:" + PROBE_KERNAL), settings.special_io(KERNAL_REPLACE), \
                 ksense_mode(dbg, DMA):
-            margin = Sweep(dbg, knob, probe, spec, log=print).run()
+            margin = Sweep(dbg, knob, probe, spec, restart=restart, log=print).run()
     print(margin.describe())
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails: "
                                          f"{'; '.join(margin.points[0].notes)}")

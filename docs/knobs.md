@@ -150,7 +150,13 @@ window and every value probed beneath it; `--mermaid` for a PR;
 `treadmill margins svg --out <folder>` a static SVG per knob for a public
 doc, rows by machine model and standard), and
 `treadmill margins suggest --station <id>`
-prints the `[margins]` floors to copy into the station file. A test fails an
-edge short of its floor and warns when an edge shrank against the newest
-earlier record of the same station, knob, edge and probes on another build.
+prints the `[margins]` floors to copy into the station file. A sweep whose
+walk failed anywhere probes the default once more with the defaults back; a
+failure there is the TeensyROM's own state left bad (an IO1 read past its
+edge once garbled the menu until the Teensy restarted), so the Teensy is
+restarted through the USB reboot and the default checked again, and the
+record keeps it as `after_walk`. A test fails when the default still fails
+and when an edge stops short of its floor, and warns when an edge shrank
+against the newest earlier record of the same station, knob, edge and probes
+on another build.
 Sweeps under USB load are recorded but held to no floor.

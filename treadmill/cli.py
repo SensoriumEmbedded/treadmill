@@ -303,7 +303,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             # MinimalBoot's td names no standard: the main image's banner gives it before the hand-off.
             standard = (standard_of(board.banner.machine, board.banner.video)
                         if args.image == "minimal" and board.banner else None)
-            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, fixed=fixed, standard=standard, log=log).run()
+            restart = board.restart_teensy if board.reboot_hook else None
+            margin = Sweep(dbg, knob, probes, spec, hold=args.hold, fixed=fixed, standard=standard, restart=restart,
+                           log=log).run()
         record = margins.build(margin.to_dict(), margins.context_for(board, h.firmware.record if h.firmware else None,
                                                                      image=args.image))
         h.run_dir.write_json(margins.NAME, record, h.folder)

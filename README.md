@@ -385,7 +385,12 @@ first; a value counts as clean only if it was clean in every pass, and an
 edge that moves between passes is marked drifting. The defaults are restored
 whatever happened, and the result is each edge (how far it is clean, where
 it fails, which probe failed there) and every point of every pass, as text
-or `--json` and as `margins.json` in the run's folder.
+or `--json` and as `margins.json` in the run's folder. A walk that failed
+anywhere ends with one more point at the default, the defaults back: if that
+fails, the TeensyROM's own state was left bad (an IO1 read past its edge once
+garbled the menu until the Teensy restarted), so the Teensy is restarted
+through the USB reboot, when the run knows the board's hex, and the default
+checked again (`after_walk` in the record).
 
 `treadmill/knobs.py` is the knob table: each knob's letter, digits, unit,
 the bus path it times, the images and boards that take it (`tx` and `tn`,

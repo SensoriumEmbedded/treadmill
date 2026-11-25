@@ -13,7 +13,7 @@ from selftest.fake_board import KNOB_DEFAULTS, start_fake_board
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
 from treadmill.board import Board
 from treadmill.cli import EXIT_OK, EXIT_USAGE, main
-from treadmill.link import DebugCommands, Link
+from treadmill.link import DebugCommands, Link, LinkError
 from treadmill.observe.channels import ScreenChannel
 from treadmill.observe.golden import Golden
 from treadmill.probes import IdReadProbe, MenuProbe
@@ -275,7 +275,8 @@ def test_another_knob_set_for_the_sweep_moves_the_limits(fake_station):
     margin = Sweep(dbg, KNOBS["p"], Watching(fake, "p", (0, 999)), SearchSpec(stop=100, step=10, fine=1),
                    fixed={"r": 100}, log=lambda m: None).run()
     assert margin.limits == (100, 270) and (margin.last_clean, margin.first_fail) == (130, 129)
-    assert all(k["r"] == 100 for k in seen) and all(p.held == {"r": 100} for p in margin.points)
+    assert all(k["r"] == 100 for k in seen[:-1]) and all(p.held == {"r": 100} for p in margin.points)
+    assert seen[-1]["r"] == KNOB_DEFAULTS["r"], "the check after a failed walk runs at the true defaults"
     assert margin.to_dict()["set"] == {"nS_RWnReady": 100} and "nS_RWnReady set to 100" in margin.describe()
     assert fake.knobs == KNOB_DEFAULTS and margin.restored, "the set knob goes back with the defaults"
     for fixed, spec, message in (({"r": 200}, SearchSpec(stop=160), "nS_RWnReady 200 is past its limits 0..150"),
@@ -301,6 +302,57 @@ def test_a_set_dma_knob_is_read_back_at_the_defaults(fake_station):
     margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=160, step=10), fixed={"a": 20}, log=lambda m: None).run()
     assert probe.inside_defaults and all(k["a"] == KNOB_DEFAULTS["a"] for k in probe.inside_defaults)
     assert all(p.held == {"a": 20} for p in margin.points) and fake.knobs == KNOB_DEFAULTS
+
+
+def test_a_default_that_fails_after_the_walk_restarts_the_teensy(fake_station):
+    """Backlog 53: past an IO1 edge the menu stayed garbled at the defaults
+    until the Teensy restarted. A walk that failed is followed by one point
+    at the default; failing there, the Teensy is restarted, the probes set
+    up again, and the default checked once more."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+
+    class Garbling(Window):
+        broken = False
+        setups = 0
+
+        def setup(self):
+            self.setups += 1
+
+        def sample(self, label, setting=None):
+            if self.fake.knobs["p"] > 200:
+                self.broken = True                       # the TeensyROM's own state, until a restart
+            return Sample(1, 1, "garbled") if self.broken else super().sample(label, setting)
+
+    probe = Garbling(fake, "p", (100, 300))
+    restarts = []
+
+    def restart():
+        restarts.append(dict(fake.knobs))
+        probe.broken = False
+
+    spec = SearchSpec(stop=260, step=20, fine=5)
+    margin = Sweep(dbg, KNOBS["p"], probe, spec, restart=restart, log=lambda m: None).run()
+    assert len(restarts) == 1 and restarts[0] == KNOB_DEFAULTS and probe.setups == 2
+    assert margin.after == {"clean": True, "restarted": True, "notes": ["garbled"]}
+    assert "restarted and the default ran clean" in margin.describe() and margin.to_dict()["after_walk"]["clean"]
+    assert all(p.pass_no == 1 for p in margin.points), "the checks after the walk are not edge points"
+    probe.broken = False
+    stuck = Sweep(dbg, KNOBS["p"], probe, spec, log=lambda m: None).run()
+    assert stuck.after == {"clean": False, "restarted": False, "notes": ["garbled"]}
+    assert "no restart was at hand" in stuck.describe()
+    probe.broken = False
+
+    def failed_restart():
+        raise LinkError("no board in the bootloader")
+
+    lost = Sweep(dbg, KNOBS["p"], probe, spec, restart=failed_restart, log=lambda m: None).run()
+    assert lost.after["clean"] is False and "the restart failed: no board" in lost.after["notes"][-1]
+    assert lost.edges["up"].first_fail is not None, "the walk's record stands"
+    probe.broken = False
+    clean = Sweep(dbg, KNOBS["p"], Window(fake, "p", (100, 210)), spec, restart=restart, log=lambda m: None).run()
+    assert clean.after == {"clean": True, "restarted": False, "notes": []} and len(restarts) == 1
+    assert Sweep(dbg, KNOBS["p"], Window(fake, "p", (100, 300)), spec, log=lambda m: None).run().after is None
 
 
 def test_a_dma_knob_is_never_probed_by_resetting_the_c64(fake_station):

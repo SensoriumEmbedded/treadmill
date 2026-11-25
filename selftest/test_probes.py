@@ -237,11 +237,11 @@ def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
     fake, board, dbg = fake_station
     fake.faults["vic_hang_ns"] = 30
     probe = _vicrom(fake, board, tmp_path)
-    margin = Sweep(dbg, KNOBS["i"], probe, SearchSpec(scan=(250, 365), step=40), log=lambda m: None).run()
+    margin = Sweep(dbg, KNOBS["i"], probe, SearchSpec(scan=(250, 370), step=40), log=lambda m: None).run()
     first, second = margin.points[0], margin.points[1]
     assert (first.value, first.hung) == (250, True) and "stopped" in first.notes[0]
     assert (second.value, second.hung, second.failed) == (290, False, True), "relaunched, counting, glyphs wrong"
-    assert [(p.value, p.failed) for p in margin.points[2:]] == [(330, False), (365, False)]
+    assert [(p.value, p.failed) for p in margin.points[2:]] == [(330, False), (370, False)]
 
 
 def test_the_probe_kernal_inverts_the_longest_filler_run():
@@ -430,7 +430,7 @@ def test_sweep_command_with_vicrom_and_krread(lab: Path, capsys):  # noqa: F811
             "--dwell", "0.3", "--both", "--step", "20", "--fine", "10"]
     assert main(["sweep", "v", "--probe", "vicrom", *base]) == EXIT_OK, capsys.readouterr().err
     edges = json.loads(capsys.readouterr().out)["edges"]
-    assert (edges["down"]["clean_to"], edges["up"]["clean_to"]) == (150, 290)
+    assert (edges["down"]["clean_to"], edges["up"]["clean_to"]) == (155, 285)
     assert main(["sweep", "n", "--probe", "krread", *base]) == EXIT_OK, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["probes"] == ["krread"] and payload["edges"]["up"]["clean_to"] == 330
@@ -444,6 +444,6 @@ def test_sweep_command_under_minimalboot(lab: Path, capsys):  # noqa: F811
     assert main(base) == EXIT_OK, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["probes"] == ["idread-minimal"] and payload["firmware"]["image"] == "minimal"
-    assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (142, 210)
+    assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (150, 210)
     assert main(base + ["--probe", "menu"]) == EXIT_USAGE
     assert "idread, read by video" in json.loads(capsys.readouterr().err)["error"]

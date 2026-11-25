@@ -182,7 +182,7 @@ class FakeBoard:
     # is inside its window. IO goes wrong first both ways: its selects settle later (a decoder after
     # the PLA) and its data leaves later (after both ROM tests and a handler call). Outside the IO
     # window the menu shows wrong item-type marks and idread counts wrong IO2 reads.
-    windows: dict = field(default_factory=lambda: {"io": (142, 210), "rom": (130, 230)})
+    windows: dict = field(default_factory=lambda: {"io": (146, 210), "rom": (130, 230)})
     # The other CPU-cycle knobs, each with a window of its own: outside any of them a path's reads go
     # wrong too. nS_DataSetup latches the C64's writes, so it counts against IO (idread's IO2 page) only.
     knob_windows: dict = field(default_factory=lambda: {"s": (160, 330), "h": (330, 460), "m": (930, 1100)})

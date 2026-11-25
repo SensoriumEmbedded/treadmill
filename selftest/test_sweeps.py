@@ -168,7 +168,7 @@ def test_sweep_of_the_fake_s_pla_margin_by_idread(fake_station, tmp_path: Path):
     d = margin.to_dict()
     assert d["edges"]["up"]["margin"] == margin.last_clean - KNOB_DEFAULTS["p"]
     assert len(d["points"]) == len(margin.points)
-    assert d["edges"]["up"]["probes"] == ["idread"] and d["limits"] == [135, 270]
+    assert d["edges"]["up"]["probes"] == ["idread"] and d["limits"] == [143, 270]
 
 
 def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, tmp_path: Path):
@@ -184,31 +184,31 @@ def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, t
     assert "nS_PLAprop: clean down to" in margin.describe() and margin.restored
     with pytest.raises(SweepError) as e:
         Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"] - 30), log=lambda m: None).run()
-    assert e.value.code == EXIT_USAGE and "past the sweep limits 135..270" in str(e.value)
+    assert e.value.code == EXIT_USAGE and "past the sweep limits 143..270" in str(e.value)
     fake.windows["io"] = (100, 210)                                  # selects in time at any reachable value
     clean = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"], step=20, fine=1),
                   log=lambda m: None).run()
-    assert clean.first_fail is None and [p.value for p in clean.points] == [150, 135]
+    assert clean.first_fail is None and [p.value for p in clean.points] == [150, 143]
 
 
 def test_both_edges_from_one_probe_of_the_default(fake_station):
     fake, board = fake_station
     dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
-    probe = Window(fake, "p", (142, 210))
+    probe = Window(fake, "p", (146, 210))
     margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(both=True, step=10, fine=1), log=lambda m: None).run()
     values = [p.value for p in margin.points]
-    assert values.count(150) == 1 and values[:3] == [150, 140, 145], "the default once, then down first"
+    assert values.count(150) == 1 and values[:3] == [150, 143, 146], "the default once, then down first"
     down, up = margin.edges["down"], margin.edges["up"]
-    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (142, 141, 210, 211)
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (146, 145, 210, 211)
     assert down.probes == ["window"] and not down.drifting and margin.restored
     text = margin.describe()
-    assert "clean down to 142, fails from 141" in text and "clean up to 210, fails from 211" in text
+    assert "clean down to 146, fails from 145" in text and "clean up to 210, fails from 211" in text
 
 
 def test_passes_alternate_and_mark_a_drifting_edge(fake_station):
     fake, board = fake_station
     dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
-    probe = Window(fake, "p", (142, 210), moves=-10)                  # pass 2: clean 132..200
+    probe = Window(fake, "p", (146, 210), moves=-10)                  # pass 2: clean 136..200
     margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(both=True, step=10, fine=1, passes=2),
                    log=lambda m: None).run()
     second = [p.value for p in margin.points if p.pass_no == 2]
@@ -216,21 +216,21 @@ def test_passes_alternate_and_mark_a_drifting_edge(fake_station):
     up, down = margin.edges["up"], margin.edges["down"]
     assert (up.clean_to, up.first_fail) == (200, 201), "a value is clean only if clean in every pass"
     assert up.drifting and [x["first_fail"] for x in up.per_pass] == [211, 201]
-    assert (down.clean_to, down.first_fail) == (142, 141) and down.drifting      # pass 2 found no edge down
+    assert (down.clean_to, down.first_fail) == (146, 145) and down.drifting      # pass 2 found no edge down
     assert "drifting between passes" in margin.describe()
 
 
 def test_a_scan_alternates_and_stops_past_two_collapses(fake_station):
     fake, board = fake_station
     dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
-    probe = Window(fake, "p", (135, 270), hangs=240)
-    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(135, 270), step=15, passes=2), log=lambda m: None).run()
+    probe = Window(fake, "p", (143, 270), hangs=240)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(143, 270), step=15, passes=2), log=lambda m: None).run()
     first = [p.value for p in margin.points if p.pass_no == 1]
     second = [p.value for p in margin.points if p.pass_no == 2]
-    assert first == [135, 150, 165, 180, 195, 210, 225, 240, 255], "stops after two collapses past the window"
-    assert second == [270, 255, 240, 225, 210, 195, 180, 165, 150, 135], "descending; no stop before the window"
+    assert first == [143, 158, 173, 188, 203, 218, 233, 248, 263], "stops after two collapses past the window"
+    assert second == [270, 263, 248, 233, 218, 203, 188, 173, 158, 143], "descending; no stop before the window"
     up, down = margin.edges["up"], margin.edges["down"]
-    assert (up.clean_to, up.first_fail, down.clean_to, down.first_fail) == (225, 240, 135, None)
+    assert (up.clean_to, up.first_fail, down.clean_to, down.first_fail) == (233, 248, 143, None)
     with pytest.raises(SweepError) as e:
         Sweep(dbg, KNOBS["p"], probe, SearchSpec(scan=(160, 200)), log=lambda m: None).run()
     assert "must take in the default 150" in str(e.value)
@@ -426,4 +426,4 @@ def test_sweep_command_with_the_menu_probe_both_ways(lab: Path, capsys):  # noqa
     payload = json.loads(out)
     up, down = payload["edges"]["up"], payload["edges"]["down"]
     assert payload["probes"] == ["menu"] and up["clean_to"] <= 210 < up["first_fail"] and payload["restored"]
-    assert down["first_fail"] is not None and down["clean_to"] >= 142
+    assert down["first_fail"] is not None and down["clean_to"] >= 146

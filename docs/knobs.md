@@ -10,8 +10,11 @@ its default before the bus path it times goes wrong; the tests under
 
 `treadmill/knobs.py` is the table this page describes, and
 `selftest/test_knobs.py` checks its letters, names and digits against the
-configured checkout. The defaults below are main's
-(`Source/Teensy/MinimalBoot/Common/Common_Defs.h`, after PR #99); on a board
+configured checkout. The defaults below are TeensyROM PR #121's, whose
+waits convert to Teensy cycles once before they spin; main's
+(`Source/Teensy/MinimalBoot/Common/Common_Defs.h`) convert on every pass, end
+up to 12 ns late, and are up to 8 ns lower (135, 220, 210 and 365 for
+`nS_RWnReady`, `nS_DataSetup`, `nS_VICStart` and `nS_VICDHold`). On a board
 the listing after `td` is the authority. The firmware's
 `docs/Architecture/DMA-Phi2-Timing.md` explains the DMA cycle these knobs
 time, and `docs/Architecture/Constraints.md` why the PHI2 path cannot grow.
@@ -25,12 +28,12 @@ second latch `DMAByte()` takes at `nS_DMASetup`.
 | Variable (command) | Digits, unit | Images | Board | What it times | PAL | NTSC | NTSC C128 |
 |---|---|---|---|---|---|---|---|
 | `nS_MaxAdj` (tm) | 4, ns | main, minimal | both | ISR entry: an interrupt this long after the last is late, and the count is pulled back by the excess | 1030 | 993 | 993 |
-| `nS_RWnReady` (tr) | 3, ns | main, minimal | both | from rise: read address and R/W | 135 | 135 | 135 |
+| `nS_RWnReady` (tr) | 3, ns | main, minimal | both | from rise: read address and R/W | 143 | 143 | 143 |
 | `nS_PLAprop` (tp) | 3, ns | main, minimal | both | from rise: read ROML/ROMH/IO1/IO2, then drive the byte or call the IO handler | 150 | 150 | 150 |
-| `nS_DataSetup` (ts) | 3, ns | main, minimal | both | from rise: latch a C64 write to a TR-served address | 220 | 220 | 220 |
+| `nS_DataSetup` (ts) | 3, ns | main, minimal | both | from rise: latch a C64 write to a TR-served address | 221 | 221 | 221 |
 | `nS_DataHold` (th) | 3, ns | main, minimal | both | from rise: release a TR-driven read | 390 | 390 | 390 |
-| `nS_VICStart` (tv) | 3, ns | main, minimal | both | from fall: sample address and ROMH in a VIC cycle (Ultimax images) | 210 | 210 | 210 |
-| `nS_VICDHold` (ti) | 3, ns | main | both | from fall: release a VIC-cycle ROMH drive | 365 | 365 | 365 |
+| `nS_VICStart` (tv) | 3, ns | main, minimal | both | from fall: sample address and ROMH in a VIC cycle (Ultimax images) | 215 | 215 | 215 |
+| `nS_VICDHold` (ti) | 3, ns | main | both | from fall: release a VIC-cycle ROMH drive | 370 | 370 | 370 |
 | `nS_DMAAssert` (ta) | 3, ns | main | TR+ | from fall: assert /DMA | 40 | 40 | 40 |
 | `nS_DMABAWait` (tb) | 3, ns | main | TR+ | from fall: sample BA, steal the cycle or skip it | 200 | 200 | 200 |
 | `nS_DMASetup` (te) | 3, ns | main | TR+ | from fall: drive R/W and address, then re-latch | 454 | 430 | 460 |
@@ -53,12 +56,12 @@ knob's value; the cycle is 1015 ns on PAL and 978 ns on NTSC.
 | Variable | Lowest | Highest | Why |
 |---|---|---|---|
 | `nS_MaxAdj` | the cycle less 120 | 1200 | far below the cycle every wait collapses into contention |
-| `nS_RWnReady` | 60 | `nS_PLAprop` | past it, it is `nS_PLAprop` that sets the sample point |
+| `nS_RWnReady` | 0 | `nS_PLAprop` | past it, it is `nS_PLAprop` that sets the sample point; every machine swept was clean down to 60, the floor until then |
 | `nS_PLAprop` | `nS_RWnReady` | its default plus 120 | below `nS_RWnReady` the wait returns at once |
-| `nS_DataSetup` | 100 | 480 | |
+| `nS_DataSetup` | 0 | 480 | no lower edge is expected: the wait has run out by the time a handler reads the data |
 | `nS_DataHold` | 250 | 520 | a Phi2 check caps the drive near fall plus 50 anyway |
 | `nS_VICStart` | 60 | 310 | at 320 a TR+ on NTSC stopped answering on USB until a power cycle (BACKLOG 39) |
-| `nS_VICDHold` | 250 | its default, 365 | higher breaks Ultimax cartridges on NTSC (`Common_Defs.h`); down only until BACKLOG 39 is settled |
+| `nS_VICDHold` | 250 | its default, 370 | higher breaks Ultimax cartridges on NTSC (`Common_Defs.h`); down only until BACKLOG 39 sets the cap |
 | `nS_DMAAssert` | 0 | 420 | |
 | `nS_DMABAWait` | 60 | 400, and below `nS_DMASetup` | |
 | `nS_DMASetup` | 330 | 520, and the held sums inside the cycle | |

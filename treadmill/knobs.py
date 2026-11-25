@@ -3,10 +3,13 @@
 A build with ``Dbg_SerTimChg`` takes ``t<letter><digits>`` over USB serial
 (``SerUSBIO.ino``; MinimalBoot's ``Min_SerUSBIO.ino`` has a subset) and
 answers with a listing of every value; ``td`` puts them back to what video
-detection set for the machine's standard. The defaults here are main's
-``Common_Defs.h`` and serve the fake board, the docs and the sweep limits;
-on a board the listing after ``td`` is the authority, since a branch may
-carry others.
+detection set for the machine's standard. The defaults here are TeensyROM
+PR #121's, whose waits convert to Teensy cycles once before they spin
+(main's convert on every pass and end up to 12 ns late, and its defaults
+are up to 8 ns lower for ``nS_RWnReady``, ``nS_DataSetup``, ``nS_VICStart``
+and ``nS_VICDHold``); they serve the fake board, the docs and the sweep
+limits. On a board the listing after ``td`` is the authority, since a branch
+may carry others.
 
 Times "from rise" count from ``StartCycCnt``, latched at the Phi2-rising
 interrupt; "from fall" from the Phi2-falling latch; "from re-latch" from the
@@ -79,14 +82,15 @@ def _k(letter, name, digits, group, phase, defaults, low=None, high=None, **kw) 
 KNOBS: dict[str, Knob] = {k.letter: k for k in (
     _k("m", "nS_MaxAdj", 4, "cpu", "entry", (1030, 993, 993), None, 1200, images=BOTH_IMAGES,
        readback_at_defaults=True),
-    _k("r", "nS_RWnReady", 3, "cpu", "rise", 135, 60, None, images=BOTH_IMAGES),
+    # Every machine swept was clean down to 60, the floor until then: the lower edge was never reached.
+    _k("r", "nS_RWnReady", 3, "cpu", "rise", 143, 0, None, images=BOTH_IMAGES),
     _k("p", "nS_PLAprop", 3, "cpu", "rise", 150, None, None, images=BOTH_IMAGES),
-    _k("s", "nS_DataSetup", 3, "cpu", "rise", 220, 100, 480, images=BOTH_IMAGES),
+    _k("s", "nS_DataSetup", 3, "cpu", "rise", 221, 0, 480, images=BOTH_IMAGES),
     _k("h", "nS_DataHold", 3, "cpu", "rise", 390, 250, 520, images=BOTH_IMAGES),
     # 320 left a TR+ on NTSC answering nothing on USB until a power cycle (backlog 39); 310 was clean.
-    _k("v", "nS_VICStart", 3, "vic", "fall", 210, 60, 310, images=BOTH_IMAGES),
-    # Common_Defs.h: higher than the default breaks Ultimax cartridges on NTSC; down only until 39 is settled.
-    _k("i", "nS_VICDHold", 3, "vic", "fall", 365, 250, 365),
+    _k("v", "nS_VICStart", 3, "vic", "fall", 215, 60, 310, images=BOTH_IMAGES),
+    # Common_Defs.h: higher than the default breaks Ultimax cartridges on NTSC; down only until 39 sets the cap.
+    _k("i", "nS_VICDHold", 3, "vic", "fall", 370, 250, 370),
     _k("a", "nS_DMAAssert", 3, "dma", "fall", 40, 0, 420, readback_at_defaults=True),
     _k("b", "nS_DMABAWait", 3, "dma", "fall", 200, 60, 400, readback_at_defaults=True),
     _k("e", "nS_DMASetup", 3, "dma", "fall", (454, 430, 460), 330, 520, readback_at_defaults=True),

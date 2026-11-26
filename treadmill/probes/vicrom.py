@@ -15,7 +15,10 @@ and a C64 that stopped is a hang.
 ``vicrom-high`` is ``vicrom.a`` built with ``HIGH``: the screen matrix and
 eight sprites are in ROMH too, and the VIC reads those while Phi2 is high,
 in cycles the TeensyROM serves as it does the CPU's (``nS_RWnReady``,
-``nS_PLAprop``), so the picture also shows those knobs' edges.
+``nS_PLAprop``), so the picture also shows those knobs' edges. At the
+default ``nS_VICDHold`` a TR+ running it stops answering USB (BACKLOG 59),
+so in a sweep it holds ``nS_VICDHold`` lower (``pins``), and it cannot
+sweep that knob itself; vicrom and vicrom-cpu do.
 
 ``vicrom-cpu`` and ``vicrom-high`` are built with ``CPU`` as well: the C64
 reads two pages of ROMH in a loop running from RAM and counts the wrong
@@ -45,6 +48,9 @@ START_S = 15.0
 REFERENCE_FRAMES = 15
 FRAME_WAIT_S = 2.0
 BORDER_PX = 6                     # how far outside the text area the border strip is read
+# vicrom-high's nS_VICDHold in a sweep. On the Kawari C64's TR+ (2026-11-25) the board kept answering USB up
+# to 355 in PAL and 305 in NTSC, and NTSC 320 answered once and then went silent (BACKLOG 59).
+HIGH_VICDHOLD = 280
 
 
 class VicRomProbe:
@@ -55,6 +61,7 @@ class VicRomProbe:
                  cpu: bool = False, log=print):
         self.name = name
         self.cpu = cpu                   # the program counts its CPU's reads of ROMH (built with CPU)
+        self.pins = {"i": HIGH_VICDHOLD} if name == "vicrom-high" else {}
         self.board = board
         self.video = video
         self.calibration = calibration

@@ -466,7 +466,10 @@ count the wrong answers (by DMA, on a TR+), so a VIC-cycle drive held into
 the CPU's half shows as wrong reads before it hangs the C64. `vicrom-high`
 is `vicrom-cpu` with the screen matrix and eight sprites in ROMH as well; the
 VIC reads those while Phi2 is high, in cycles the TeensyROM serves as it does
-the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`. `game`
+the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`. At
+the default `nS_VICDHold` a TR+ running it stops answering USB (BACKLOG 59),
+so a sweep holds `nS_VICDHold` at 280 from its launch to its teardown (the
+record's `set` says so) and will not sweep that knob with it. `game`
 judges a real game the same way (`--game` names the cartridge, a file here
 or `sd:/...` on the card): at the defaults it learns over `--game-learn`
 seconds which pixels of the title or attract screen move on their own,

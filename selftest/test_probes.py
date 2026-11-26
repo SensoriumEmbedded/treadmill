@@ -243,9 +243,28 @@ def test_vicrom_high_also_shows_the_cpu_cycle_knobs(fake_station, tmp_path: Path
     spec = SearchSpec(stop=260, step=20, fine=5)
     plain = Sweep(dbg, KNOBS["p"], _vicrom(fake, board, tmp_path), spec, log=lambda m: None).run()
     assert plain.first_fail is None
+    fake.vic_windows["i"] = (250, 430)   # vicrom-high holds nS_VICDHold at 280; the machines are clean down to 250
     high = Sweep(dbg, KNOBS["p"], _vicrom(fake, board, tmp_path, name="vicrom-high"), spec, log=lambda m: None).run()
     assert high.probe == "vicrom-high" and high.last_clean <= fake.windows["rom"][1] < high.first_fail
     assert "/treadmill/vicrom-high.crt" in fake.files and fake.knobs == KNOB_DEFAULTS
+
+
+def test_vicrom_high_holds_vicdhold_where_a_tr_plus_still_answers(fake_station, tmp_path: Path):
+    """A TR+ running vicrom-high goes silent past an nS_VICDHold threshold
+    (BACKLOG 59), so a sweep holds that knob lower from the probe's launch
+    to its teardown, through every relaunch, and sends td only once the
+    probe has stopped; the record says what was held."""
+    fake, board, dbg = fake_station
+    fake.faults.update(vicrom_high_silent_above=320, vic_hang_ns=10)   # a hang past the edge: relaunches
+    fake.vic_windows["i"] = (250, 430)                                 # the machines are clean down to 250
+    probe = _vicrom(fake, board, tmp_path, name="vicrom-high", cpu=True)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), log=lambda m: None).run()
+    assert not fake.silent and any(p.hung for p in margin.points), "relaunched, and the board still answers"
+    assert margin.last_clean <= fake.windows["rom"][1] < margin.first_fail
+    assert margin.to_dict()["set"] == {"nS_VICDHold": 280} and fake.knobs == KNOB_DEFAULTS
+    with pytest.raises(SweepError) as e:
+        Sweep(dbg, KNOBS["i"], _vicrom(fake, board, tmp_path, name="vicrom-high"), SearchSpec(stop=300))
+    assert "holds nS_VICDHold at 280" in str(e.value)
 
 
 def test_vicrom_cpu_counts_the_cpus_own_reads_of_romh(fake_station, tmp_path: Path):

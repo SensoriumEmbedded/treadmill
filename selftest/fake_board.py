@@ -532,6 +532,9 @@ class FakeBoard:
             first = end.read(1, 60.0)
             if len(first) < 1:
                 break
+            starve = self.faults.get("vicrom_high_silent_above")
+            if starve is not None and self.vicrom_high and self.ultimax_since is not None and self.knobs["i"] > starve:
+                self.silent = True                  # a TR+ under vicrom-high past its nS_VICDHold threshold (BACKLOG 59)
             if self.silent or self.deaf:
                 continue
             if first != b"d":                       # 0x64: a token follows; anything else is a letter

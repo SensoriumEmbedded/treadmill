@@ -94,10 +94,10 @@ class Setting:
 
     @contextmanager
     def at_defaults(self, always: bool = False) -> Iterator[None]:
-        """The defaults back for the block, then the values again: for a
-        read by DMA while a DMA-timing knob is off (``bracket``), or
-        ``always``, for a relaunch through a reset and the menu, which a
-        CPU knob past its edge can keep from booting."""
+        """The defaults back for the block (the probes' pins still held), then
+        the values again: for a read by DMA while a DMA-timing knob is off
+        (``bracket``), or ``always``, for a relaunch through a reset and the
+        menu, which a CPU knob past its edge can keep from booting."""
         if not (self.bracket or always):
             yield
             return
@@ -448,6 +448,18 @@ class Sweep:
         if spec.grid is not None and knob.letter != "e":
             raise usage_error(f"a grid is nS_DMASetup by nS_DMADataHold, not {knob.name}")
         self.fixed = dict(fixed or {})
+        # Knobs a probe needs held while its program runs, through every td of the sweep (restore()).
+        self.pins: dict[str, int] = {}
+        for probe in self.probes:
+            for letter, value in getattr(probe, "pins", {}).items():
+                name = KNOBS[letter].name
+                if letter == knob.letter:
+                    raise usage_error(f"the {probe.name} probe holds {name} at {value} while it runs: sweep "
+                                      f"{name} with another probe")
+                if self.fixed.get(letter, value) != value or self.pins.get(letter, value) != value:
+                    raise usage_error(f"the {probe.name} probe holds {name} at {value}; it cannot be set otherwise")
+                self.pins[letter] = value
+        self.fixed.update(self.pins)
         moved = {knob.letter} | ({HELD_SUMS[n][0][1] for n in HELD_SUMS} if self.hold or spec.grid else set())
         for letter, value in self.fixed.items():
             other = KNOBS[letter]
@@ -473,8 +485,18 @@ class Sweep:
 
     # -- the board's knobs -------------------------------------------------------------
 
-    def restore(self) -> dict[str, int]:
-        """``td``, confirmed: the knobs ``td`` restores back at the defaults."""
+    def restore(self, pinned: bool = True) -> dict[str, int]:
+        """``td``, confirmed: the knobs ``td`` restores back at the defaults.
+        While the probes' pins are held (``pinned``), the knobs go back one
+        by one instead and the pins stay: a ``td`` would drop them until the
+        next command, and a TR+ under vicrom-high goes silent at once at the
+        default ``nS_VICDHold`` (BACKLOG 59)."""
+        if pinned and self.pins and self.defaults:
+            target = {l: self.pins.get(l, v) for l, v in self.defaults.items() if KNOBS[l].restored_by_td}
+            moved = {l: v for l, v in target.items() if self._now.get(l) != v}
+            if moved:
+                self.apply(moved)
+            return dict(self._now)
         reply = self.dbg.restore_defaults()
         listed = parse_listing(reply)
         if "Defaults set" not in reply:
@@ -485,7 +507,21 @@ class Sweep:
             if wrong:
                 raise SweepError(f"td did not restore {wrong}; the defaults were {self.defaults}")
         self._now = dict(listed)
+        if pinned and self.pins:
+            self.apply(dict(self.pins))
         return listed
+
+    def _unpin(self) -> bool:
+        """The plain defaults once nothing that needs the pins runs; False
+        when ``td`` was not confirmed."""
+        if not self.pins:
+            return True
+        try:
+            self.restore(pinned=False)
+            return True
+        except SweepError as e:
+            self.log(f"[sweep] {e}")
+            return False
 
     def prepare(self) -> None:
         """The defaults (``td``), the standard they are for, the held sums and
@@ -516,6 +552,13 @@ class Sweep:
                 raise usage_error(f"{KNOBS[letter].name} {value} is past its limits {low}..{high} for "
                                   f"{self.standard} with {self.knob.name} at its default")
         self.low, self.high = self._range()
+
+    def _pin(self) -> None:
+        """The probes' pins set before their programs start."""
+        if self.pins:
+            self.log("[sweep] held while the probes run: "
+                     + ", ".join(f"{KNOBS[l].name} {v}" for l, v in self.pins.items()))
+            self.apply(dict(self.pins))
 
     def setting_for(self, value: int) -> dict[str, int]:
         setting = {**self.fixed, self.knob.letter: value}
@@ -725,6 +768,7 @@ class Sweep:
         started = self._early(checks)
         points: list[Point] = []
         try:
+            self._pin()
             for probe in self.ordered():
                 if probe not in started:
                     self._start(probe, started)
@@ -735,6 +779,9 @@ class Sweep:
             finally:
                 for probe in reversed(started):
                     probe.teardown()
+                if not self._unpin():
+                    raise SweepError("td not confirmed after the probes stopped: the board still holds "
+                                     + ", ".join(f"{KNOBS[l].name} {v}" for l, v in self.pins.items()))
         return points
 
     def _checks(self) -> None:
@@ -769,7 +816,7 @@ class Sweep:
         default too: restart the Teensy, set the probes up again, and check
         once more."""
         default = self.defaults[self.knob.letter]
-        at_defaults = {letter: self.defaults[letter] for letter in self.setting_for(default)}
+        at_defaults = {letter: self.pins.get(letter, self.defaults[letter]) for letter in self.setting_for(default)}
         self.restore()
         first = self.probe_at(default, 0, at_defaults)
         if not first.failed:
@@ -782,6 +829,7 @@ class Sweep:
             while started:
                 started.pop().teardown()
             self.restart()
+            self._pin()                      # the restarted Teensy is at its defaults
             for probe in self.ordered():
                 self._start(probe, started)
             self.restore()
@@ -801,6 +849,7 @@ class Sweep:
         after = None
         restored = False
         try:
+            self._pin()
             for probe in self.ordered():
                 if probe not in started:
                     self._start(probe, started)
@@ -826,6 +875,7 @@ class Sweep:
             finally:
                 for probe in reversed(started):
                     probe.teardown()
+                restored = self._unpin() and restored
         if spec.mode == "one":
             way = "up" if spec.stop >= start else "down"
             edges = {way: edge_of(points, start, way, spec.stop, spec.fine)}

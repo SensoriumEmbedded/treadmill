@@ -858,7 +858,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "C64's writes beside z###), noise (screen noise beside the first of the others), vicrom "
                         "(an Ultimax cartridge's glyphs fetched in VIC cycles, by video), vicrom-cpu (the same, "
                         "and the C64 counts its own reads of ROMH, by DMA on a TR+), vicrom-high (vicrom-cpu with "
-                        "its screen and sprites fetched from ROMH too, while Phi2 is high), game (a game cartridge "
+                        "its screen and sprites fetched from ROMH too, while Phi2 is high; nS_VICDHold held at 280 "
+                        "while it runs), game (a game cartridge "
                         "by video, what moves on its own masked out: --game), krread (Kernal Replace's "
                         "HIRAM sense, its counters read by video: the probe KERNAL, Special IO and KSenseMode are "
                         "set for the sweep and put back); repeat it for several probes at each point")

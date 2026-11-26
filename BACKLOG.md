@@ -206,6 +206,21 @@ cost or a wart with a known, small fix.
    ddbf0ac9), and report the board as not answering USB. A process that
    gave up still cannot exit for about a minute, while Windows finishes
    with the port.
+64. **medium** An open Teensy Loader window grabs a board the suite sends
+   into the bootloader. Teensyduino's Loader (`teensy.exe`) in Auto mode
+   writes the hex it holds into any Teensy that enters HalfKay. On
+   2026-11-26 it had been left open with the mains relay's
+   `MainRelay.ino.hex` after the relay's flash; the Kawari C64's TR+
+   wedged in `test_dma_margin[nS_DMABAWait]` in NTSC, the reboot rung
+   (`Board._rung_reboot()`, `relaunch()` in `treadmill/firmware/flash.py`)
+   sent it into the bootloader, and the Loader tried to write the relay's
+   hex. It did not take, and the power rung brought the board back (item
+   57), but a hex for the same Teensy would have been written, and the
+   flash at a run's start races the Loader the same way. Fix: before the
+   reboot rung and before `flash()`, look for a running Loader (`teensy.exe`
+   on Windows, `teensy` elsewhere) and refuse with a message that names it,
+   so the ladder goes on to the power rung and a run's flash stops before
+   it starts.
 
 ## Video
 

@@ -209,6 +209,17 @@ the bootloader.
 - `treadmill run --power-check` runs the same cycle before the first test
   and ends the run if it fails. It costs a boot and proves the recovery
   path before an unattended run.
+- `treadmill power --station <id> off --latch` powers the station down on
+  purpose, for overnight or longer: the relay latches the channel off
+  (`OFF <ch> LATCH`, relay fw 1.1.0 or later), with no port held, no time
+  limit, and no DTR-drop restore. `treadmill power --station <id> on` ends
+  it, as does a relay reset or the relay losing USB power. So does the next
+  run on the station: starting one is the decision to power it up, so the
+  open turns the channel on, logs that it did, and waits for the TeensyROM
+  to boot. `power status` only reports the latch and switches nothing. A
+  plain `off` is refused: the relay's ordinary `OFF` ends as soon as
+  treadmill closes its port. Both switch the machine's mains, so they need
+  the go-ahead for the station.
 
 `manual` asks whoever is at the bench, and only in an attended run
 (`--attended`); elsewhere the station has no `power`.

@@ -247,6 +247,38 @@ def fake_relay(station: Station, tr=None):
     return lambda: SerialRelayPower(spec, connect=relay.connect)
 
 
+def latch_power(station_id: str, off: bool, power_factory=None) -> dict:
+    """``treadmill power off --latch`` and ``power on``: the station's mains
+    relay channel latched off (it stays off with no host attached, until
+    ``on`` or a relay reset) or switched on, with the rig held while it
+    switches and nothing held after. The TeensyROM need not be on USB.
+    ``power_factory`` replaces the relay (the self-tests)."""
+    from treadmill.errors import EXIT_USAGE, TreadmillError
+    from treadmill.station.power import SerialRelayPower
+
+    station = load_station(station_id)
+    spec = station.rig.power
+    if spec is None or spec.backend != "serial-relay":
+        err = TreadmillError(f"station {station_id}: latching power off needs a serial-relay [power]; its rig has "
+                             f"{spec.backend if spec else 'none'}")
+        err.code = EXIT_USAGE
+        raise err
+    if power_factory is None and fake_requested():
+        power_factory = fake_relay(station)
+    power = power_factory() if power_factory is not None else SerialRelayPower(spec)
+    lock = RigLock(station.rig.id, wait=5.0).acquire()
+    try:
+        if off:
+            power.off_latched()
+        else:
+            power.on()
+    finally:
+        power.close()
+        lock.release()
+    return {"station": station_id, "channel": power.channel, "unit": power.identity.get("chip"),
+            "fw": power.identity.get("fw"), "power": "off" if off else "on", "latched": off}
+
+
 def keyboard_line(kbd: KeyboardBoard | None, problem: str | None) -> str | None:
     """One log line on the station's keyboard board, or None when it names none."""
     if kbd is not None:
@@ -337,7 +369,8 @@ class Session:
         self.close()
 
 
-def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...], caps_mask, video: bool) -> Session:
+def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...], caps_mask, video: bool,
+               power_on_latched: bool = True) -> Session:
     """The self-tests' fake board as a station: its rendered screen is the
     capture, with the synthetic calibration and bank that read it."""
     from selftest.fake_board import start_fake_board
@@ -347,7 +380,7 @@ def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...],
     fake, stream = start_fake_board(debug_defines=set(fw_defines))
     board = Board.open(station, attended=attended, link_factory=lambda: Link(stream),
                        fw_defines=fw_defines, caps_mask=caps_mask, kbd_factory=fake_keyboard(station, fake),
-                       power_factory=fake_relay(station, fake))
+                       power_factory=fake_relay(station, fake), power_on_latched=power_on_latched)
     board.reconnect_hook = lambda: Link(fake.host_stream)       # the fake's USB coming back
     if not video:
         board.mask({"video"})
@@ -356,19 +389,31 @@ def _open_fake(station: Station, *, attended: bool, fw_defines: tuple[str, ...],
     return Session(board, fake_frame_source(fake), cal, harvested_bank(cal))
 
 
+def _log_latch(board: Board, log) -> None:
+    if board.latch_cleared:
+        log(f"[power] channel {board.power.channel} was latched off (power off --latch); turned it on")
+
+
 def open_station(station_id: str, *, attended: bool = False, video: bool = True, chargen: str | None = None,
                  calibrate: bool = True, firmware: "FirmwareRun | None" = None,
-                 caps_mask: set[str] | frozenset[str] = frozenset(), log=print) -> Session:
+                 caps_mask: set[str] | frozenset[str] = frozenset(), power_on_latched: bool = True,
+                 log=print) -> Session:
     """Lock, open and probe the station; open its capture and the video
     channel's calibration and bank where they exist. ``firmware`` is what
     ``prepare_firmware()`` put on the board, or found there: its defines
     become ``fw:`` capabilities and its hex gives the recovery ladder its
-    reboot rung."""
+    reboot rung. A mains relay channel latched off is turned on, unless
+    ``power_on_latched`` is False (a status check), which refuses instead."""
     station = load_station(station_id)
     fw_defines = tuple(firmware.defines) if firmware is not None else ()
     if fake_requested():
-        return _open_fake(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, video=video)
-    board = Board.open(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, firmware=firmware)
+        session = _open_fake(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask,
+                                   video=video, power_on_latched=power_on_latched)
+        _log_latch(session.board, log)
+        return session
+    board = Board.open(station, attended=attended, fw_defines=fw_defines, caps_mask=caps_mask, firmware=firmware,
+                       power_on_latched=power_on_latched)
+    _log_latch(board, log)
     line = keyboard_line(board.kbd, board.kbd_problem)
     if line:
         log(line)

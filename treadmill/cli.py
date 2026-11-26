@@ -600,12 +600,31 @@ def cmd_screen(args: argparse.Namespace) -> int:
 def cmd_power(args: argparse.Namespace) -> int:
     """The station's power control. ``status`` checks it and switches
     nothing; ``cycle`` runs one power cycle through the recovery ladder's
-    own rung, with the menu back after it, and times it."""
+    own rung, with the menu back after it, and times it. ``off --latch``
+    latches the channel off with nothing left holding the port, and ``on``
+    ends that: neither needs the TeensyROM on USB."""
     from treadmill.report.artifacts import describe_power
-    from treadmill.session import open_station
+    from treadmill.session import latch_power, open_station
 
+    if args.action in ("off", "on"):
+        if args.action == "off" and not args.latch:
+            raise CommandError("power off needs --latch: a plain OFF ends as soon as treadmill lets go of the "
+                               "relay's port. Use cycle for a power cycle", EXIT_USAGE)
+        if args.action == "on" and args.latch:
+            raise CommandError("--latch goes with off", EXIT_USAGE)
+        done = latch_power(args.station, off=args.action == "off")
+        if done["latched"]:
+            text = (f"{args.station}: channel {done['channel']} latched off. It stays off with no host attached, "
+                    f"until: treadmill power --station {args.station} on")
+        else:
+            text = f"{args.station}: channel {done['channel']} on"
+        _emit(done, args.json, text)
+        return EXIT_OK
+    if args.latch:
+        raise CommandError("--latch goes with off", EXIT_USAGE)
     log = _log_for(args)
-    with open_station(args.station, attended=args.attended, video=False, log=log) as s:
+    with open_station(args.station, attended=args.attended, video=False, log=log,
+                      power_on_latched=args.action != "status") as s:
         b = s.board
         power = describe_power(b)
         if power is None:
@@ -951,10 +970,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("power", help="the station's power control: check it, or run one timed power cycle",
                        description="status: the mains relay answers, as the rig names it, and the TeensyROM is on "
                                    "USB; nothing is switched. cycle: one power cycle through the recovery "
-                                   "ladder's own rung, the menu back after it, and how long each step took. A cycle "
-                                   "cuts the machine's mains: it needs the go-ahead for the station.")
+                                   "ladder's own rung, the menu back after it, and how long each step took. "
+                                   "off --latch: the mains relay keeps the channel off with no host attached and "
+                                   "no time limit, until on, a run on the station (which turns it on first), or a "
+                                   "relay reset; status reports the latch and switches nothing. Cycle, off and on "
+                                   "switch the machine's mains: they need the "
+                                   "go-ahead for the station.")
     _station_args(s)
-    s.add_argument("action", choices=("status", "cycle"))
+    s.add_argument("action", choices=("status", "cycle", "off", "on"))
+    s.add_argument("--latch", action="store_true",
+                   help="with off: latch it off until on, with no host holding the relay's port (relay fw 1.1.0+)")
     s.add_argument("--off", type=float, metavar="S", help="seconds off (default: the rig's off_seconds)")
     s.set_defaults(func=cmd_power)
 

@@ -11,7 +11,12 @@ The mains relay is found by its USB serial string, ``MainsRelay_<chip id>``,
 without opening any port, and is opened for each call and closed after it,
 so nothing holds its port between power cycles. A closed port is a DTR drop,
 which the relay answers by restoring power: only ``off()`` keeps the port
-open, until ``on()`` or ``close()``.
+open, until ``on()`` or ``close()``. The exception is ``off_latched()``
+(``OFF <ch> LATCH``, relay fw 1.1.0 and later): the relay keeps that channel
+off with no port open and no time limit, until ``on()`` or a relay reset,
+for powering a station down overnight. Opening a station (a run) turns a
+latched channel on again: starting a run is the decision to power it up.
+A status check reports the latch and switches nothing (``PoweredDown``).
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from treadmill.errors import TreadmillError
+from treadmill.errors import EXIT_NO_STATION, TreadmillError
 from treadmill.link.transport import ByteStream, TransportError, open_serial
 from treadmill.station.kbd import Reply, parse_reply
 from treadmill.station.model import PowerSpec
@@ -33,6 +38,18 @@ CYCLE_MAX_MS = 60000             # the longest CYCLE the relay takes
 
 class PowerUnavailable(TreadmillError):
     pass
+
+
+class PoweredDown(TreadmillError):
+    """The station's mains relay channel is latched off on purpose
+    (``treadmill power off --latch``), met by an open that switches nothing."""
+
+    code = EXIT_NO_STATION
+
+
+def powered_down_message(station_id: str, channel: int) -> str:
+    return (f"station {station_id} is powered down on purpose: the mains relay has channel {channel} latched off. "
+            f"A run turns it on, or: treadmill power --station {station_id} on")
 
 
 class Power:
@@ -140,6 +157,7 @@ class SerialRelayPower(Power):
         self._connect = connect
         self._held: ByteStream | None = None
         self.identity: dict[str, str] = {}      # the fields of the last ?
+        self.latched = False                    # the channel was latched off at the last check()
         self.port: str | None = None
 
     @property
@@ -215,13 +233,54 @@ class SerialRelayPower(Power):
         return ms
 
     def check(self) -> str | None:
+        """Also notes in ``latched`` whether the channel is latched off
+        (``STATE``'s ``latch=1``; a relay older than fw 1.1.0 never is)."""
         stream = self._session()
         try:
-            self._off_ms(self.spec.off_seconds)
             states = (self.identity.get("state") or "").split(",")
-            return states[self.channel - 1] if len(states) >= self.channel else None
+            state = states[self.channel - 1] if len(states) >= self.channel else None
+            self.latched = False
+            if state == "off":
+                reply = self._command(stream, f"STATE {self.channel}")
+                self.latched = reply.ok and reply.get("latch") == "1"
         finally:
             stream.close()
+        self._off_ms(self.spec.off_seconds)     # after the latch is read, so a bad off_seconds can't hide it
+        return state
+
+    def on_if_latched(self, station_id: str, switch: bool = True) -> bool:
+        """A channel latched off is turned on (True), or with ``switch``
+        False raises PoweredDown. False when it wasn't latched; a relay that
+        doesn't answer is left for the open's own checks to report."""
+        try:
+            self.check()
+        except PowerUnavailable:
+            if not self.latched:      # a relay that doesn't answer; a latch read before a bad off_seconds still counts
+                return False
+        if not self.latched:
+            return False
+        if not switch:
+            raise PoweredDown(powered_down_message(station_id, self.channel))
+        self.on()
+        self.latched = False
+        return True
+
+    def off_latched(self) -> None:
+        """Off until ``on()`` or a relay reset, with no port held and no
+        time limit: ``OFF <ch> LATCH``. The port is closed after."""
+        self.close()
+        stream = self._session()
+        try:
+            reply = self._command(stream, f"OFF {self.channel} LATCH")
+        finally:
+            stream.close()
+        if not reply.ok:
+            if reply.reason == "syntax":
+                raise PowerUnavailable(f"the mains relay (fw {self.identity.get('fw', '?')}) has no OFF LATCH: "
+                                       "it needs fw 1.1.0 or later")
+            raise PowerUnavailable(f"the mains relay refused OFF {self.channel} LATCH: {reply.raw}")
+        if reply.get("latch") != "1":
+            raise PowerUnavailable(f"the mains relay did not latch channel {self.channel}: {reply.raw}")
 
     def cycle(self, off_seconds: float) -> None:
         """Off for ``off_seconds``, timed by the relay, which replies once power is back."""

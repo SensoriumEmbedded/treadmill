@@ -32,6 +32,7 @@ the station; a closed lid still does.
 | What stations exist, what each can do | `treadmill stations --json` |
 | Is the station's power control working | `treadmill power --station <id> status --json`: the mains relay answers as the rig names it; switches nothing |
 | Power-cycle a station, or prove its recovery by mains | `treadmill power --station <id> cycle --json` (go-ahead first): one cycle through the ladder's own rung, timed; fails if the TR stays on USB (the supply's switch on ON, or the supply on another machine) |
+| Power a station down overnight, or bring it back | `treadmill power --station <id> off --latch --json` / `treadmill power --station <id> on --json` (go-ahead first): the relay keeps the channel off with no host attached until `on` (relay fw 1.1.0+). The next run on the station turns it on first and logs `[power] ... was latched off ...; turned it on`; `power status` only reports the latch (exit 4) |
 | An unattended run that can recover by mains | `treadmill run --station <id> --power-check ...`: one power cycle before the first test, the run ends if it fails; `run.json` `power_check` has the timings |
 | Run the hardware tests on the firmware already on the board | `treadmill run --station <id> --json` |
 | Test a branch, a PR branch or a commit | `treadmill run --station <id> --fw ref=<ref> --json` (built in a worktree, cached, flashed only if the board does not already run it) |

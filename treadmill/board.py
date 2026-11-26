@@ -118,6 +118,7 @@ class Board:
     # How to open the keyboard board again after a power cycle: the factory Board.open was given, or discovery.
     kbd_factory: Callable[[], KeyboardBoard] | None = None
     kbd_discover: bool = True
+    latch_cleared: bool = False          # the open turned on a mains relay channel latched off
     power_problem: str | None = None     # why the station's power control is off, when its rig has one
     power_state: str | None = None       # the relay channel's state when the station opened
     power_timings: dict[str, float | None] = field(default_factory=dict)   # the last power cycle's
@@ -132,7 +133,7 @@ class Board:
              caps_mask: set[str] | frozenset[str] = frozenset(),
              firmware: "FirmwareRun | None" = None,
              kbd_factory: Callable[[], KeyboardBoard] | None = None,
-             power_factory: Callable[[], Power] | None = None) -> "Board":
+             power_factory: Callable[[], Power] | None = None, power_on_latched: bool = True) -> "Board":
         """Lock the rig, find the board by chip id, open it and probe it, with
         the recovery ladder's upper rungs attached: a reconnect by chip id,
         and, when ``firmware`` knows the hex on the board and the checkout
@@ -142,19 +143,24 @@ class Board:
         discovery and the serial port (the self-tests hand in a link to a
         fake board) and gets no rung past a reset; with it, only
         ``kbd_factory`` opens a keyboard board. ``power_factory`` replaces
-        the rig's power backend (a fake mains relay). Nothing stays held when
+        the rig's power backend (a fake mains relay). A mains relay channel
+        latched off (``power off --latch``) is turned on first, and the board
+        is waited for while it boots; with ``power_on_latched`` False the open
+        is refused instead (PoweredDown). Nothing stays held when
         this fails: the lock and the ports are released before the error
         leaves."""
         power = power_factory() if power_factory is not None else make_power(station.rig.power, attended)
         lock = RigLock(station.rig.id, wait=lock_wait).acquire()
         events = EventLog()
         try:
+            latch_cleared = isinstance(power, SerialRelayPower) and power.on_if_latched(station.id, power_on_latched)
             if link_factory is not None:
                 link = link_factory()
                 link._on_unsolicited = events.feed
             else:
                 try:
-                    found = find_port(station.tr.uid, station.tr.port_hint)
+                    found = find_port(station.tr.uid, station.tr.port_hint,
+                                      timeout=REAPPEAR_S if latch_cleared else 0.0)
                 except NotFound as e:
                     raise NotFound(f"{e}{power_hint(power, station)}") from None
                 link = Link(open_serial(found.port), on_unsolicited=events.feed)
@@ -165,6 +171,7 @@ class Board:
         board = cls(station=station, link=link, events=events, lock=lock, power=power,
                     fw_defines=tuple(fw_defines), caps_mask=frozenset(caps_mask),
                     kbd_factory=kbd_factory, kbd_discover=link_factory is None)
+        board.latch_cleared = latch_cleared
         if link_factory is None:
             board.attach_recovery(firmware)
         try:

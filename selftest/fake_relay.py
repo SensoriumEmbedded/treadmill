@@ -3,7 +3,8 @@ protocol (``docs/Host_Protocol.md`` in the mains-relay repository, proto 1)
 closely enough for the power backend and the recovery ladder to be tested
 with no hardware: one reply per line, the minimum off time, ``CYCLE``
 replying once power is back, ``OFF``'s limit as an ``EV`` line, ``busy``,
-and a closed port restoring power. Its clock runs ``1 / time_scale`` times
+a closed port restoring power, and ``OFF <ch> LATCH`` (fw 1.1.0), which
+nothing but ``ON`` ends. ``fw="1.0.0"`` makes a relay that predates it. Its clock runs ``1 / time_scale`` times
 as fast as the host's, so a 5 s cycle takes 50 ms.
 
 Each ``connect()`` is a host opening the port; closing the stream it
@@ -29,7 +30,7 @@ CYCLE_DEFAULT_MS, CYCLE_MAX_MS = 5000, 60000
 @dataclass
 class _Chan:
     off: bool = False
-    kind: str = "held"             # held | cycling | releasing
+    kind: str = "held"             # held | cycling | releasing | latched
     off_at: float = 0.0
     restore_at: float = 0.0
     ms: int = 0
@@ -43,6 +44,7 @@ class FakeRelay:
     chip: str = "21474836"
     channels: int = 1
     proto: int = 1
+    fw: str = "1.1.0"
     time_scale: float = 0.01
     on_power: Callable[[int, bool], None] | None = None
     # What happened, for the self-tests to check.
@@ -112,7 +114,7 @@ class FakeRelay:
             time.sleep(0.002)
             with self.lock:
                 self._poll()
-                if not any(c.off for c in self.ch):
+                if not any(c.off and (c.kind != "latched" or c.early) for c in self.ch):
                     self._ticking = False
                     return
 
@@ -145,7 +147,7 @@ class FakeRelay:
                 return
             self.end = None
             for i, c in enumerate(self.ch):
-                if c.off:
+                if c.off and c.kind != "latched":
                     self._end_early(i)
                     c.kind, c.cycle_owed, c.on_owed = "releasing", False, 0
             self._poll()
@@ -154,6 +156,9 @@ class FakeRelay:
         now = self._now()
         self.ch[i] = _Chan(off=True, kind=kind, off_at=now, restore_at=now + ms / 1000, ms=ms)
         self._set(i, False)
+        self._tick()
+
+    def _tick(self) -> None:
         if not self._ticking:
             self._ticking = True
             threading.Thread(target=self._ticker, name="fake-relay-tick", daemon=True).start()
@@ -204,7 +209,7 @@ class FakeRelay:
             self._say("ERR ? syntax")
             return
         state = ",".join(self._word(i) for i in range(self.channels))
-        self._say(f"OK ? proto={self.proto} name=MainsRelay fw=1.0.0 build=2026-11-22T12:00:00 chip={self.chip} "
+        self._say(f"OK ? proto={self.proto} name=MainsRelay fw={self.fw} build=2026-11-22T12:00:00 chip={self.chip} "
                   f"mcu=teensy31 ch={self.channels} state={state} min_off_ms={MIN_OFF_MS} "
                   f"max_off_ms={OFF_DEFAULT_MS}")
 
@@ -216,8 +221,9 @@ class FakeRelay:
         if i is None:
             return
         c = self.ch[i]
-        left = max(0, round((c.restore_at - self._now()) * 1000)) if c.off else 0
-        self._say(f"OK STATE ch={i + 1} power={self._word(i)} left_ms={left}")
+        latched = c.off and c.kind == "latched"
+        left = max(0, round((c.restore_at - self._now()) * 1000)) if c.off and (c.early or not latched) else 0
+        self._say(f"OK STATE ch={i + 1} power={self._word(i)} left_ms={left}" + (" latch=1" if latched else ""))
 
     def _on(self, cmd: str, args: list[str]) -> None:
         if len(args) != 1:
@@ -232,6 +238,7 @@ class FakeRelay:
         self.ch[i].on_owed += 1
         self._end_early(i)
         self._poll()
+        self._tick()                   # a latch stopped the clock
 
     def _off(self, cmd: str, args: list[str]) -> None:
         if not 1 <= len(args) <= 2:
@@ -240,18 +247,22 @@ class FakeRelay:
         i = self._channel(cmd, args[0])
         if i is None:
             return
-        ms = self._millis(cmd, args, OFF_DEFAULT_MS, OFF_MAX_MS)
+        latch = len(args) == 2 and args[1].upper() == "LATCH" and self.fw >= "1.1.0"
+        ms = 0 if latch else self._millis(cmd, args, OFF_DEFAULT_MS, OFF_MAX_MS)
         if ms is None:
             return
         c = self.ch[i]
         if c.off and (c.kind == "cycling" or c.on_owed):
             self._say("ERR OFF busy")
             return
-        if c.off:
-            c.kind, c.early, c.restore_at, c.ms = "held", False, self._now() + ms / 1000, ms
-        else:
+        if c.off and c.kind == "latched":
+            latch, ms = True, 0            # only ON ends a latch
+        if not c.off:
             self._cut(i, "held", ms)
-        self._say(f"OK OFF ch={i + 1} power=off max_ms={ms}")
+        c = self.ch[i]
+        c.kind, c.early, c.ms = ("latched" if latch else "held"), False, ms
+        c.restore_at = float("inf") if latch else self._now() + ms / 1000
+        self._say(f"OK OFF ch={i + 1} power=off max_ms={ms}" + (" latch=1" if latch else ""))
 
     def _cycle(self, cmd: str, args: list[str]) -> None:
         if not 1 <= len(args) <= 2:

@@ -193,6 +193,19 @@ cost or a wart with a known, small fix.
    above it hung past 90 s on 2026-11-25; the relay's own `CYCLE 1` on its
    port cycled the machine at once. Fix: `power cycle` opens the relay and
    the USB watch only, and looks for the board after power is back.
+63. **medium** On Windows, opening a board's port has no time limit.
+   `_SerialRaw` (`treadmill/link/transport.py`) opens it with pyserial, and
+   while an extension image holds a TR+ the minimal image's USB device
+   stays listed with nothing on the board answering it. usbser.sys waits
+   30 s for each request it makes of such a device: on 2026-11-25 on the
+   Kawari C64's TR+, `GetCommState` alone took 60 s and the whole open over
+   150 s, and cancelling the call did not shorten it. Every command that
+   opens the station hangs there, not only item 58's `power cycle`:
+   `treadmill power status` hung the same way. Fix: open in a thread of its
+   own with a bound, as TeensyROM's `tools/bench/winserial.py` does (5 s,
+   ddbf0ac9), and report the board as not answering USB. A process that
+   gave up still cannot exit for about a minute, while Windows finishes
+   with the port.
 
 ## Video
 

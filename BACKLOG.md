@@ -157,6 +157,36 @@ cost or a wart with a known, small fix.
    prompt and `on()` after `CONNECT`'s, when the station has `power`. The
    relay restores power by itself after its 10-minute `OFF` limit, so a
    longer swap needs the `OFF` renewed.
+56. **medium** A Kawari powers up in the standard it last saved, which the
+   suite cannot set. Since 2026-11-25 the Kawari C64 (registry 002b) comes
+   up PAL with J1 open, where the station's `kawari_open` says NTSC, so
+   every `--region` switch first spends a wasted `V` (item 33). `run
+   --region` puts its standard back after a power cycle (`Board`,
+   `treadmill/board.py`), but `treadmill sweep` has no `--region`, so a
+   power cycle during a sweep finishes it in the saved standard. Fix: set
+   the saved model itself. Write the Kawari's model register with persist
+   (extension registers unlocked), wait for its busy bit, then reconfigure
+   it (the keyboard board's `V open`) or cycle it through the relay; or
+   launch the Kawari's config utility on the C64, let it save, and cycle.
+   Write only when the saved model differs, since each save wears its
+   flash. With the saved model set from the standard a run asks for, J1
+   stays open, the standard survives a power cycle, and item 33's mapping
+   and `kawari_open` go away. `sweep` takes `--region` too.
+57. **medium** The recovery ladder stops at a reboot that fails.
+   `Board._rung_reboot()` (`treadmill/board.py`) lets `relaunch()`'s
+   `FlashError` out of `ensure_menu()`, so the rungs after it, the power
+   cycle among them, never run. On 2026-11-25 the Kawari C64's TR+ stopped
+   answering with its port still present (a write timeout); the forced
+   flash found it silent ("did not answer", then "No attached board has
+   chip ID"), and that test and the next one errored with the station's
+   relay unused. Fix: a rung that fails hands over to the next one, and
+   the record keeps its error.
+58. **medium** `treadmill power ... cycle` hangs on a board that is on USB
+   but silent. The command opens the station (`open_station()`,
+   `treadmill/session.py`) before it touches the relay, and with the TR+
+   above it hung past 90 s on 2026-11-25; the relay's own `CYCLE 1` on its
+   port cycled the machine at once. Fix: `power cycle` opens the relay and
+   the USB watch only, and looks for the board after power is back.
 
 ## Video
 
@@ -572,3 +602,49 @@ cost or a wart with a known, small fix.
    sweep with one knob set. Fix: `apply()` skips a letter whose last listed
    value (`_now`) already holds it, and still checks the reply's listing
    for every letter of the setting.
+59. **high** vicrom-high silences a TR+ at the default `nS_VICDHold`. Once
+   `vicrom-high.crt` is launched (an 8K Ultimax image, which the firmware
+   runs with its VIC-cycle emulation on; under the station's Special IO
+   handler or with Special IO at None alike), the TeensyROM answers nothing
+   on USB: not the probe's DMA read of its ready byte, not a `t` knob
+   command, not a ping sent after 3 s with nothing before it. It prints
+   nothing after `Resetting C64`, keeps serving the cartridge (the picture
+   stays right and the border steps), and only a power cycle brings it
+   back. vicrom and vicrom-cpu, the same C64 code without `HIGH`, run with
+   the board answering throughout, so the trigger is the VIC fetching the
+   screen matrix and the sprites from ROMH. It depends on how long the
+   firmware holds a VIC cycle's data: with `nS_VICDHold` set at the menu
+   before the launch, the board answered (with `Busy!`, and its DMA reads
+   worked) up to 355 in PAL and up to 305 in NTSC; NTSC 320 answered one
+   ping and then went silent, and NTSC 335 and the default 365 in both
+   standards were silent (Kawari C64 with a TR+, main `88f5c805` with
+   `Dbg_SerTimChg`, 2026-11-25). The threshold moves with the cycle length,
+   as if `isrPHI2`, which with the VIC-cycle emulation on runs until that
+   hold ends, leaves too little of each cycle for the USB interrupt. The
+   fault is the firmware's. Until it is fixed, a sweep holds `nS_VICDHold`
+   at 280 while vicrom-high runs (the probe's `pins`, which no `td` drops
+   until the probe has stopped) and refuses to sweep that knob with it, and
+   a soak at a release's values fails it on a TR+, which is the right
+   verdict but loses the board: the ladder needs its power rung to go on
+   (item 57).
+60. **low** The game probe's default settle misses Jupiter Lander's screen
+   change. The cartridge shows its title for about 8 s and then its
+   instructions page; with the default `--game-settle` of 8 s the 5 s
+   learn spans the change and masks 92.5 % of the picture. With 14 s it
+   learns the instructions page, which shows the ship sprite, and masks
+   33 % with a baseline of 22 pixels; Radar Rat Race masks 16.8 % at the
+   default (Kawari C64, NTSC, 2026-11-25). Fix: a small table of known
+   games with their settle and keys, or a learn that starts once the
+   picture stops changing wholesale.
+61. **low** `--estimate` ignores `--soak`. The soak tests declare their
+   duration for the default 10 minutes, so `--estimate` on the six soaks
+   with `--soak 1` said about 60 minutes. Fix: the declared duration
+   follows `--soak`.
+62. **low** `test_krread_keeps_the_first_read_apart_from_the_verdict`
+   (`selftest/test_probes.py`) fails in its setup now and then: "krread is
+   not counting on the C64's top row", the fake's top row read as its
+   counts run into the menu's banner. On `8bf1a1c` it passed once and
+   failed twice in three runs on 2026-11-25, each failure in about 20 s,
+   while a margin run was loading the host. Fix: find what the probe's
+   first screen read races with in the fake (the program's first draw, or
+   the menu's last), and wait for that instead of the time it takes.

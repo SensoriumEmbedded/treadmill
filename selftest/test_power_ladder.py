@@ -79,6 +79,60 @@ def test_the_ladder_climbs_to_the_power_cycle_when_nothing_below_works(power_lab
         b.link.ping()
 
 
+def test_a_reboot_that_strands_the_board_leaves_the_power_cycle_to_bring_it_back(power_lab):
+    """Backlog 57: the reboot rung's flash refused a board left in the
+    bootloader beside the station's other Teensys, and the ladder stopped
+    there with the relay unused."""
+    from treadmill.firmware.flash import FlashError
+
+    with open_station("kb", video=False) as s:
+        b = s.board
+
+        def fails() -> None:
+            raise LinkError("no answer")
+
+        def stranded() -> None:
+            raise FlashError("flash failed (1): a board is waiting in the bootloader")
+        b._rung_reset = fails
+        b.ext_reset = fails
+        b.reboot_hook = stranded
+        b.link.stream.close()
+        b.ensure_menu()
+        assert b.recoveries == ["power-cycle"]
+        b.link.ping()
+
+
+def test_a_sweep_s_restart_that_strands_the_board_cycles_the_mains(power_lab):
+    """The same refusal from the sweep's restart after its walk: on
+    2026-11-26 it left the Kawari C64's TR+ in the bootloader until the next
+    test's ladder cycled it."""
+    from treadmill.firmware.flash import FlashError
+
+    with open_station("kb", video=False) as s:
+        b = s.board
+
+        def stranded() -> None:
+            raise FlashError("flash failed (1): a board is waiting in the bootloader")
+        b.reboot_hook = stranded
+        b.restart_teensy()
+        assert b.recoveries == ["power-cycle"] and b.power_timings["menu_s"] is not None
+        b.link.ping()
+
+
+def test_a_sweep_s_restart_that_strands_the_board_without_power_says_so(kb_lab):  # noqa: F811
+    from treadmill.firmware.flash import FlashError
+
+    with open_station("kb", video=False) as s:
+        b = s.board
+
+        def stranded() -> None:
+            raise FlashError("flash failed (1): a board is waiting in the bootloader")
+        b.reboot_hook = stranded
+        with pytest.raises(FlashError):
+            b.restart_teensy()
+        assert b.recoveries == []
+
+
 def test_a_board_that_stays_on_usb_fails_the_rung(lab):  # noqa: F811
     """The supply's switch on ON, or another machine on the relay: the cut
     happens, the board never sees it."""

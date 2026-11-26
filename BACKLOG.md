@@ -172,15 +172,21 @@ cost or a wart with a known, small fix.
    flash. With the saved model set from the standard a run asks for, J1
    stays open, the standard survives a power cycle, and item 33's mapping
    and `kawari_open` go away. `sweep` takes `--region` too.
-57. **medium** The recovery ladder stops at a reboot that fails.
-   `Board._rung_reboot()` (`treadmill/board.py`) lets `relaunch()`'s
-   `FlashError` out of `ensure_menu()`, so the rungs after it, the power
-   cycle among them, never run. On 2026-11-25 the Kawari C64's TR+ stopped
-   answering with its port still present (a write timeout); the forced
-   flash found it silent ("did not answer", then "No attached board has
-   chip ID"), and that test and the next one errored with the station's
-   relay unused. Fix: a rung that fails hands over to the next one, and
-   the record keeps its error.
+57. **closed 2026-11-26, with the power rung after a failed reboot.**
+   `Board.ensure_menu()` now takes a `FlashError` from the reboot rung as
+   that rung's failure and climbs to the next, so a station with `power`
+   cycles a board the reboot left in the bootloader. `Board.restart_teensy()`,
+   the sweep's restart after a walk that failed, falls to the mains the same
+   way: on 2026-11-26 it left the Kawari C64's TR+ in the bootloader until
+   the next test's ladder cycled it. The item as it was:
+   The recovery ladder stops at a reboot that fails. `Board._rung_reboot()`
+   (`treadmill/board.py`) lets `relaunch()`'s `FlashError` out of
+   `ensure_menu()`, so the rungs after it, the power cycle among them,
+   never run. On 2026-11-25 the Kawari C64's TR+ stopped answering with its
+   port still present (a write timeout); the forced flash found it silent
+   ("did not answer", then "No attached board has chip ID"), and that test
+   and the next one errored with the station's relay unused. Fix: a rung
+   that fails hands over to the next one, and the record keeps its error.
 58. **medium** `treadmill power ... cycle` hangs on a board that is on USB
    but silent. The command opens the station (`open_station()`,
    `treadmill/session.py`) before it touches the relay, and with the TR+
@@ -627,15 +633,22 @@ cost or a wart with a known, small fix.
    a soak at a release's values fails it on a TR+, which is the right
    verdict but loses the board: the ladder needs its power rung to go on
    (item 57).
-60. **low** The game probe's default settle misses Jupiter Lander's screen
-   change. The cartridge shows its title for about 8 s and then its
-   instructions page; with the default `--game-settle` of 8 s the 5 s
-   learn spans the change and masks 92.5 % of the picture. With 14 s it
-   learns the instructions page, which shows the ship sprite, and masks
-   33 % with a baseline of 22 pixels; Radar Rat Race masks 16.8 % at the
-   default (Kawari C64, NTSC, 2026-11-25). Fix: a small table of known
-   games with their settle and keys, or a learn that starts once the
-   picture stops changing wholesale.
+60. **medium** The game probe cannot judge Jupiter Lander yet. The
+   cartridge shows its title for about 8 s and then its instructions page;
+   with the default `--game-settle` of 8 s the 5 s learn spans the change
+   and masks 92.5 % of the picture. With 14 s it learns the instructions
+   page, which shows the ship sprite, and masks 33 % with a baseline of 22
+   pixels; Radar Rat Race masks 16.8 % at the default (Kawari C64, NTSC,
+   2026-11-25). A sweep at the 14 s settle then failed `nS_VICStart` at 230
+   and up and `nS_VICDHold` at 315 and down, where vicrom is clean (85-310,
+   250-370), and the picture at 240 and 260 is the default's: the page's
+   own slower changes ("F1-FIRE" changing color, "PUSH (F1) TO START"
+   blinking, the lander's flame) were not in the 5 s learn. A 15 s learn
+   ran into the attract cycle's next screen and masked 98.5 %, which fails
+   nothing. Its `nS_RWnReady` sweep failed at the default. Fix: start play
+   with `--game-keys` and learn in play, or a learn window placed inside
+   one page; a small table of known games with their settle and keys, or a
+   learn that starts once the picture stops changing wholesale.
 61. **low** `--estimate` ignores `--soak`. The soak tests declare their
    duration for the default 10 minutes, so `--estimate` on the six soaks
    with `--soak 1` said about 60 minutes. Fix: the declared duration

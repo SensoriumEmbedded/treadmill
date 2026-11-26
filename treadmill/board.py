@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
 from treadmill.errors import TreadmillError
-from treadmill.firmware.flash import REAPPEAR_S, relaunch
+from treadmill.firmware.flash import REAPPEAR_S, FlashError, relaunch
 from treadmill.link import Link, LinkError, NotFound, Refused, TransportError, find_port, open_serial
 from treadmill.link.trlink import NotAllowed
 from treadmill.link.banner import Banner
@@ -371,7 +371,7 @@ class Board:
                 self.recoveries.append(name)
                 return
             except (LinkError, TransportError, PowerUnavailable, Refused, NotFound, KbdError, NotAllowed,
-                    KawariError) as e:
+                    KawariError, FlashError) as e:      # a reboot that strands the board: the power rung is next
                 failures.append(f"{name}: {e}")
         self.wedged_reason = "; ".join(failures) or "no recovery rung available"
         raise Wedged(self.wedged_reason)
@@ -388,12 +388,22 @@ class Board:
         """The Teensy restarted through the ladder's USB reboot (its own state
         gone, as a power cycle would leave it), back at the menu, and counted
         as a recovery: what a sweep needs when its walk left the TeensyROM's
-        state bad (backlog 53)."""
+        state bad (backlog 53). A reboot the flasher refuses, with the board
+        left in the bootloader beside the station's other Teensys, falls to
+        the mains on a station with ``power``, as the ladder does."""
         if self.reboot_hook is None:
             raise LinkError("no USB reboot: the run does not know the hex the board carries")
-        self._rung_reboot()
-        self.wait_for_menu()
-        self.recoveries.append("usb-reboot")
+        try:
+            self._rung_reboot()
+            self.wait_for_menu()
+            self.recoveries.append("usb-reboot")
+        except (LinkError, TransportError, Refused, NotFound, NotAllowed, FlashError):
+            if not self.station.has("power"):
+                raise
+            self._rung_power()
+            self.wait_for_menu()
+            self.after_power_cycle()
+            self.recoveries.append("power-cycle")
 
     def _rung_reboot(self) -> None:
         assert self.reboot_hook is not None

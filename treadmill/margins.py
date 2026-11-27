@@ -59,6 +59,7 @@ def context_for(board, firmware: Mapping | None = None, *, image: str = "main") 
         "machine": {"id": st.machine.id, "model": st.machine.model, "standard": banner.video if banner else None,
                     "c128": bool(banner and banner.machine == "C128")},
         "board": st.tr.kind,
+        "port_setup": st.port_setup,
         "firmware": {"version": banner.version if banner else None, "tag": banner.tag if banner else None,
                      "dirty": bool(fw.get("dirty")) or bool(banner and banner.dirty),
                      "commit": fw.get("commit"), "describe": fw.get("describe"),
@@ -197,8 +198,8 @@ def floors_toml(floors: Mapping[str, Floor]) -> str:
     return "\n".join(lines) + "\n"
 
 
-COLUMNS = ("when", "station", "machine", "standard", "board", "build", "image", "knob", "probes", "set", "mode",
-           "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "open", "path")
+COLUMNS = ("when", "station", "machine", "standard", "board", "port_setup", "build", "image", "knob", "probes", "set",
+           "mode", "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "open", "path")
 
 
 def set_text(record: Mapping) -> str:
@@ -215,7 +216,8 @@ def rows(records: Iterable[Mapping]) -> list[dict]:
         out.append({
             "when": r.get("when"), "station": r.get("station"), "machine": m.get("id"),
             "standard": ("NTSC C128" if m.get("c128") and m.get("standard") == "NTSC" else m.get("standard")),
-            "board": r.get("board"), "build": build_id(r), "image": (r.get("firmware") or {}).get("image"),
+            "board": r.get("board"), "port_setup": r.get("port_setup"), "build": build_id(r),
+            "image": (r.get("firmware") or {}).get("image"),
             "knob": (r.get("knob") or {}).get("name"), "probes": "+".join(r.get("probes") or []),
             "set": set_text(r), "mode": r.get("mode"), "passes": r.get("passes"), "default": r.get("default"),
             "down_clean": down.get("clean_to"), "down_fail": down.get("first_fail"),

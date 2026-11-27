@@ -539,7 +539,11 @@ margins suggest --station <id>` prints the floors the station's last
 each way and never past the default, to copy into its file. `--commit <sha>`
 keeps only the records of the firmware built from that commit (any
 `margins` view takes it): give `suggest` the commit that ships, so a
-station's floors never mix a base build's records with a release's. A test compares
+station's floors never mix a base build's records with a release's.
+Each record also carries the station file's `port_setup` ("direct", or the
+extender and its slot), since an extender moved one machine's edges by tens
+of nanoseconds: `--port-setup` keeps one setup's records, and `suggest` says
+so when a station's records mix setups. A test compares
 each edge with the newest earlier record of the same station, knob, edge and
 probes on another build: a shrink of more than twice `--fine` (10 ns at
 least) is a warning, not a failure, since machines drift. A walk that stops

@@ -3,6 +3,9 @@
 id = "example"
 rig = "rigA"
 allow_eeprom_reset = false   # the 'e' letter resets settings; only on a dedicated board
+# How the TR meets the expansion port: "direct", or the extender and its slot. Every margin
+# record carries it, since an extender moves the bus timing edges; give it before a margin run.
+# port_setup = "X-Pander 3, slot 1"
 
 # The machine: a registry id from the validation tracker's systems.csv
 # (data/registry.toml names the file), or an inline [machine] table.

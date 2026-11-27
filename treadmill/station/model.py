@@ -147,6 +147,9 @@ class Station:
     kbd_fitted: frozenset[str] | None = None   # the keyboard board's fitted outputs; None until it answers
     standard: str | None = None      # PAL | NTSC as the TR's banner last reported it; None until then
     caps: frozenset[str] = frozenset()
+    # How the TR meets the expansion port ("direct", "X-Pander 3, slot 1"). An extender moved one machine's
+    # timing edges by tens of ns, so every margin record carries it and floors are taken per setup.
+    port_setup: str | None = None
 
     def with_probe(self, kind: str, listener_on: bool = False,
                    fw_defines: tuple[str, ...] = (), standard: str | None = None) -> "Station":

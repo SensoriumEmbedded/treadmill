@@ -233,6 +233,27 @@ def test_suggest_takes_only_the_commit_it_is_given(tmp_path: Path, capsys):
     assert "no margin records" in capsys.readouterr().out
 
 
+def test_floors_are_per_port_setup(tmp_path: Path, capsys):
+    """Records through an extender and plugged in directly: suggest says they
+    mix, and --port-setup keeps one; the table shows each record's setup."""
+    from treadmill.cli import EXIT_OK, main
+    margins.write(tmp_path / "r1" / "t", {**_record(when="2026-11-25T10:00:00+00:00", up=(260, 265), down=(100, 99)),
+                                          "port_setup": "X-Pander 3, slot 1"})
+    margins.write(tmp_path / "r2" / "t", {**_record(when="2026-11-26T10:00:00+00:00", up=(230, 235), down=(120, 119)),
+                                          "port_setup": "direct"})
+    margins.write(tmp_path / "r3" / "t", _record(when="2026-11-24T10:00:00+00:00"))
+    assert main(["margins", "suggest", "--station", "s1", "--reports", str(tmp_path)]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.startswith("# these records come from more than one port setup (X-Pander 3, slot 1; direct; "
+                          "not recorded): give --port-setup")
+    assert main(["margins", "suggest", "--station", "s1", "--reports", str(tmp_path), "--port-setup", "DIRECT",
+                 "--json"]) == EXIT_OK
+    got = json.loads(capsys.readouterr().out)
+    assert got["port_setups"] == ["direct"] and got["floors"]["nS_PLAprop"] == {"up": 220, "down": 130}
+    assert [row["port_setup"] for row in margins.rows(margins.load(tmp_path))] == [None, "X-Pander 3, slot 1",
+                                                                                     "direct"]
+
+
 def test_margins_import_and_map_commands(tmp_path: Path, capsys):
     from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     run = _pr99_run(tmp_path)

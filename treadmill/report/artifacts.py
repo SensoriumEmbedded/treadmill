@@ -124,7 +124,8 @@ def describe_station(board: "Board | LinklessSession") -> dict[str, Any]:
     st = board.station
     return {"id": st.id, "rig": st.rig.id, "machine": st.machine.id, "model": st.machine.model,
             "region": st.machine.region, "standard": st.standard, "caps": sorted(st.caps), "tr_uid": st.tr.uid,
-            "tr_kind": st.tr.kind, "keyboard": describe_keyboard(board), "power": describe_power(board)}
+            "tr_kind": st.tr.kind, "port_setup": st.port_setup, "keyboard": describe_keyboard(board),
+            "power": describe_power(board)}
 
 
 def describe_power(board: "Board | LinklessSession") -> dict[str, Any] | None:

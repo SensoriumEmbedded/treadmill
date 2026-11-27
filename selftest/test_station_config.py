@@ -183,6 +183,29 @@ def test_a_bad_floor_fails_loudly(lab: Path, table, match):
         load_station("fl", lab)
 
 
+def test_the_port_setup_reaches_the_run_and_every_margin_record(lab: Path):
+    from types import SimpleNamespace
+    from treadmill.margins import context_for
+    from treadmill.report import describe_station
+    assert load_station("rigA-sys1-trplus", lab).port_setup is None
+    (lab / "stations" / "ps.toml").write_text(
+        'id = "ps"\nrig = "rigA"\nmachine_id = "1"\nport_setup = " X-Pander 3, slot 1 "\n[tr]\nuid = "1"\n',
+        encoding="utf-8")
+    st = load_station("ps", lab)
+    assert st.port_setup == "X-Pander 3, slot 1"
+    board = SimpleNamespace(station=st, banner=None, kbd=None, kbd_problem=None)
+    assert describe_station(board)["port_setup"] == "X-Pander 3, slot 1"
+    assert context_for(board)["port_setup"] == "X-Pander 3, slot 1"
+
+
+@pytest.mark.parametrize("value", ["1", '""', "true"])
+def test_a_port_setup_that_is_not_text_fails_loudly(lab: Path, value):
+    (lab / "stations" / "ps.toml").write_text(
+        f'id = "ps"\nrig = "rigA"\nmachine_id = "1"\nport_setup = {value}\n[tr]\nuid = "1"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="port_setup is text"):
+        load_station("ps", lab)
+
+
 def test_list_stations_skips_examples(lab: Path):
     (lab / "stations" / "x.example.toml").write_text("", encoding="utf-8")
     assert list_stations(lab) == ["rigA-sys1-trplus"]

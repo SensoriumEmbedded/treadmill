@@ -214,6 +214,9 @@ def load_station(station_id: str, base: Path | None = None) -> Station:
     if "tr" not in t or "uid" not in t["tr"]:
         raise ConfigError(f"{path}: needs a [tr] table with uid")
     tr = _build(TRBoard, t["tr"], f"{path} [tr]")
+    port_setup = t.get("port_setup")
+    if port_setup is not None and not (isinstance(port_setup, str) and port_setup.strip()):
+        raise ConfigError(f"{path}: port_setup is text, as \"direct\" or \"X-Pander 3, slot 1\"")
     st = Station(
         id=station_id,
         rig=rig,
@@ -223,6 +226,7 @@ def load_station(station_id: str, base: Path | None = None) -> Station:
         settings_baseline=dict(t.get("settings_baseline") or {}),
         margins=_margins(t.get("margins"), path),
         keyboard=_keyboard(t.get("keyboard"), path),
+        port_setup=port_setup.strip() if port_setup else None,
     )
     return replace(st, caps=capabilities(st))
 

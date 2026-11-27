@@ -365,6 +365,8 @@ def cmd_margins(args: argparse.Namespace) -> int:
     if args.commit:
         sha = args.commit.lower()
         records = [r for r in records if ((r.get("firmware") or {}).get("commit") or "").lower().startswith(sha)]
+    if args.port_setup:
+        records = [r for r in records if (r.get("port_setup") or "").lower() == args.port_setup.strip().lower()]
     if args.knob:
         try:
             name = knobs.knob_named(args.knob).name
@@ -405,8 +407,14 @@ def cmd_margins(args: argparse.Namespace) -> int:
         if not args.station:
             raise CommandError("suggest needs --station: floors are per station", EXIT_USAGE)
         floors = margins.suggest(records, args.station, last=args.last)
-        _emit({"station": args.station, "floors": {k: {"up": f.up, "down": f.down} for k, f in floors.items()}},
-              args.json, margins.floors_toml(floors).rstrip("\n") if floors else "no margin records for the station")
+        # Floors taken through an extender do not hold plugged in directly, nor the other way round.
+        setups = sorted({r.get("port_setup") or "not recorded" for r in records if r.get("station") == args.station})
+        text = margins.floors_toml(floors).rstrip("\n") if floors else "no margin records for the station"
+        if len(setups) > 1:
+            text = (f"# these records come from more than one port setup ({'; '.join(setups)}): give --port-setup, "
+                    f"so the floors are for one\n{text}")
+        _emit({"station": args.station, "port_setups": setups,
+               "floors": {k: {"up": f.up, "down": f.down} for k, f in floors.items()}}, args.json, text)
     return EXIT_OK
 
 
@@ -998,6 +1006,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--commit", metavar="SHA",
                    help="only records of the firmware built from this commit (its first digits will do); for "
                         "suggest, the commit that ships, so a station's floors never mix builds")
+    s.add_argument("--port-setup", metavar="TEXT",
+                   help="only records taken with this port setup (the station file's port_setup, as \"direct\"); "
+                        "suggest says so when a station's records mix setups")
     s.add_argument("--last", type=int, default=5, help="suggest: the records per knob it weighs (default 5)")
     s.add_argument("--mark", action="append", metavar="KNOB=VALUE",
                    help="map, svg: a value under review, drawn across the knob's chart (repeatable)")

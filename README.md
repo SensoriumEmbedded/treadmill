@@ -13,7 +13,7 @@ The firmware runs for hours without going anywhere, and you measure it.
 ```
 treadmill/            the package: station model, link, observation, firmware, driver, reports
   pytest_plugin.py    options, markers, fixtures, the run record
-  cli.py              treadmill run | exec | shell | sweep | margins | mfg | stations | calibrate | harvest | screen | frame | score | viewer
+  cli.py              treadmill run | exec | shell | sweep | compare | margins | mfg | stations | calibrate | harvest | screen | frame | score | viewer
   driver.py           run, exec and shell as library calls
   knobs.py            the firmware's timing knobs: letters, defaults per standard, sweep limits
   sweeps.py           the timing-knob sweep engine: knob x probes x search, and the margins it reports
@@ -573,6 +573,21 @@ writes over the files.
 `scripts/2026-11-12-dmasetup-sweep.py` into records beside each run, the
 screen noise judged as the `noise` probe judges it, so PR #99's sweeps are
 on the map with the rest.
+
+`treadmill compare --station <id> --base <ref> --tip <ref> [--region both]`
+measures two builds on one station, unattended: for each standard, the full
+margin set (`tests/sweep`) on the base, then the sweeps only the newer probes
+reach (vicrom-high on `nS_RWnReady` and `nS_PLAprop`, idread on `nS_PLAprop`
+with `nS_RWnReady` held at `--rwnready-hold`, vicrom-cpu on `nS_VICDHold`),
+then both on the tip, bisected to `--tip-fine` ns with three samples a point.
+Then the station's records go to `margins.csv`, and `--power-off` latches the
+mains off. Each step is its own `treadmill` command, so a step that fails
+leaves the others' records; a station that cannot be had, or an open Teensy
+Loader, stops the steps that drive the board. The folder
+(`<reports>/compare-<time>-<station>/`) holds each step's JSON and log and
+`compare.json`, rewritten after every step. `--dry-run` prints the steps. It
+flashes both builds and drives the station for hours: the go-ahead names the
+station, both refs and the standards.
 
 ## Manufacturing test
 

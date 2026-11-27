@@ -314,6 +314,27 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     return EXIT_FAILED if margin.stopped or not margin.restored else EXIT_OK
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Both builds' margins on one station, in each standard asked for, step by step."""
+    from treadmill import compare
+    regions = ["PAL", "NTSC"] if args.region == "BOTH" else [args.region]
+    if args.tip_fine < 0:
+        raise CommandError(f"--tip-fine {args.tip_fine}: give 0 or more", EXIT_USAGE)
+    steps = compare.plan(args.station, args.base, args.tip, regions=regions,
+                         defines=args.define or list(compare.DEFINES), fine=args.tip_fine,
+                         rw_hold=args.rwnready_hold, probes=not args.no_probes, power_off=args.power_off,
+                         reports=args.reports, pytest_args=args.pytest_args)
+    if args.dry_run:
+        _emit({"steps": [s.argv for s in steps]}, args.json, "\n".join(compare.command_line(s) for s in steps))
+        return EXIT_OK
+    folder = compare.folder_for(args.reports, args.station)
+    code = compare.run_steps(steps, folder, log=_log_for(args))
+    payload = {**json.loads((folder / "compare.json").read_text(encoding="utf-8")), "folder": str(folder)}
+    _emit(payload, args.json, "\n".join(f"{s.name}: {s.status}" + (f" ({s.note})" if s.note else "")
+                                        for s in steps) + f"\n{folder}")
+    return code
+
+
 def cmd_margins(args: argparse.Namespace) -> int:
     """The margin records under a reports folder: a table, CSV, the map, the
     floors a station's runs support; or records made from PR #99 runs."""
@@ -922,6 +943,38 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dwell", type=float, default=1.0,
                    help="idread, reuloop, vicrom, game, krread: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep, screen_on=True)
+
+    s = sub.add_parser("compare", help="one station's margins on a base build and a tip build, each standard, "
+                                       "unattended",
+                       description="For each standard (--region; none: the one the C64 runs now): the full margin "
+                                   "set (tests/sweep) on --base, then the sweeps only the newer probes reach "
+                                   "(vicrom-high on nS_RWnReady and nS_PLAprop, idread on nS_PLAprop with "
+                                   "nS_RWnReady held, vicrom-cpu on nS_VICDHold), then both on --tip bisected to "
+                                   "--tip-fine ns. Then the station's margin records as CSV, and with --power-off "
+                                   "the mains latched off. Each step is its own treadmill command; one that fails "
+                                   "leaves the others. It flashes both builds and drives the station for hours: it "
+                                   "needs the go-ahead for the station. --dry-run prints the steps and runs nothing. "
+                                   "After --: pytest arguments for both margin runs.")
+    s.add_argument("--station", required=True, help="the station id (data/stations/<id>.toml)")
+    s.add_argument("--base", required=True, metavar="REF", help="the build to compare against (a git ref)")
+    s.add_argument("--tip", required=True, metavar="REF", help="the build under test (a git ref)")
+    s.add_argument("--region", type=str.upper, choices=("PAL", "NTSC", "BOTH"),
+                   help="the standards, switched by each margin run (needs region_switch); default: the one the "
+                        "C64 runs now")
+    s.add_argument("--define", action="append", metavar="NAME",
+                   help="debug defines for both builds (repeatable; default: Dbg_SerTimChg and Dbg_SerDMA)")
+    s.add_argument("--tip-fine", type=int, default=2, metavar="NS",
+                   help="the tip's bisection grain, three samples a point (default 2; 0: the base's)")
+    s.add_argument("--rwnready-hold", type=int, default=115, metavar="NS",
+                   help="nS_RWnReady for idread's nS_PLAprop sweep, below the default (default 115)")
+    s.add_argument("--no-probes", action="store_true", help="the margin runs only")
+    s.add_argument("--power-off", action="store_true",
+                   help="latch the station's mains off at the end (a relay with fw 1.1.0 or later)")
+    s.add_argument("--reports", default="reports", help="where run folders go (default: reports/)")
+    s.add_argument("--dry-run", action="store_true", help="print the steps; run nothing")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("pytest_args", nargs="*", help="after --: arguments for pytest on both margin runs")
+    s.set_defaults(func=cmd_compare, screen_on=True)
 
     s = sub.add_parser("margins", help="the margin records sweeps left: a table, CSV, the map, floors for a station",
                        description="Reads every margins.json under --reports. table: one line a record, the clean "

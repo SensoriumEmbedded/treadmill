@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from treadmill.board import Board
-from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
+from treadmill.sweeps import Sample, Setting, SweepError, at_defaults, relaunch_reset
 
 READY, READY_VALUE = 0xC104, 0x5A
 COUNTERS = 0xC110                 # rounds (16-bit), then bad rounds (16-bit)
@@ -78,9 +78,8 @@ class ReuLoopProbe:
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
             self.log(f"[sweep] {self.name} stopped at the last value; resetting and relaunching for {label}")
-            with at_defaults(setting):
-                self.board.reset()
-                self.board.wait_for_menu()
+            with at_defaults(setting, always=True):
+                relaunch_reset(self.board, self.name, self.log)
                 self.setup()
         with at_defaults(setting):
             before = self.counters()

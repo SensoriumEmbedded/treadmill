@@ -393,7 +393,8 @@ def _row(r: Mapping, y: float, x, place, name: str, origin: str = "", tick: bool
     edges = {way: e for way, e in (r.get("edges") or {}).items() if e}     # the ways swept
     tip = "; ".join(
         [_e(label(r)), f"default {r['default']}{unit}" + (f", {_e(origin)}" if origin else "")]
-        + [f"{way}: " + (f"clean to {e.get('clean_to')}, fails at {e['first_fail']}" if e.get("first_fail")
+        + [f"{way}: " + (f"not finished, clean to {e.get('clean_to')}" if e.get("open")
+                         else f"clean to {e.get('clean_to')}, fails at {e['first_fail']}" if e.get("first_fail")
                          is not None else f"clean to the sweep's limit {e.get('clean_to')}")
            for way, e in edges.items()])
     out = [f'<g><title>{tip}</title><rect x="0" y="{y + 1}" width="{WIDTH}" height="{OV_ROW - 2}" fill="transparent"/>',
@@ -417,6 +418,11 @@ def _row(r: Mapping, y: float, x, place, name: str, origin: str = "", tick: bool
         if way not in edges:
             continue
         e = ends[way]
+        tx, anchor = (x(at) - 6, "end") if way == "down" else (x(at) + 6, "start")
+        if e.get("open"):                # the walk stopped first: no end to draw, only how far it got
+            out.append(f'<text class="num muted" x="{tx:.1f}" y="{mid + 4}" text-anchor="{anchor}">'
+                       + (f'? {e["clean_to"]}' if way == "down" else f'{e["clean_to"]} ?') + "</text>")
+            continue
         failed = e.get("first_fail") is not None
         cap = x(at) if way == "down" else x(at) - 4
         color = "var(--critical)" if failed else "var(--good)"
@@ -426,7 +432,6 @@ def _row(r: Mapping, y: float, x, place, name: str, origin: str = "", tick: bool
         fail = (f'<tspan style="fill:var(--critical)">'
                 + (f'{e["first_fail"]} \u2715 ' if way == "down" else f' \u2715 {e["first_fail"]}')
                 + "</tspan>") if failed else ""
-        tx, anchor = (x(at) - 6, "end") if way == "down" else (x(at) + 6, "start")
         out.append(f'<text class="num" x="{tx:.1f}" y="{mid + 4}" text-anchor="{anchor}">'
                    + (fail + clean if way == "down" else clean + fail) + "</text>")
     out.append("</g>")

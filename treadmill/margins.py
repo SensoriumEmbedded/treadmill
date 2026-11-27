@@ -123,7 +123,7 @@ def floor_problems(record: Mapping, floor: Floor | None) -> list[str]:
     problems = []
     for way in WAYS:
         want, e = floor.get(way), edge(record, way)
-        if want is None or e is None:
+        if want is None or e is None or e.get("open"):      # not found: the stopped walk fails on its own
             continue
         got = e.get("clean_to")
         if got is None or (got < want if way == "up" else got > want):
@@ -145,7 +145,7 @@ def shrinks(record: Mapping, earlier: Iterable[Mapping]) -> list[str]:
             continue
         prev = before[-1]
         now, was = edge(record, way).get("clean_to"), edge(prev, way).get("clean_to")
-        if now is None or was is None:
+        if now is None or was is None or edge(record, way).get("open") or edge(prev, way).get("open"):
             continue
         lost = (was - now) if way == "up" else (now - was)
         if lost > shrink_limit(record):
@@ -174,7 +174,8 @@ def suggest(records: Iterable[Mapping], station: str, *, last: int = 5) -> dict[
         rs = rs[-last:]
         values: dict[str, int | None] = {}
         for way in WAYS:
-            ends = [(e["clean_to"], r) for r in rs if (e := edge(r, way)) and e.get("clean_to") is not None]
+            ends = [(e["clean_to"], r) for r in rs
+                    if (e := edge(r, way)) and e.get("clean_to") is not None and not e.get("open")]
             if not ends:
                 values[way] = None
                 continue
@@ -197,7 +198,7 @@ def floors_toml(floors: Mapping[str, Floor]) -> str:
 
 
 COLUMNS = ("when", "station", "machine", "standard", "board", "build", "image", "knob", "probes", "set", "mode",
-           "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "path")
+           "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "open", "path")
 
 
 def set_text(record: Mapping) -> str:
@@ -219,7 +220,8 @@ def rows(records: Iterable[Mapping]) -> list[dict]:
             "set": set_text(r), "mode": r.get("mode"), "passes": r.get("passes"), "default": r.get("default"),
             "down_clean": down.get("clean_to"), "down_fail": down.get("first_fail"),
             "up_clean": up.get("clean_to"), "up_fail": up.get("first_fail"),
-            "drifting": ",".join(drifting), "path": r.get("_path"),
+            "drifting": ",".join(drifting),
+            "open": ",".join(way for way in WAYS if (edge(r, way) or {}).get("open")), "path": r.get("_path"),
         })
     return out
 

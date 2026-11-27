@@ -539,7 +539,12 @@ margins suggest --station <id>` prints the floors the station's last
 each way and never past the default, to copy into its file. A test compares
 each edge with the newest earlier record of the same station, knob, edge and
 probes on another build: a shrink of more than twice `--fine` (10 ns at
-least) is a warning, not a failure, since machines drift.
+least) is a warning, not a failure, since machines drift. A walk that stops
+partway, because a probe could not get its program back (the menu still
+booting after its reset, the board gone from USB), keeps the points it
+walked: the record's `stopped` says why, the side it was on is marked
+`open` (the `open` column of `margins csv`; no end on the map, only how far
+it got), and the margin test and `treadmill sweep` fail after writing it.
 
 `treadmill margins map` draws every record as `<reports>/margin-map.html`. It
 opens with an overview per machine: the latest record of each knob, image and

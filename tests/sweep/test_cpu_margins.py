@@ -62,11 +62,11 @@ def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artif
     print(margin.describe())
     assert not margin.points[0].failed, f"the default {knob.name} {margin.default} fails the {probe.name} probe"
     floor = station.margins.get(knob.name)
-    if floor is not None and probe is not menu and not load:
+    if floor is not None and probe is not menu and not load and not margin.stopped:
         values = [v for v in (floor.down, floor.up) if v is not None]
         bad = [p for p in Sweep(dbg, knob, menu, SearchSpec(), log=print).spot(values) if p.failed]
         assert not bad, "the menu probe fails at the floor: " + "; ".join(f"{p.value}: {p.notes}" for p in bad)
-    if dma and letter != "m":
+    if dma and letter != "m" and not margin.stopped:     # a stopped walk's record goes to margin_check first
         loaded = IdReadProbe(board, programs("idread"), dwell=pace.dwell, usb_load=True, log=print)
         point, = Sweep(dbg, knob, loaded, SearchSpec(repeat=pace.repeat), log=print).spot([margin.default])
         assert not point.failed, f"the default {knob.name} {margin.default} fails under USB load: {point.notes}"

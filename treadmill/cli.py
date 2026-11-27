@@ -311,7 +311,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         h.run_dir.write_json(margins.NAME, record, h.folder)
         payload = {**record, "run_dir": str(h.run_dir.path), "folder": str(h.folder)}
     _emit(payload, args.json, margin.describe() + f"\n{margins.NAME} in {h.folder}")
-    return EXIT_OK
+    return EXIT_FAILED if margin.stopped or not margin.restored else EXIT_OK
 
 
 def cmd_margins(args: argparse.Namespace) -> int:

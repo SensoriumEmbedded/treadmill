@@ -537,3 +537,76 @@ def test_sweep_command_with_the_menu_probe_both_ways(lab: Path, capsys):  # noqa
     up, down = payload["edges"]["up"], payload["edges"]["down"]
     assert payload["probes"] == ["menu"] and up["clean_to"] <= 210 < up["first_fail"] and payload["restored"]
     assert down["first_fail"] is not None and down["clean_to"] >= 146
+
+
+def test_a_walk_that_stops_keeps_its_points_and_marks_the_unfinished_side_open(fake_station):
+    """A probe that cannot get its program back raises: the walk ends there,
+    and the record keeps what it found, the side it was on marked open
+    (backlog 43). A probe that raises before any point leaves no record."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+
+    class Breaks(Window):
+        def sample(self, label, setting=None):
+            if self.fake.knobs["p"] >= self.breaks_at:
+                raise LinkError("the menu was not ready after 60 s (last: booting)")
+            return super().sample(label, setting)
+
+    probe = Breaks(fake, "p", (100, 210))
+    probe.breaks_at = 230
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert "menu was not ready" in margin.stopped and margin.restored and fake.knobs["p"] == KNOB_DEFAULTS["p"]
+    assert (down.clean_to, down.first_fail, down.open) == (143, None, False), "clean through its stop: finished"
+    assert (up.clean_to, up.first_fail, up.open) == (210, None, True)
+    assert [p.value for p in margin.points] == [150, 143, 170, 190, 210]
+    record = margin.to_dict()
+    assert record["stopped"] == margin.stopped and record["edges"]["up"]["open"]
+    assert "THE WALK STOPPED EARLY" in margin.describe() and "up not finished: clean to 210" in margin.describe()
+    from treadmill import margins
+    assert margins.rows([record])[0]["open"] == "up"
+    probe.breaks_at = 0
+    with pytest.raises(LinkError):
+        Sweep(dbg, KNOBS["p"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    assert fake.knobs["p"] == KNOB_DEFAULTS["p"]
+
+
+def test_a_stopped_idread_is_relaunched_at_the_defaults(tmp_path: Path):
+    """A CPU knob past its edge can keep the menu from booting, so idread's
+    relaunch after a hang goes through the defaults whatever the knob times
+    (backlog 43: it relaunched at the failing nS_PLAprop and hung again)."""
+    from contextlib import contextmanager
+    seen = []
+
+    class Handle:
+        bracket = False
+
+        @contextmanager
+        def at_defaults(self, always=False):
+            seen.append(f"defaults={always}")
+            yield
+
+    running = [bytes([n, 0, 0, 0, 0, 0, 0, 0]) for n in range(1, 4)]
+    probe = IdReadProbe(_Counters(running), _idread_program(tmp_path), dwell=0.0, log=lambda m: None)
+    probe._stalled = True
+    probe.setup = lambda: seen.append("setup")
+    got = probe.sample("tp150", Handle())
+    assert seen[:2] == ["defaults=True", "setup"] and not got.hung
+
+
+def test_a_relaunch_whose_menu_is_late_goes_on_to_the_station_s_recovery():
+    """An NTSC C128's menu was still booting 60 s after the relaunch's
+    reset: that is left to the probe's setup and its recovery ladder, not
+    raised (backlog 43)."""
+    from treadmill.sweeps import relaunch_reset
+    calls, logs = [], []
+
+    class Late:
+        def reset(self):
+            calls.append("reset")
+
+        def wait_for_menu(self):
+            raise LinkError("the menu was not ready after 60 s (last: booting)")
+
+    relaunch_reset(Late(), "reuloop", logs.append)
+    assert calls == ["reset"] and "recovery is next" in logs[0]

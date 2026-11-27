@@ -38,7 +38,7 @@ from treadmill.board import Board
 from treadmill.link import DebugCommands
 from treadmill.observe.channels import CONFIDENCE_FLOOR, ScreenChannel
 from treadmill.probes.idread import SHOW_DIGITS
-from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
+from treadmill.sweeps import Sample, Setting, SweepError, at_defaults, relaunch_reset
 
 KERNAL, KERNAL_SIZE = 0xE000, 0x2000
 READY, READY_VALUE = 0xC104, 0x5A
@@ -166,9 +166,8 @@ class KrReadProbe:
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
             self.log(f"[sweep] krread stopped at the last value; resetting and relaunching for {label}")
-            with at_defaults(setting):
-                self.board.reset()
-                self.board.wait_for_menu()
+            with at_defaults(setting, always=True):
+                relaunch_reset(self.board, "krread", self.log)
                 self.setup()
         try:
             before = self.counters()

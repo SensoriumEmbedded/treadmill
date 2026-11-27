@@ -510,8 +510,8 @@ cost or a wart with a known, small fix.
    runs krread under each sense and, beside it, writes and reads back a
    pattern in a free page by DMA, counting mismatches; if the DMA sense's
    count is not zero, it goes to the firmware with that script.
-43. **medium** A sweep loses its whole record when a probe's own recovery
-   fails. After a hang, `ReuLoopProbe.sample()` (`treadmill/probes/reuloop.py`)
+43. **closed 2026-11-27, with the stopped walk's record.** A sweep lost its
+   whole record when a probe's own recovery failed. After a hang, `ReuLoopProbe.sample()` (`treadmill/probes/reuloop.py`)
    resets at the defaults and waits 60 s for the menu. On the C128 Marco1
    (2026-11-21) the REU loop with sprites hung at `nS_DMABAWait` 180, the
    menu was still booting at 60 s, and the `LinkError` went up through
@@ -520,7 +520,14 @@ cost or a wart with a known, small fix.
    next test's setup reset the machine without trouble. Fix: the probe's
    recovery goes through the station ladder (another reset) before it
    gives up, and `Sweep.run()` writes the record it has, with that edge
-   open, when a probe raises.
+   open, when a probe raises. idread's relaunch also ran at the failing
+   value, so it hung again (`nS_PLAprop` with `nS_RWnReady` at 0, the 250425
+   C64 with a Kawari, 2026-11-25). Now reuloop's and krread's relaunch falls
+   to the ladder when the menu is late (`relaunch_reset`), idread's goes
+   through the defaults as vicrom's and game's do, and `Sweep.run()` keeps
+   the walked points, marks the unfinished side `open` and returns the
+   record with `stopped`, which the margin tests and `treadmill sweep` write
+   and then fail.
 44. **medium** A noise-only failure becomes an edge on one sighting. A walk
    stops at its first failure, so one disturbed stretch of frames ends it.
    On the C64C #24 (2026-11-21) run 1's four noise-only DMA edges (one large

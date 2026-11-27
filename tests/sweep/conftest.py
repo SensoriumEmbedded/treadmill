@@ -77,6 +77,8 @@ def margin_check(station, firmware, run_dir, artifacts, warn):
         earlier = [r for r in margins.load(run_dir.path.parent) if r.get("_path") != str(path)]
         for text in margins.shrinks(record, earlier):
             warn(text)
+        assert not margin.stopped, (f"the walk stopped early: {margin.stopped}; {path} keeps its "
+                                    f"{len(margin.points)} point(s)\n" + margin.describe())
         assert margin.restored, "td not confirmed: the board still runs the last value"
         assert (margin.after or {}).get("clean", True), (f"{margin.knob.name} fails at its default after the walk: "
                                                          + "; ".join(margin.after.get("notes") or []))

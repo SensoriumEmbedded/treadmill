@@ -50,7 +50,7 @@ def test_minimalboot_margin(letter, load, at_menu, dbg, screen, programs, reques
     print(margin.describe())
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails under MinimalBoot: "
                                          f"{'; '.join(margin.points[0].notes)}")
-    if letter != "m":
+    if letter != "m" and not margin.stopped:             # a stopped walk's record goes to margin_check first
         loaded = MinimalIdReadProbe(board, screen, shown, dwell=pace.video_dwell, usb_load=True, log=print)
         point, = Sweep(dbg, knob, loaded, SearchSpec(), standard=standard, log=print).spot([margin.default])
         assert not point.failed, (f"the default {knob.name} {margin.default} fails under MinimalBoot with USB load: "

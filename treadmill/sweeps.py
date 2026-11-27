@@ -38,7 +38,7 @@ from typing import Callable, Iterator, NamedTuple, Protocol, Sequence
 from treadmill import knobs
 from treadmill.errors import EXIT_USAGE, TreadmillError
 from treadmill.knobs import HELD_SUMS, KNOBS, Knob, parse_listing, standard_of  # noqa: F401  (KNOBS: re-exported)
-from treadmill.link import DebugCommands
+from treadmill.link import DebugCommands, LinkError, TransportError
 
 _DEFAULTS_FOR = re.compile(r"Defaults set \((PAL|NTSC) (C64|C128)\)")
 
@@ -116,6 +116,18 @@ def at_defaults(setting: Setting | None, always: bool = False) -> Iterator[None]
     else:
         with setting.at_defaults(always):
             yield
+
+
+def relaunch_reset(board, name: str, log) -> None:
+    """The C64 reset to the menu, for a probe relaunching a program that
+    hung. A menu not back in time (an NTSC C128's was still booting after
+    60 s, backlog 43) is left to the probe's setup, whose ``ensure_menu`` is
+    the station's recovery ladder: another reset, then what the station has."""
+    try:
+        board.reset()
+        board.wait_for_menu()
+    except (LinkError, TransportError) as e:
+        log(f"[sweep] {name}: the menu is not back after the reset ({e}); the station's recovery is next")
 
 
 @dataclass
@@ -237,14 +249,21 @@ class Edge:
     probes: list[str] = field(default_factory=list)    # the probes that failed there
     drifting: bool = False
     per_pass: list[dict] = field(default_factory=list)
+    open: bool = False            # the walk stopped before this side was found: clean_to is as far as it got
 
     def margin(self, origin: int) -> int | None:
         return None if self.clean_to is None else abs(self.clean_to - origin)
 
+    def finished(self, fine: int) -> bool:
+        """Found: bisected to ``fine``, failing at the first value probed, or clean through the stop."""
+        if self.first_fail is None:
+            return self.clean_to == self.stop
+        return self.clean_to is None or abs(self.first_fail - self.clean_to) <= fine
+
     def to_dict(self, default: int) -> dict:
         return {"way": self.way, "stop": self.stop, "clean_to": self.clean_to, "first_fail": self.first_fail,
                 "margin": self.margin(default), "probes": self.probes, "drifting": self.drifting,
-                "per_pass": self.per_pass}
+                "per_pass": self.per_pass, "open": self.open}
 
 
 def _edge_values(points: Sequence[Point], origin: int, sign: int) -> tuple[int | None, int | None]:
@@ -289,6 +308,7 @@ class Margin:
     probe_info: dict[str, dict] = field(default_factory=dict)   # what a probe keeps besides counts (baselines)
     fixed: dict[str, int] = field(default_factory=dict)         # other knobs set for the whole sweep, by letter
     after: dict | None = None     # a walk that failed: the default checked after it (clean, restarted, notes)
+    stopped: str | None = None    # why the walk ended before its edges were found; its points stand
 
     @property
     def probe(self) -> str:
@@ -339,7 +359,7 @@ class Margin:
                      "scan": list(s.scan) if s.scan else None, "grid": list(s.grid) if s.grid else None},
             "passes": s.passes, "restored": self.restored, "seconds": round(self.seconds, 1),
             "edges": {way: e.to_dict(self.default) for way, e in self.edges.items()},
-            "probe_info": self.probe_info, "after_walk": self.after,
+            "probe_info": self.probe_info, "after_walk": self.after, "stopped": self.stopped,
             "points": [p.to_dict() for p in self.points],
         }
 
@@ -363,9 +383,14 @@ class Margin:
             note = f"  ({'; '.join(p.notes)})" if p.notes else ""
             tag = f"p{p.pass_no} " if many else ""
             lines.append(f"  {tag}{p.value:5d}  {mark}  {p.failures:6d} / {p.samples:<7d}{note}")
+        if self.stopped:
+            lines.append(f"THE WALK STOPPED EARLY: {self.stopped}")
         for way, e in self.edges.items():
             name = self.knob.name
-            if e.first_fail is None:
+            if e.open:
+                lines.append(f"{name}: {way} not finished: clean to {e.clean_to}"
+                             + (f", fails from {e.first_fail}" if e.first_fail is not None else ""))
+            elif e.first_fail is None:
                 lines.append(f"{name}: clean {way} through {e.clean_to}; no edge within the range")
             elif e.clean_to is None:
                 lines.append(f"{name}: fails at {e.first_fail}, the first value probed")
@@ -443,6 +468,7 @@ class Sweep:
         self.sums: dict[str, int] | None = None
         self.low = self.high = 0
         self._now: dict[str, int] = {}
+        self._walked: list[Point] = []    # every point probed, kept for a walk that stops partway
         if self.hold and knob.letter != "e":
             raise usage_error(f"only nS_DMASetup moves with sums held, not {knob.name}")
         if spec.grid is not None and knob.letter != "e":
@@ -664,6 +690,7 @@ class Sweep:
         self.log(f"[sweep] {self.knob.name} {value}" + (f" (pass {pass_no})" if self.spec.passes > 1 else "")
                  + f": {'FAIL' if point.failed else 'clean'} {failures}/{samples}"
                  + (f" ({'; '.join(notes)})" if notes else ""))
+        self._walked.append(point)
         if self.on_point:
             self.on_point(point)
         return point
@@ -848,34 +875,57 @@ class Sweep:
         points: list[Point] = []
         after = None
         restored = False
+        stopped = None
+        self._walked = []
         try:
-            self._pin()
-            for probe in self.ordered():
-                if probe not in started:
-                    self._start(probe, started)
-            if spec.mode == "one":
-                points, _, _ = search(lambda v: self.probe_at(v, 1), start, spec)
-            elif spec.mode == "both":
-                for n in range(1, spec.passes + 1):
-                    points += self._both(start, n)
-            elif spec.mode == "grid":
-                for n in range(1, spec.passes + 1):
-                    points += self._grid(n)
-            else:
-                for n in range(1, spec.passes + 1):
-                    points += self._scan(n)
-            if any(p.failed for p in points):
-                after = self._after_walk(started)
+            try:
+                self._pin()
+                for probe in self.ordered():
+                    if probe not in started:
+                        self._start(probe, started)
+                if spec.mode == "one":
+                    points, _, _ = search(lambda v: self.probe_at(v, 1), start, spec)
+                elif spec.mode == "both":
+                    for n in range(1, spec.passes + 1):
+                        points += self._both(start, n)
+                elif spec.mode == "grid":
+                    for n in range(1, spec.passes + 1):
+                        points += self._grid(n)
+                else:
+                    for n in range(1, spec.passes + 1):
+                        points += self._scan(n)
+                if any(p.failed for p in points):
+                    after = self._after_walk(started)
+            except TreadmillError as e:
+                # A probe that could not get its program back (the menu still booting, a relaunch that
+                # hangs again, the board gone from USB) ends the walk, not the record (backlog 43).
+                points = [p for p in self._walked if p.pass_no]
+                if not points:
+                    raise
+                stopped = str(e)
+                self.log(f"[sweep] the walk stopped after {len(points)} point(s): {e}")
         finally:
             try:
                 self.restore()
                 restored = True
-            except SweepError as e:
+            except TreadmillError as e:
                 self.log(f"[sweep] {e}")
             finally:
                 for probe in reversed(started):
-                    probe.teardown()
-                restored = self._unpin() and restored
+                    try:
+                        probe.teardown()
+                    except TreadmillError as e:
+                        if not points:
+                            raise
+                        self.log(f"[sweep] {probe.name}: its teardown failed: {e}")
+                        stopped = stopped or f"{probe.name}'s teardown failed: {e}"
+                try:
+                    restored = self._unpin() and restored
+                except TreadmillError as e:
+                    if not points:
+                        raise
+                    self.log(f"[sweep] {e}")
+                    restored = False
         if spec.mode == "one":
             way = "up" if spec.stop >= start else "down"
             edges = {way: edge_of(points, start, way, spec.stop, spec.fine)}
@@ -886,10 +936,13 @@ class Sweep:
             low, high = (self.low, self.high) if spec.mode == "both" else spec.scan
             edges = {way: edge_of(points, origin, way, stop, spec.fine)
                      for way, stop in (("down", low), ("up", high)) if stop != origin}
+        if stopped:
+            for e in edges.values():
+                e.open = not e.finished(spec.fine)
         info = {p.name: p.info() for p in self.probes if hasattr(p, "info")}
         margin = Margin(self.knob, [p.name for p in self.probes], default, start, spec, points, edges, restored,
                         time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high),
-                        info, dict(self.fixed), after)
-        if not restored:
+                        info, dict(self.fixed), after, stopped)
+        if not restored and not stopped:     # a stopped walk goes back with its record; the caller fails it
             raise SweepError("td not confirmed: the board is still running the last value\n" + margin.describe())
         return margin

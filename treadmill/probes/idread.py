@@ -83,7 +83,7 @@ class IdReadProbe:
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
             self.log(f"[sweep] idread stopped at the last value; relaunching for {label}")
-            with at_defaults(setting):
+            with at_defaults(setting, always=True):        # a CPU knob past its edge may not boot the menu
                 self.setup()
         with at_defaults(setting):
             before = self.counters()

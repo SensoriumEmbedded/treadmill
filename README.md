@@ -592,9 +592,29 @@ mains off. Each step is its own `treadmill` command, so a step that fails
 leaves the others' records; a station that cannot be had, or an open Teensy
 Loader, stops the steps that drive the board. The folder
 (`<reports>/compare-<time>-<station>/`) holds each step's JSON and log and
-`compare.json`, rewritten after every step. `--dry-run` prints the steps. It
-flashes both builds and drives the station for hours: the go-ahead names the
-station, both refs and the standards.
+`compare.json`, rewritten after every step. `--dry-run` prints the warm-up and
+the steps. It flashes both builds and drives the station for hours: the
+go-ahead names the station, both refs, the standards, the port setup and when
+the machine was switched on.
+
+A C64C was once marginal only after it had warmed up, so the first step waits
+until the machine has been on `--warmup` minutes (30; 0 for none). The compare
+has to be told when it was switched on (`--powered-since 14:20`,
+`--powered-for 12`) or that it is warm (`--assume-warm`). Without that, it
+switches the mains on itself where the station's relay has them off, latched
+or not, and waits the whole warm-up; otherwise it refuses to start, so the
+assumption is always stated. `treadmill sweep`, and `treadmill run` when it
+sweeps or soaks (`tests/sweep` or `tests/soak` named, `--soak`, or the whole
+tree on a build with `Dbg_SerTimChg`), take the same flags and refuse the same
+way; a step a compare started takes the compare's word and waits no more.
+Each run's `run.json` and every margin record carry what the warm-up rested on
+(`warm_up`: `powered_since`, and `how`: stated, switched on by the relay,
+assumed warm, or not needed).
+
+Before its first step, a compare prints a preflight, and `compare.json` keeps
+it: the station and its system number, the port setup, both builds (each
+ref and the commit it names), the defines, the standards, the warm-up, what
+happens to the mains at the end, and about how long the whole thing takes.
 
 ## Manufacturing test
 

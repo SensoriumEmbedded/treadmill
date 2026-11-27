@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from treadmill import __version__
+from treadmill import warmup
 
 if TYPE_CHECKING:
     from treadmill.board import Board
@@ -124,7 +125,8 @@ def describe_station(board: "Board | LinklessSession") -> dict[str, Any]:
     st = board.station
     return {"id": st.id, "rig": st.rig.id, "machine": st.machine.id, "model": st.machine.model,
             "region": st.machine.region, "standard": st.standard, "caps": sorted(st.caps), "tr_uid": st.tr.uid,
-            "tr_kind": st.tr.kind, "port_setup": st.port_setup, "keyboard": describe_keyboard(board),
+            "tr_kind": st.tr.kind, "port_setup": st.port_setup, "warm_up": warmup.current(),
+            "keyboard": describe_keyboard(board),
             "power": describe_power(board)}
 
 

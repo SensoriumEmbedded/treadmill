@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from treadmill import warmup
+
 SCHEMA = 1
 NAME = "margins.json"
 WAYS = ("down", "up")
@@ -60,6 +62,7 @@ def context_for(board, firmware: Mapping | None = None, *, image: str = "main") 
                     "c128": bool(banner and banner.machine == "C128")},
         "board": st.tr.kind,
         "port_setup": st.port_setup,
+        "warm_up": warmup.current(),
         "firmware": {"version": banner.version if banner else None, "tag": banner.tag if banner else None,
                      "dirty": bool(fw.get("dirty")) or bool(banner and banner.dirty),
                      "commit": fw.get("commit"), "describe": fw.get("describe"),

@@ -23,11 +23,13 @@ import json
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from treadmill import __version__, awake
 from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE, TreadmillError  # noqa: F401
 from treadmill.station import ConfigError, list_stations, load_station
+from treadmill.station.lock import RigBusy
 from treadmill.station.model import tier
 
 # The driver and the video tools are imported inside their commands: they bring OpenCV and the
@@ -100,6 +102,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     entry each, and the exit code is the higher of the two."""
     from treadmill.driver import RunOptions, run_regions
 
+    if _margin_run(args):
+        _warm_up(args, _log_for(args))
     opts = RunOptions(
         station=args.station, tests=tuple(args.tests or ()), reports=args.reports, caps_mask=args.caps_mask,
         region=args.region,
@@ -225,6 +229,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             raise CommandError(f"--set gives {other.name} twice", EXIT_USAGE)
         fixed[other.letter] = value
     log = _log_for(args)
+    _warm_up(args, log)
     with Harness(_harness_options(args), f"sweep-{knob.letter}", log) as h:
         ns = h.namespace
         board, dbg = ns["board"], ns["dbg"]
@@ -315,24 +320,67 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
-    """Both builds' margins on one station, in each standard asked for, step by step."""
+    """Both builds' margins on one station, in each standard asked for, step by step,
+    after a preflight that says what it is about to do and what the warm-up rests on."""
     from treadmill import compare
+    from treadmill import warmup as wu
     regions = ["PAL", "NTSC"] if args.region == "BOTH" else [args.region]
     if args.tip_fine < 0:
         raise CommandError(f"--tip-fine {args.tip_fine}: give 0 or more", EXIT_USAGE)
-    steps = compare.plan(args.station, args.base, args.tip, regions=regions,
-                         defines=args.define or list(compare.DEFINES), fine=args.tip_fine,
+    warm, refused = _settle_warmup(args, dry_run=args.dry_run)
+    defines = args.define or list(compare.DEFINES)
+    steps = compare.plan(args.station, args.base, args.tip, regions=regions, defines=defines, fine=args.tip_fine,
                          rw_hold=args.rwnready_hold, probes=not args.no_probes, power_off=args.power_off,
                          reports=args.reports, pytest_args=args.pytest_args)
+    said = warm.describe() if warm else f"warm-up: the compare would refuse: {refused}"
+    pre = compare.preflight(_station_for_preflight(args.station), args.base, args.tip, regions=regions,
+                            defines=defines, power_off=args.power_off, steps=steps, warmup=warm, warmup_said=said,
+                            resolve=lambda ref: _resolve_ref(args.station, ref))
     if args.dry_run:
-        _emit({"steps": [s.argv for s in steps]}, args.json, "\n".join(compare.command_line(s) for s in steps))
+        _emit({"preflight": pre, "steps": [s.argv for s in steps]}, args.json,
+              "\n".join([*compare.preflight_lines(pre), *(compare.command_line(s) for s in steps)]))
         return EXIT_OK
+    log = _log_for(args)
+    for line in compare.preflight_lines(pre):
+        log(line)
+    if warm.how == wu.RELAY:
+        log(f"[compare] {datetime.now():%H:%M} switching the mains on through the relay")
+        wu.switch_on(args.station)
+    wu.hand_on(warm)                              # each step's records carry it, and no step waits again
     folder = compare.folder_for(args.reports, args.station)
-    code = compare.run_steps(steps, folder, log=_log_for(args))
+    code = compare.run_steps(steps, folder, log=log, warmup=warm, preflight=pre)
     payload = {**json.loads((folder / "compare.json").read_text(encoding="utf-8")), "folder": str(folder)}
     _emit(payload, args.json, "\n".join(f"{s.name}: {s.status}" + (f" ({s.note})" if s.note else "")
                                         for s in steps) + f"\n{folder}")
     return code
+
+
+def _station_for_preflight(station_id: str):
+    """The station file, or a stand-in that says it could not be read: the
+    preflight still lists the rest, and the first step reports the file."""
+    from types import SimpleNamespace
+    try:
+        return load_station(station_id)
+    except ConfigError as e:
+        unknown = SimpleNamespace(id="?", model=f"station file not read: {e}")
+        return SimpleNamespace(id=station_id, machine=unknown, port_setup=None, rig=None)
+
+
+def _resolve_ref(station_id: str, ref: str) -> str | None:
+    """A build's commit, from the firmware checkout the station builds from."""
+    import subprocess
+    try:
+        where = load_station(station_id).rig.firmware_checkout or os.environ.get("TREADMILL_FW_REPO")
+    except ConfigError:
+        where = os.environ.get("TREADMILL_FW_REPO")
+    if not where:
+        return None
+    try:
+        out = subprocess.run(["git", "-C", where, "rev-parse", "--short=8", f"{ref}^{{commit}}"],
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    except OSError:                               # no git on PATH: the preflight shows the ref unresolved
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
 
 
 def cmd_margins(args: argparse.Namespace) -> int:
@@ -792,6 +840,88 @@ def cmd_viewer(args: argparse.Namespace) -> int:
 
 # -- parser -----------------------------------------------------------------------
 
+def _warmup_args(s: argparse.ArgumentParser) -> None:
+    g = s.add_argument_group("warm-up (margin runs: when the machine was switched on; one is required)")
+    g.add_argument("--warmup", type=int, default=30, metavar="MIN",
+                   help="minutes the machine is on before the first sweep (default 30; 0: no wait)")
+    on = g.add_mutually_exclusive_group()
+    on.add_argument("--powered-since", metavar="HH:MM",
+                    help="when the machine was switched on (today, or YYYY-MM-DDTHH:MM); the rest of the warm-up "
+                         "is waited out")
+    on.add_argument("--powered-for", type=int, metavar="MIN", help="how many minutes the machine has been on")
+    on.add_argument("--assume-warm", action="store_true",
+                    help="no wait; the records say the machine was assumed warm")
+
+
+def _settle_warmup(args: argparse.Namespace, *, dry_run: bool = False):
+    """The warm-up a margin run starts with, and why: what the caller stated,
+    else what a compare that started this step settled, else the relay
+    (mains off: they go on and the whole warm-up is waited). Refused when
+    nothing says how long the machine has been on; under --dry-run the
+    refusal comes back as text instead. Returns (Warmup or None, refusal)."""
+    from treadmill import warmup as wu
+    now = datetime.now()
+    if args.powered_for is not None and args.powered_for < 0:
+        raise CommandError(f"--powered-for {args.powered_for}: give 0 or more minutes", EXIT_USAGE)
+    try:
+        since = (wu.parse_since(args.powered_since, now) if args.powered_since
+                 else now - timedelta(minutes=args.powered_for) if args.powered_for is not None else None)
+    except ValueError as e:
+        raise CommandError(str(e), EXIT_USAGE) from None
+    if since is None and not args.assume_warm:
+        inherited = wu.from_env(now, args.warmup)
+        if inherited is not None:
+            return inherited, None
+    ask_relay = since is None and not args.assume_warm and args.warmup > 0
+    try:
+        relay_off = wu.relay_is_off(args.station) if ask_relay else None
+    except RigBusy as e:                          # the rig is in use: say so, not "when was it switched on?"
+        if not dry_run:
+            raise
+        return None, str(e)
+    try:
+        return wu.warmup_for(now=now, minutes=args.warmup, since=since, assume_warm=args.assume_warm,
+                             relay_off=relay_off, machine=args.station), None
+    except wu.WarmupUnknown as e:
+        if not dry_run:
+            raise CommandError(str(e), EXIT_USAGE) from None
+        return None, str(e)
+
+
+def _warm_up(args: argparse.Namespace, log) -> None:
+    """A run or sweep on its own: settle the warm-up, switch the mains on if
+    that is what it rests on, wait it out, and hand it to the records."""
+    from treadmill import warmup as wu
+    w, _ = _settle_warmup(args)
+    if w.how == wu.RELAY and not os.environ.get(wu.ENV):
+        wu.switch_on(args.station)
+    log(f"[warm-up] {datetime.now():%H:%M} {w.describe()}")
+    wu.wait_out(w, log)
+    wu.hand_on(w)
+
+
+def _margin_run(args: argparse.Namespace) -> bool:
+    """Whether a run sweeps or soaks, the runs a warm-up is for: a path in
+    tests/sweep or tests/soak, --soak, or a path holding them (the whole tree,
+    named or not) on a build with the knobs. Paths resolve as the run's own do."""
+    from treadmill.driver import _resolve_test
+    from treadmill.station.config import repo_root
+    if args.estimate:
+        return False
+    if args.soak:
+        return True
+    knobs = "Dbg_SerTimChg" in [*(args.define or []), *args.fw_defines.split(",")]
+    root = repo_root()
+    margin_dirs = [(root / "tests" / d).resolve() for d in ("sweep", "soak")]
+    for target in args.tests or [str(root / "tests")]:
+        path = Path(_resolve_test(target, root).partition("::")[0]).resolve()
+        if any(path == d or d in path.parents for d in margin_dirs):
+            return True
+        if knobs and any(path in d.parents for d in margin_dirs):
+            return True
+    return False
+
+
 def _station_args(s: argparse.ArgumentParser, required: bool = True, json_flag: bool = True) -> None:
     s.add_argument("--station", required=required, help="the station id (data/stations/<id>.toml)")
     s.add_argument("--attended", action="store_true", help="a person is at the bench: manual power may prompt")
@@ -861,6 +991,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="one power cycle before the first test, through the ladder's own rung: proves the "
                         "station can recover by mains before an unattended run")
     _firmware_args(s)
+    _warmup_args(s)
     s.add_argument("pytest_args", nargs="*", help="after --: arguments for pytest")
     s.set_defaults(func=cmd_run, screen_on=True)
 
@@ -900,6 +1031,7 @@ def build_parser() -> argparse.ArgumentParser:
                                    "TR, by video; not for a knob that times DMA). margins.json goes in the run folder.")
     _station_args(s)
     _harness_args(s)
+    _warmup_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
     s.add_argument("--probe", choices=["idread", "menu", "zpattern", "reuloop", "reuloop-sprites", "cpuwatch",
                                        "noise", "vicrom", "vicrom-cpu", "vicrom-high", "game", "krread"],
@@ -964,7 +1096,11 @@ def build_parser() -> argparse.ArgumentParser:
                                    "--tip-fine ns. Then the station's margin records as CSV, and with --power-off "
                                    "the mains latched off. Each step is its own treadmill command; one that fails "
                                    "leaves the others. It flashes both builds and drives the station for hours: it "
-                                   "needs the go-ahead for the station. --dry-run prints the steps and runs nothing. "
+                                   "needs the go-ahead for the station. The first step waits until the machine has "
+                                   "been on --warmup minutes: give --powered-since or --powered-for, or --assume-warm; "
+                                   "without them it switches the mains on through the relay where they are off, and "
+                                   "otherwise refuses to start. Every record carries what the warm-up rested on. "
+                                   "--dry-run prints the warm-up and the steps and runs nothing. "
                                    "After --: pytest arguments for both margin runs.")
     s.add_argument("--station", required=True, help="the station id (data/stations/<id>.toml)")
     s.add_argument("--base", required=True, metavar="REF", help="the build to compare against (a git ref)")
@@ -981,8 +1117,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-probes", action="store_true", help="the margin runs only")
     s.add_argument("--power-off", action="store_true",
                    help="latch the station's mains off at the end (a relay with fw 1.1.0 or later)")
+    _warmup_args(s)
     s.add_argument("--reports", default="reports", help="where run folders go (default: reports/)")
-    s.add_argument("--dry-run", action="store_true", help="print the steps; run nothing")
+    s.add_argument("--dry-run", action="store_true", help="print the warm-up and the steps; run nothing")
     s.add_argument("--json", action="store_true")
     s.add_argument("pytest_args", nargs="*", help="after --: arguments for pytest on both margin runs")
     s.set_defaults(func=cmd_compare, screen_on=True)

@@ -42,6 +42,13 @@ def fake_station(lab, monkeypatch):  # noqa: F811
         board.close()
 
 
+def _error_json(err: str) -> dict:
+    """The error a --json command printed: the last line of stderr, after its diagnostics
+    (a sweep states its warm-up first)."""
+    import json
+    return json.loads(err.strip().splitlines()[-1])
+
+
 def test_zpattern_finds_the_dmasetup_window_with_the_sums_held(fake_station):
     fake, board, dbg = fake_station
     probe = ZPatternProbe(board, dbg, pages=4, log=lambda m: None)
@@ -183,7 +190,7 @@ def test_sweep_command_with_the_dma_probes(lab: Path, capsys):  # noqa: F811
     from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     import json
     base = ["sweep", "e", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines",
-            "Dbg_SerTimChg,Dbg_SerDMA", "--json"]
+            "Dbg_SerTimChg,Dbg_SerDMA", "--json", "--assume-warm"]
     code = main(base + ["--probe", "zpattern", "--z-pages", "4", "--both", "--step", "20", "--fine", "5"])
     out, err = capsys.readouterr()
     assert code == EXIT_OK, err
@@ -191,7 +198,7 @@ def test_sweep_command_with_the_dma_probes(lab: Path, capsys):  # noqa: F811
     assert payload["probes"] == ["zpattern"] and payload["held"] == {"release": 854, "latch": 834}
     assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (380, 480)
     assert main(base + ["--probe", "noise"]) == EXIT_USAGE
-    assert "runs beside another" in json.loads(capsys.readouterr().err)["error"]
+    assert "runs beside another" in _error_json(capsys.readouterr().err)["error"]
 
 
 def test_a_grid_maps_dmasetup_by_dmadatahold_with_the_latch_held(fake_station):
@@ -549,7 +556,7 @@ def test_sweep_command_with_vicrom_krread_and_a_game(lab: Path, capsys):  # noqa
     from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     import json
     base = ["--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg", "--json",
-            "--dwell", "0.3", "--both", "--step", "20", "--fine", "10"]
+            "--dwell", "0.3", "--both", "--step", "20", "--fine", "10", "--assume-warm"]
     assert main(["sweep", "v", "--probe", "vicrom", *base]) == EXIT_OK, capsys.readouterr().err
     edges = json.loads(capsys.readouterr().out)["edges"]
     assert (edges["down"]["clean_to"], edges["up"]["clean_to"]) == (155, 285)
@@ -557,7 +564,7 @@ def test_sweep_command_with_vicrom_krread_and_a_game(lab: Path, capsys):  # noqa
     payload = json.loads(capsys.readouterr().out)
     assert payload["probes"] == ["krread"] and payload["edges"]["up"]["clean_to"] == 330
     assert main(["sweep", "v", "--probe", "game", *base]) == EXIT_USAGE
-    assert "needs --game" in json.loads(capsys.readouterr().err)["error"]
+    assert "needs --game" in _error_json(capsys.readouterr().err)["error"]
     game = lab / "game.crt"
     game.write_bytes(b"C64 CARTRIDGE   " + bytes(64))
     assert main(["sweep", "v", "--probe", "game", "--game", str(game), "--game-settle", "0.2", "--game-learn", "1",
@@ -570,13 +577,14 @@ def test_sweep_command_under_minimalboot(lab: Path, capsys):  # noqa: F811
     from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     import json
     base = ["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
-            "--json", "--image", "minimal", "--dwell", "0.2", "--both", "--step", "20", "--fine", "10"]
+            "--json", "--image", "minimal", "--dwell", "0.2", "--both", "--step", "20", "--fine", "10",
+            "--assume-warm"]
     assert main(base) == EXIT_OK, capsys.readouterr().err
     payload = json.loads(capsys.readouterr().out)
     assert payload["probes"] == ["idread-minimal"] and payload["firmware"]["image"] == "minimal"
     assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (150, 210)
     assert main(base + ["--probe", "menu"]) == EXIT_USAGE
-    assert "idread, read by video" in json.loads(capsys.readouterr().err)["error"]
+    assert "idread, read by video" in _error_json(capsys.readouterr().err)["error"]
 
 
 def test_minimalboot_leaving_for_the_main_image_fails_that_value_and_the_walk_goes_on(fake_station, tmp_path: Path):

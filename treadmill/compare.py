@@ -10,6 +10,13 @@ and the folder holds each step's JSON and log beside ``compare.json``.
 One standard at a time, both builds in it: the margin run switches the
 machine (``--region``), and ``treadmill sweep`` has none, so a probe sweep
 runs in the standard the run before it left.
+
+The first step waits until the machine has been on ``--warmup`` minutes. A
+compare has to be told when it was switched on (``--powered-since``,
+``--powered-for``) or that it is warm (``--assume-warm``); without that it
+switches the mains on itself where the relay has them off, and otherwise
+refuses to start, so the assumption is always stated. Every record the run
+writes carries what it was.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from pathlib import Path
 from typing import Callable
 
 from treadmill.errors import EXIT_FAILED, EXIT_NO_STATION, EXIT_OK, EXIT_USAGE
+from treadmill.warmup import Warmup, wait_out
 
 DEFINES = ("Dbg_SerTimChg", "Dbg_SerDMA")      # the margin set's knobs, the DMA ones included
 # Held for nS_PLAprop's walk down: at 0 the C64 hung on an early address read before the PLA's
@@ -81,6 +89,50 @@ def plan(station: str, base: str, tip: str, *, regions: list[str | None], define
     return steps
 
 
+# Minutes a step took on the 250407 C64 and the 250425 C64 (2026-11-26/27): a full margin set 67-76, the
+# same bisected to 2 ns 151-162, a probe sweep 1-3. The preflight's estimate is a guide, not a limit.
+MARGINS_MIN, MARGINS_FINE_MIN, SWEEP_MIN = 75, 160, 3
+
+
+def estimate_min(steps: list[Step], warmup: Warmup | None) -> int:
+    total = (warmup.wait_s / 60 if warmup else 0) + sum(
+        (MARGINS_FINE_MIN if "--margin-fine" in s.argv else MARGINS_MIN) if s.kind == "run"
+        else SWEEP_MIN if s.kind == "sweep" else 0 for s in steps)
+    return int(round(total))
+
+
+def preflight(station, base: str, tip: str, *, regions: list[str | None], defines: list[str], power_off: bool,
+              steps: list[Step], warmup: Warmup | None, warmup_said: str,
+              resolve: Callable[[str], str | None] = lambda ref: None) -> dict:
+    """What the compare is about to do, stated before it starts: the station
+    and its machine, the port setup, both builds, the standards, the warm-up,
+    what happens at the end and about how long it takes."""
+    def build(ref):
+        sha = resolve(ref)
+        return ref if not sha or sha.startswith(ref) else f"{ref} ({sha})"
+    return {"station": station.id, "system": station.machine.id, "model": station.machine.model,
+            "port_setup": station.port_setup or "not recorded in the station file",
+            "base": build(base), "tip": build(tip), "defines": list(defines),
+            "standards": [r for r in regions if r] or "as the C64 runs now",
+            "warm_up": warmup_said, "at_the_end": "mains latched off" if power_off else "mains left on",
+            "estimate_min": estimate_min(steps, warmup)}
+
+
+def preflight_lines(p: dict) -> list[str]:
+    hours, mins = divmod(p["estimate_min"], 60)
+    std = ", ".join(p["standards"]) if isinstance(p["standards"], list) else p["standards"]
+    return ["[compare] preflight",
+            f"  station     {p['station']}: {'#' if str(p['system']).isdigit() else ''}{p['system']}, {p['model']}",
+            f"  port setup  {p['port_setup']}",
+            f"  base        {p['base']}",
+            f"  tip         {p['tip']}",
+            f"  defines     {', '.join(p['defines']) or 'none'}",
+            f"  standards   {std}",
+            f"  {p['warm_up']}",
+            f"  at the end  {p['at_the_end']}",
+            f"  takes about {hours} h {mins:02d} min"]
+
+
 def command_line(step: Step) -> str:
     return " ".join(["treadmill", *step.argv])
 
@@ -106,13 +158,18 @@ def run_subprocess(step: Step, out: Path, err: Path) -> int:
 
 
 def run_steps(steps: list[Step], folder: Path, *, runner: Runner = run_subprocess,
-              loader_open: Callable[[], bool] = teensy_loader_open, log=print) -> int:
-    """Each step in turn, its output in ``folder``. A station that cannot be
-    had (exit 4) or an open Teensy Loader stops the station's steps; the CSV
-    and the power-off still run. ``compare.json`` is rewritten after every
-    step, so a compare cut short still says how far it got."""
+              loader_open: Callable[[], bool] = teensy_loader_open, log=print, warmup: Warmup | None = None,
+              preflight: dict | None = None,
+              sleep: Callable[[float], None] | None = None) -> int:
+    """Each step in turn, its output in ``folder``, the warm-up's wait before
+    the first run or sweep, once no Teensy Loader is open. A station that
+    cannot be had (exit 4) or an open Teensy Loader stops the station's
+    steps; the CSV and the power-off still run. ``compare.json`` is rewritten
+    after every step, so a compare cut short still says how far it got."""
     folder.mkdir(parents=True, exist_ok=True)
     stop: str | None = None
+    waited = warmup is None or warmup.wait_s <= 0
+    _write(folder, steps, warmup, preflight)
     for step in steps:
         if stop and step.kind in ("run", "sweep"):
             step.status, step.note = "skipped", stop
@@ -122,6 +179,10 @@ def run_steps(steps: list[Step], folder: Path, *, runner: Runner = run_subproces
             step.status, step.note = "skipped", stop
             log(f"[compare] {stop}; the station's steps stop here")
             continue
+        if step.kind in ("run", "sweep") and not waited:      # after the loader check: never wait for nothing
+            log(f"[compare] {datetime.now():%H:%M} {warmup.describe()}")
+            wait_out(warmup, log, sleep)
+            waited = True
         out, err = folder / f"{step.name}.{'csv' if step.kind == 'csv' else 'json'}", folder / f"{step.name}.log"
         log(f"[compare] {datetime.now():%H:%M} {step.name}: {command_line(step)}")
         t0 = time.monotonic()
@@ -141,8 +202,8 @@ def run_steps(steps: list[Step], folder: Path, *, runner: Runner = run_subproces
             + (f" ({step.note})" if step.note else "") + f", {step.seconds:.0f} s")
         if step.exit_code == EXIT_NO_STATION:
             stop = f"{step.name}: the station could not be had"
-        _write(folder, steps)
-    _write(folder, steps)
+        _write(folder, steps, warmup, preflight)
+    _write(folder, steps, warmup, preflight)
     return exit_code(steps)
 
 
@@ -163,8 +224,9 @@ def exit_code(steps: list[Step]) -> int:
     return EXIT_OK
 
 
-def _write(folder: Path, steps: list[Step]) -> None:
-    (folder / "compare.json").write_text(json.dumps({"steps": [asdict(s) for s in steps],
+def _write(folder: Path, steps: list[Step], warmup: Warmup | None = None, preflight: dict | None = None) -> None:
+    (folder / "compare.json").write_text(json.dumps({"preflight": preflight, "warmup": asdict(warmup) if warmup else None,
+                                                     "steps": [asdict(s) for s in steps],
                                                      "exit_code": exit_code(steps)}, indent=2) + "\n",
                                          encoding="utf-8")
 

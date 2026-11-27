@@ -107,6 +107,11 @@ class Setting:
         finally:
             self.sweep.apply(self.values)
 
+    def again(self) -> None:
+        """The values set again, after a probe's relaunch put the defaults back
+        (a fresh MinimalBoot starts at its own)."""
+        self.sweep.apply(self.values)
+
 
 @contextmanager
 def at_defaults(setting: Setting | None, always: bool = False) -> Iterator[None]:
@@ -683,7 +688,13 @@ class Sweep:
             if moved:
                 failures, samples = failures + 1, samples + 1
                 notes.append(f"the board moved {moved} during the samples")
-                self.apply(setting)
+                if hung:
+                    # A probe that got its program back did so at the defaults (MinimalBoot leaving for
+                    # the main image below nS_MaxAdj's edge, and coming back fresh): setting the failing
+                    # value again could send it straight back out. The next point sets its own values.
+                    self._now.update(listed)
+                else:
+                    self.apply(setting)
         held = {l: v for l, v in setting.items() if l != self.knob.letter}
         point = Point(value, failures, samples, time.monotonic() - t0, notes, by_probe, failed_by, hung, pass_no,
                       held)

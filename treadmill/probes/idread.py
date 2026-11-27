@@ -184,6 +184,45 @@ class MinimalIdReadProbe(IdReadProbe):
             time.sleep(0.3)
         raise SweepError("idread is not counting on the C64's top row under MinimalBoot")
 
+    def sample(self, label: str, setting: Setting | None = None) -> Sample:
+        if self._stalled:
+            self.log(f"[sweep] idread stopped at the last value; handing off to MinimalBoot again for {label}")
+            self._back_to_minimal()
+            if setting is not None:
+                setting.again()            # a fresh MinimalBoot starts at its own defaults
+        try:
+            got = super().sample(label, setting)
+        except (LinkError, TransportError, SweepError):
+            if not self._left():
+                raise
+            got = None
+        if got is None or self._left():
+            # Below nS_MaxAdj's lower edge MinimalBoot starts the main image on its own (isrButton ->
+            # runMainTRApp_FromMin; the 250425 C64 with a Kawari, PAL, 2026-11-25): a failure at this
+            # value, not a lost board.
+            self.log(f"[sweep] MinimalBoot left for the main image at {label}; handing off to it again")
+            self._back_to_minimal()
+            return Sample(1, 1, "MinimalBoot left for the main image", hung=True)
+        return got
+
+    def _left(self) -> bool:
+        """MinimalBoot no longer answers: its port dropped, or the main image answers instead."""
+        if self.board.link.stream.ended:
+            return True
+        try:
+            return self.board.link.fw_check() != "minimal"
+        except (LinkError, TransportError):
+            return self.board.link.stream.ended
+
+    def _back_to_minimal(self) -> None:
+        """A fresh MinimalBoot with idread counting, at its own defaults."""
+        if self.board.link.stream.ended:
+            self.board.reconnect_after_drop(DROP_S)      # already gone: the main image's port comes back
+            self.board.wait_for_menu()
+        else:
+            self.teardown()                              # a reset leaves MinimalBoot for the main image
+        self.setup()
+
     def teardown(self) -> None:
         try:
             self.board.link.reset()      # out of MinimalBoot: the board restarts in its main image

@@ -577,3 +577,28 @@ def test_sweep_command_under_minimalboot(lab: Path, capsys):  # noqa: F811
     assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (150, 210)
     assert main(base + ["--probe", "menu"]) == EXIT_USAGE
     assert "idread, read by video" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_minimalboot_leaving_for_the_main_image_fails_that_value_and_the_walk_goes_on(fake_station, tmp_path: Path):
+    """Below nS_MaxAdj's lower edge MinimalBoot starts the main image on its
+    own: that value fails, the probe hands off to MinimalBoot again, and the
+    walk bisects the edge instead of losing the board."""
+    from selftest.synth import fake_frame_source
+    from treadmill.probes.idread import MinimalIdReadProbe
+    fake, board, _ = fake_station
+    fake.faults["minimal_leaves_below"] = {"m": 960}
+    board.reconnect_hook = lambda: Link(fake.host_stream)
+    dbg = DebugCommands(lambda: board.link, DEFINES)       # the letters go to the image that answers
+    calib, bank = _video_kit()
+    screen = ScreenChannel(board.link, fake_frame_source(fake), calib, bank, dma_allowed=lambda: False)
+    program = tmp_path / "idread-show.crt"
+    program.write_bytes(b"C64 CARTRIDGE   " + bytes(48))
+    probe = MinimalIdReadProbe(board, screen, program, dwell=0.3, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["m"], probe, SearchSpec(stop=900, step=20, fine=5), standard="NTSC",
+                   log=lambda m: None).run()
+    edge = margin.edges["down"]
+    assert (edge.clean_to, edge.first_fail) == (963, 958), margin.describe()
+    assert not margin.stopped and margin.restored
+    left = [p for p in margin.points if p.failed]
+    assert left and all("MinimalBoot left for the main image" in p.notes[0] for p in left), margin.describe()
+    assert fake.image == "main", "torn down to the main image"

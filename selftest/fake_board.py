@@ -457,6 +457,26 @@ class FakeBoard:
             threading.Thread(target=self.serve, args=(far,), name="fake-board", daemon=True).start()
         threading.Thread(target=restart, name="fake-board-usb", daemon=True).start()
 
+    def leave_minimal(self, after: float = 0.2) -> None:
+        """MinimalBoot starting the main image on its own, after it has
+        answered, as it does below nS_MaxAdj's lower edge (isrButton ->
+        runMainTRApp_FromMin, the 250425 C64 in PAL on 2026-11-25): the main image boots
+        at its defaults, the C64 resets to the menu, the USB re-enumerates."""
+        def leave() -> None:
+            time.sleep(after)
+            with self.lock:
+                self.image = "main"
+                self.idread_show = False
+                self.idread = None
+                self.busy = False
+                self.program = None
+                self.restore_knobs()
+                self.memory[0xD018] = 0x17
+                self.cold_start()
+                self.menu.reset()
+            self.usb_restart(0.0)
+        threading.Thread(target=leave, name="fake-minimal-leave", daemon=True).start()
+
     def show_counters(self) -> None:
         """idread.a with SHOW: passes, wrong ROM and wrong IO2 reads in hex on
         the top row (cells 0-3, 5-10 and 12-17); krread.a: passes and its four
@@ -589,6 +609,9 @@ class FakeBoard:
                 digits = end.read(TIMING_KNOBS[sub], WAIT_S).decode("latin-1")
                 self.knobs[sub] = int(digits)
                 self.letters.append(f"t{sub}{digits}")
+                below = (self.faults.get("minimal_leaves_below") or {}).get(sub)
+                if self.image == "minimal" and below is not None and self.knobs[sub] < below:
+                    self.leave_minimal()
                 head = f"\nVal Set to: {int(digits)}\n\n"          # GetDigits()
                 if sub == "x":
                     head += "Kernal HIRAM sense mode set: takes effect at the next Kernal Replace launch\n"

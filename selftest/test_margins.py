@@ -214,6 +214,25 @@ def test_the_map_opens_with_an_overview_of_each_machine(tmp_path: Path):
     assert page.index("<details><summary>Every record, a chart per knob</summary>") < page.index("<h2>nS_PLAprop (ns)")
 
 
+def test_suggest_takes_only_the_commit_it_is_given(tmp_path: Path, capsys):
+    """A station's last records mix a base build's and a release's; --commit
+    keeps the floors to the build that ships."""
+    from treadmill.cli import EXIT_OK, main
+    margins.write(tmp_path / "r1" / "t", _record(commit="88f5c8051fbc", when="2026-11-25T10:00:00+00:00",
+                                                 up=(170, 175), down=(140, 139)))
+    margins.write(tmp_path / "r2" / "t", _record(commit="4d67594c18c5", when="2026-11-26T10:00:00+00:00",
+                                                 up=(230, 235), down=(120, 119)))
+    assert main(["margins", "suggest", "--station", "s1", "--reports", str(tmp_path), "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["floors"]["nS_PLAprop"] == {"up": 160, "down": 150}
+    assert main(["margins", "suggest", "--station", "s1", "--reports", str(tmp_path), "--commit", "4D67594C",
+                 "--json"]) == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["floors"]["nS_PLAprop"] == {"up": 220, "down": 130}
+    assert main(["margins", "table", "--reports", str(tmp_path), "--commit", "88f5"]) == EXIT_OK
+    assert "88f5c8051fbc" in capsys.readouterr().out
+    assert main(["margins", "suggest", "--station", "s1", "--reports", str(tmp_path), "--commit", "fff"]) == EXIT_OK
+    assert "no margin records" in capsys.readouterr().out
+
+
 def test_margins_import_and_map_commands(tmp_path: Path, capsys):
     from treadmill.cli import EXIT_OK, EXIT_USAGE, main
     run = _pr99_run(tmp_path)

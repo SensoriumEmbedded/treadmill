@@ -362,6 +362,9 @@ def cmd_margins(args: argparse.Namespace) -> int:
     records = margins.load(Path(args.reports))
     if args.station:
         records = [r for r in records if r.get("station") == args.station]
+    if args.commit:
+        sha = args.commit.lower()
+        records = [r for r in records if ((r.get("firmware") or {}).get("commit") or "").lower().startswith(sha)]
     if args.knob:
         try:
             name = knobs.knob_named(args.knob).name
@@ -992,6 +995,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reports", default="reports", help="where run folders are (default: reports/)")
     s.add_argument("--station", help="only this station's records (suggest needs it)")
     s.add_argument("--knob", help="only this knob's records")
+    s.add_argument("--commit", metavar="SHA",
+                   help="only records of the firmware built from this commit (its first digits will do); for "
+                        "suggest, the commit that ships, so a station's floors never mix builds")
     s.add_argument("--last", type=int, default=5, help="suggest: the records per knob it weighs (default 5)")
     s.add_argument("--mark", action="append", metavar="KNOB=VALUE",
                    help="map, svg: a value under review, drawn across the knob's chart (repeatable)")

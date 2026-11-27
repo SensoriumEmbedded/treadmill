@@ -536,7 +536,10 @@ least to 200 and the down edge at least to 140. `treadmill margins table`
 (or `csv`) lists the records under `--reports`, a line each, and `treadmill
 margins suggest --station <id>` prints the floors the station's last
 `--last` records of each knob support, one coarse step inside the worst edge
-each way and never past the default, to copy into its file. A test compares
+each way and never past the default, to copy into its file. `--commit <sha>`
+keeps only the records of the firmware built from that commit (any
+`margins` view takes it): give `suggest` the commit that ships, so a
+station's floors never mix a base build's records with a release's. A test compares
 each edge with the newest earlier record of the same station, knob, edge and
 probes on another build: a shrink of more than twice `--fine` (10 ns at
 least) is a warning, not a failure, since machines drift. A walk that stops

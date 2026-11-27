@@ -149,8 +149,9 @@ record, its clean
 window and every value probed beneath it; `--mermaid` for a PR;
 `treadmill margins svg --out <folder>` a static SVG per knob for a public
 doc, rows by machine model and standard), and
-`treadmill margins suggest --station <id>`
-prints the `[margins]` floors to copy into the station file. A sweep whose
+`treadmill margins suggest --station <id> --commit <sha>`
+prints the `[margins]` floors to copy into the station file, from the records
+of the commit that ships only. A sweep whose
 walk failed anywhere probes the default once more with the defaults back; a
 failure there is the TeensyROM's own state left bad (an IO1 read past its
 edge once garbled the menu until the Teensy restarted), so the Teensy is

@@ -159,3 +159,36 @@ def test_open_holds_nothing_when_the_probe_fails(lab):  # noqa: F811
     lock = RigLock("rigA").acquire()                    # free: neither busy nor a nested hold
     assert not lock.nested
     lock.release()
+
+
+def test_a_reconnect_looks_again_when_the_listed_port_is_already_gone(lab, monkeypatch):  # noqa: F811
+    """Windows can still list a port for a moment after a reset out of
+    MinimalBoot took it away: the open fails with FileNotFoundError, and the
+    reconnect looks again instead of failing. A port another program holds
+    is refused at once, never retried."""
+    import treadmill.board as board_module
+    from treadmill.link.discover import Found
+
+    second = start_fake_board()[1]
+    opens = iter([start_fake_board()[1],
+                  TransportError("COM0: could not open port 'COM0': FileNotFoundError(2, 'The system cannot "
+                                 "find the file specified.', None, 2)"),
+                  second,
+                  TransportError("COM0: could not open port 'COM0': PermissionError(13, 'Access is denied.', "
+                                 "None, 5)")])
+
+    def open_serial(port):
+        got = next(opens)
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    monkeypatch.setattr(board_module, "find_port", lambda uid, hint=None, timeout=0.0: Found("COM0", uid, "banner"))
+    monkeypatch.setattr(board_module, "open_serial", open_serial)
+    board = Board.open(load_station("s1"))
+    try:
+        assert board.reconnect_hook().stream is second
+        with pytest.raises(TransportError, match="Access is denied"):
+            board.reconnect_hook()
+    finally:
+        board.close()

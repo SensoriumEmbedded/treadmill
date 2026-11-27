@@ -52,6 +52,13 @@ STAYED_ON = ("the board stayed on USB through the power cycle: the supply's swit
              "another machine, or off_seconds is shorter than the supply holds up")
 
 
+def port_gone(e: TransportError) -> bool:
+    """An open that failed because the port no longer exists, as opposed to
+    one another program holds."""
+    text = str(e)
+    return "FileNotFoundError" in text or "No such file" in text
+
+
 class Wedged(TreadmillError):
     """The board stopped answering and nothing the station has could bring it back."""
 
@@ -216,8 +223,18 @@ class Board:
         uid, hint = self.station.tr.uid, self.station.tr.port_hint
 
         def reconnect() -> Link:
-            found = find_port(uid, hint, timeout=REAPPEAR_S)
-            return Link(open_serial(found.port))
+            deadline = time.monotonic() + REAPPEAR_S
+            while True:
+                found = find_port(uid, hint, timeout=max(0.0, deadline - time.monotonic()))
+                try:
+                    return Link(open_serial(found.port))
+                except TransportError as e:
+                    # Windows can still list the port for a moment after a reset out of MinimalBoot took
+                    # it away ("could not open port ...: FileNotFoundError", the 250425 C64 with a Kawari,
+                    # 2026-11-26): look again. A port another program holds is refused, never retried.
+                    if not port_gone(e) or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.5)
         self.reconnect_hook = reconnect
         if firmware is not None and firmware.hex is not None and firmware.primary is not None:
             hex_info, primary = firmware.hex, firmware.primary

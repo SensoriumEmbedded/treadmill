@@ -69,6 +69,7 @@ class Sample(NamedTuple):
     samples: int
     note: str | None = None
     hung: bool = False            # the workload stopped: a collapse, not a count
+    measure: dict | None = None   # what the verdict was taken from (a picture's counts), kept in the record
 
 
 class Probe(Protocol):
@@ -147,6 +148,7 @@ class Point:
     hung: bool = False
     pass_no: int = 1
     held: dict[str, int] = field(default_factory=dict)              # the knobs moved with this one
+    measures: dict[str, list[dict]] = field(default_factory=dict)   # probe -> each sample's Sample.measure
 
     @property
     def failed(self) -> bool:
@@ -159,7 +161,8 @@ class Point:
     def to_dict(self) -> dict:
         return {"pass": self.pass_no, "value": self.value, "failures": self.failures, "samples": self.samples,
                 "rate": round(self.rate, 5), "seconds": round(self.seconds, 2), "by_probe": self.by_probe,
-                "failed_by": self.failed_by, "hung": self.hung, "held": self.held, "notes": self.notes}
+                "failed_by": self.failed_by, "hung": self.hung, "held": self.held, "notes": self.notes,
+                "measures": self.measures}
 
 
 @dataclass(frozen=True)
@@ -654,6 +657,7 @@ class Sweep:
         notes: list[str] = []
         by_probe: dict[str, list[int]] = {}
         failed_by: list[str] = []
+        measures: dict[str, list[dict]] = {}
         hung = False
 
         def add(name: str, got) -> None:
@@ -666,6 +670,8 @@ class Sweep:
             counts[1] += s.samples
             if s.failures and name not in failed_by:
                 failed_by.append(name)
+            if s.measure is not None:
+                measures.setdefault(name, []).append(s.measure)
             hung = hung or s.hung
             note = s.note if len(self.probes) == 1 or not s.note else f"{name}: {s.note}"
             if note and note not in notes:
@@ -697,7 +703,7 @@ class Sweep:
                     self.apply(setting)
         held = {l: v for l, v in setting.items() if l != self.knob.letter}
         point = Point(value, failures, samples, time.monotonic() - t0, notes, by_probe, failed_by, hung, pass_no,
-                      held)
+                      held, measures)
         self.log(f"[sweep] {self.knob.name} {value}" + (f" (pass {pass_no})" if self.spec.passes > 1 else "")
                  + f": {'FAIL' if point.failed else 'clean'} {failures}/{samples}"
                  + (f" ({'; '.join(notes)})" if notes else ""))

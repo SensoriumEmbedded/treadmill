@@ -452,7 +452,9 @@ text area that change by more than 48 levels between frames: a DMA drive in
 the VIC's half of the cycle shows on screen 30-50 ns before any count goes
 wrong. A point fails when the worst frame pair is three times the baseline,
 and at least 100 pixels above it; the baseline is one sample of the other
-probe at the defaults, before the first point and again after the last.
+probe at the defaults, before the first point and again after the last. A
+capture with no contrast in it is refused, and a sample with no frame pairs
+fails, since a picture that shows nothing changes nothing.
 `--grid LO:HI` with `--scan LO:HI` maps `nS_DMASetup` (the rows) by
 `nS_DMADataHold` (the columns) with the latch held, rows running up and down
 in turn, as a map rather than edges (backlog 23).
@@ -470,14 +472,24 @@ cartridge, which the TeensyROM serves with its VIC cycles on, whose charset
 the VIC fetches from ROMH: every glyph comes through `nS_VICStart` and
 `nS_VICDHold`. It needs video, not DMA: a reference picture of the text area
 (half a cell in from the border, which steps once a frame to show the C64
-is alive) is taken at the defaults, and a point fails when its worst frame
-strays from it by three times the defaults' own stray and 100 pixels more.
+is alive) is taken at the defaults and refused if it has no contrast. A
+second of frames there picks the pixels that hold still (a glyph edge the
+capture's jitter moves is left out), and a dwell of frames gives the
+baseline: the 95th-percentile count of steady pixels off the reference, and
+its spread above the median. A point fails when its own 95th-percentile
+count passes the baseline by four times that spread, and by at least a
+quarter of a cell's pixels, so one wrong cell can fail it; each sample's
+count and worst frame go in the record. The worst frame against three times
+the baseline, the rule until 2026-11-27, failed a point only with a quarter
+to a half of the text area wrong.
 `vicrom-cpu` also has the C64 read two pages of ROMH from a loop in RAM and
 count the wrong answers (by DMA, on a TR+), so a VIC-cycle drive held into
 the CPU's half shows as wrong reads before it hangs the C64. `vicrom-high`
 is `vicrom-cpu` with the screen matrix and eight sprites in ROMH as well; the
 VIC reads those while Phi2 is high, in cycles the TeensyROM serves as it does
-the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`. At
+the CPU's, so its picture also shows `nS_RWnReady` and `nS_PLAprop`. Its
+sprites cover a few percent of the text area, so the box they sit in is
+counted and judged on its own as well, with its own baseline. At
 the default `nS_VICDHold` a TR+ running it stops answering USB (BACKLOG 59),
 so a sweep holds `nS_VICDHold` at 280 from its launch to its teardown (the
 record's `set` says so) and will not sweep that knob with it. `game`

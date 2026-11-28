@@ -96,23 +96,36 @@ def fake_frame_source(fake):
             if not fake.vic_outside() > fake.faults.get("vic_hang_ns", 10 ** 6):
                 fake.memory[0x0400 + 12 * 40 + 20] = int((time.monotonic() - fake.ultimax_since) * 120) & 0xFF
         codes = np.frombuffer(bytes(fake.memory[address:address + SCREEN_BYTES]), np.uint8)
-        glitches = fake.vic_glitches()
-        if glitches:                             # a DMA drive in the VIC's half: stray cells, new each frame
-            rng = np.random.default_rng(next(seeds))
+        seed = next(seeds)
+        glitches, sprites = fake.vic_glitches(), fake.sprite_glitches()
+        flicker = fake.faults.get("vic_flicker_cells", 0) if fake.ultimax_since is not None else 0
+        if glitches or sprites or flicker:
+            rng = np.random.default_rng(seed)
             codes = codes.copy()
-            codes[rng.integers(0, SCREEN_BYTES, glitches)] = rng.integers(0, 256, glitches)
+            if glitches:                         # a DMA drive in the VIC's half: stray cells, new each frame
+                codes[rng.integers(0, SCREEN_BYTES, glitches)] = rng.integers(0, 256, glitches)
+            if sprites:                          # vicrom-high's sprites fetched wrong: cells of their box
+                from selftest.fake_board import SPRITE_CELLS
+                at = rng.choice(SPRITE_CELLS, sprites, replace=False)
+                codes[at] = rng.integers(0, 256, sprites)
+            if flicker:                          # cells that change every frame on their own
+                from selftest.fake_board import FLICKER_CELLS
+                at = np.asarray(FLICKER_CELLS[:flicker])
+                codes[at] = codes[at] ^ (0x55 if seed % 2 else 0)
         charset = charset_in(memptr, cia2)
         if charset == CHARSET_CUSTOM:
             charset = CHARSET_UPPER_GRAPHICS
+        if fake.faults.get("black_capture"):     # a capture that shows nothing: no signal, or the wrong input
+            return np.zeros_like(frame_of(codes, LIGHT_GREY, charset, seed=seed))
         if fake.ultimax_since is not None:      # vicrom.a steps the border once a frame
             border = int((time.monotonic() - fake.ultimax_since) * 60) % 16
-            return frame_of(codes, LIGHT_GREY, charset, seed=next(seeds), border=border)
+            return frame_of(codes, LIGHT_GREY, charset, seed=seed, border=border)
         look = getattr(fake.program, "look", None)          # a program drawing in its own colors
         if look is not None:
             colors, background, border = look()
-            return frame_of(codes, np.frombuffer(colors, np.uint8), charset, seed=next(seeds),
+            return frame_of(codes, np.frombuffer(colors, np.uint8), charset, seed=seed,
                             background=background, border=border)
-        return frame_of(codes, LIGHT_GREY, charset, seed=next(seeds))
+        return frame_of(codes, LIGHT_GREY, charset, seed=seed)
     return SyntheticSource(render)
 
 

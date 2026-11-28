@@ -61,6 +61,12 @@ HOT_KEYS = {2: "/Test+Diags/REU-Checker v1.0            +REU"}
 KERNAL_GETIN = (0xF13E).to_bytes(2, "little")     # IGETIN as RESTOR sets it
 LED_QUESTION_ROW = SCREEN_RAM_DEFAULT + LED_ROW * SCREEN_COLUMNS
 LED_QUESTION_MARK = codes_for_text("Y/N")
+# vicrom-high's sprites cover text rows 8-11 from column 2 to 27 (vicrom.py's SPRITE_BOX); these cells lie
+# wholly inside, where the fake draws a sprite fault.
+SPRITE_CELLS = tuple(row * SCREEN_COLUMNS + col for row in (9, 10) for col in range(3, 27))
+# faults["vic_flicker_cells"]: this many cells under vicrom alternate between two codes every frame at any
+# value, as a capture's jitter moves a glyph's edge pixels; they sit outside the sprites' box.
+FLICKER_CELLS = tuple(range(0, 8 * SCREEN_COLUMNS, 7))
 
 
 @dataclass
@@ -196,6 +202,9 @@ class FakeBoard:
     # vicrom.a running (an Ultimax image, its glyphs fetched in VIC cycles): the VIC knobs' windows, a
     # wrong cell a frame for every ns outside one, and when it started, for its frame counter at $0F00.
     vic_windows: dict = field(default_factory=lambda: {"v": (150, 290), "i": (300, 430)})
+    # vicrom-high's sprites: outside this window of the CPU cycle's sample point their cells go wrong too, a
+    # cell for every 5 ns, inside the box they cover; None: they go wrong with the screen matrix only.
+    sprite_window: tuple | None = None
     ultimax_since: float | None = None
     vicrom_high: bool = False            # vicrom-high: its screen and sprites read while Phi2 is high
     vicread: IdRead | None = field(default=None, repr=False)    # vicrom-cpu/-high: the CPU's ROMH reads
@@ -509,6 +518,15 @@ class FakeBoard:
     def vic_glitches(self) -> int:
         """How many screen cells the capture shows wrong in a frame."""
         return max(0, self.vic_noise_below - self.knobs["e"]) + self.vic_outside()
+
+    def sprite_glitches(self) -> int:
+        """vicrom-high: how many cells of the sprites' box show wrong in a frame."""
+        if self.sprite_window is None or not self.vicrom_high or self.ultimax_since is None:
+            return 0
+        low, high = self.sprite_window
+        point = max(self.knobs["p"], self.knobs["r"])
+        outside = max(low - point, point - high, 0)
+        return min(len(SPRITE_CELLS), (outside + 4) // 5)
 
     def dma_outside(self) -> int:
         """How far, in ns, the DMA knobs lie outside their windows; 0 inside all."""

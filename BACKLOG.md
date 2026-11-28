@@ -561,7 +561,11 @@ cost or a wart with a known, small fix.
    settled. Fix: sample a point whose only failure is the noise probe once
    more before the walk stops there, and fail it only if the repeat fails
    too.
-45. **low** vicrom's baseline is the worst frame at the defaults.
+45. **closed 2026-11-27, with vicrom's steady pixels and percentile.**
+   vicrom now leaves out the pixels that move at the defaults, judges a
+   sample by its 95th-percentile frame, and sets its limit from the
+   baseline's spread; the record keeps every sample's count. The item as it
+   was: vicrom's baseline is the worst frame at the defaults.
    `VicRomProbe` (`treadmill/probes/vicrom.py`) takes the frame of its
    baseline dwell that differs most from the reference, so one disturbed
    frame raises the limit for the whole sweep. On 2026-11-21 the baselines
@@ -656,9 +660,11 @@ cost or a wart with a known, small fix.
    `GameProbe` (`treadmill/probes/game.py`) repeats `VicRomProbe`'s
    text-area crop (`_text`), frame grabbing (`_frames`) and noise limit
    (`limit`, the noise probe's `FACTOR` and `FLOOR`) line for line, so a
-   change to how vicrom judges a picture (item 45's percentile, say) misses
-   the game probe. Fix: one helper both probes call, in `vicrom.py` or a
-   small picture module beside the probes.
+   change to how vicrom judges a picture misses the game probe. Item 45's
+   did: vicrom judges steady pixels at a percentile against the baseline's
+   spread, and the game still judges its worst frame by the noise rule.
+   Fix: one helper both probes call, in `vicrom.py` or a small picture
+   module beside the probes.
 55. **low** A sweep re-sends every `--set` knob at every point.
    `Sweep.setting_for()` (`treadmill/sweeps.py`) puts the knobs `--set`
    holds into each point's setting, and `apply()` sends a `t` command for

@@ -236,10 +236,77 @@ def test_vicrom_finds_the_vic_start_window_from_the_picture(fake_station, tmp_pa
     down, up = margin.edges["down"], margin.edges["up"]
     assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (150, 145, 290, 295)
     info = margin.probe_info["vicrom"]
-    assert info["baseline"] is not None and info["limit"] >= 100
+    assert info["glyphs"]["baseline"] == 0 and info["glyphs"]["steady"] == 1.0 and info["glyphs"]["limit"] > 0
+    assert "sprites" not in info, "plain vicrom has no sprites"
     bad = next(p for p in margin.points if p.failed)
-    assert "off the reference" in bad.notes[0]
+    assert "glyphs" in bad.notes[0] and "off the reference" in bad.notes[0]
+    seen = bad.measures["vicrom"][0]
+    assert seen["frames"] > 0 and seen["glyphs"]["count"] > info["glyphs"]["limit"] and seen["glyphs"]["worst"] > 0
+    assert all(p.measures["vicrom"] for p in margin.points), "every point keeps its counts"
     assert fake.ultimax_since is None and fake.knobs == KNOB_DEFAULTS, "back at the menu with the defaults"
+
+
+def test_vicrom_leaves_out_the_pixels_that_move_at_the_defaults(fake_station, tmp_path: Path):
+    """Cells that change every frame on their own (a glyph edge in the
+    capture's jitter) raised the old baseline, and the limit with it, past
+    the edge's first wrong cells; learned at the defaults and left out,
+    they change neither the limit nor the edges."""
+    fake, board, dbg = fake_station
+    fake.faults["vic_flicker_cells"] = 20
+    probe = _vicrom(fake, board, tmp_path)
+    margin = Sweep(dbg, KNOBS["v"], probe, SearchSpec(both=True, step=20, fine=5), log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail, up.clean_to, up.first_fail) == (150, 145, 290, 295)
+    glyphs = margin.probe_info["vicrom"]["glyphs"]
+    assert 0.9 < glyphs["steady"] < 1.0 and glyphs["baseline"] < 100, glyphs
+    assert glyphs["limit"] < 300, "under one wrong cell, as without the flicker"
+
+
+def test_vicrom_and_noise_refuse_a_capture_that_shows_nothing(fake_station, tmp_path: Path):
+    """A black capture differs from nothing, so every point would pass."""
+    from selftest.synth import calibrated, fake_frame_source
+    fake, board, dbg = fake_station
+    fake.faults["black_capture"] = True
+    probe = _vicrom(fake, board, tmp_path)
+    with pytest.raises(SweepError) as e:
+        probe.setup()
+    probe.teardown()
+    assert "no contrast" in str(e.value)
+    with pytest.raises(SweepError) as e:
+        NoiseProbe(fake_frame_source(fake), calibrated(), _Workload()).setup()
+    assert "shows no picture" in str(e.value)
+
+
+def test_a_noise_sample_with_no_frame_pairs_fails():
+    probe = NoiseProbe(None, None, _Workload())
+    probe._counts = []
+    got = probe.end()
+    assert (got.failures, got.samples) == (1, 1) and "no frame pairs" in got.note and got.measure == {"pairs": 0}
+
+
+def test_a_small_area_is_judged_on_its_own():
+    """The whole text area's limit follows its own spread; a fault inside the
+    sprites' box, a few percent of it, stays under that limit and fails the
+    box, whose baseline is quiet."""
+    import numpy as np
+    from treadmill.probes.vicrom import PERCENTILE, Area
+    shape = (100, 100)
+    whole = Area("glyphs", slice(None), slice(None), np.ones(shape, bool), floor=10.0)
+    box = Area("sprites", slice(60, 70), slice(10, 90), np.ones((10, 80), bool), floor=10.0)
+
+    def frame(noise: int, fault: int = 0) -> np.ndarray:
+        f = np.zeros(shape, bool)
+        f.flat[:noise] = True                    # noise in the top rows, which the box does not reach
+        f[60:70, 10:90].flat[:fault] = True
+        return f
+
+    baseline = [frame(n) for n in range(0, 2000, 100)]
+    whole.learn(baseline)
+    box.learn(baseline)
+    assert whole.spread > 0 and box.limit == 10.0
+    faulty = [frame(n, fault=200) for n in range(0, 2000, 100)]
+    assert np.percentile(whole.counts(faulty), PERCENTILE) <= whole.limit
+    assert np.percentile(box.counts(faulty), PERCENTILE) > box.limit
 
 
 def test_vicrom_high_also_shows_the_cpu_cycle_knobs(fake_station, tmp_path: Path):
@@ -254,6 +321,23 @@ def test_vicrom_high_also_shows_the_cpu_cycle_knobs(fake_station, tmp_path: Path
     high = Sweep(dbg, KNOBS["p"], _vicrom(fake, board, tmp_path, name="vicrom-high"), spec, log=lambda m: None).run()
     assert high.probe == "vicrom-high" and high.last_clean <= fake.windows["rom"][1] < high.first_fail
     assert "/treadmill/vicrom-high.crt" in fake.files and fake.knobs == KNOB_DEFAULTS
+
+
+def test_vicrom_high_fails_a_point_on_its_sprites(fake_station, tmp_path: Path):
+    """Sprite data fetched wrong shows only inside the sprites' box, which is
+    counted and judged on its own: the edge is where the sprites go wrong."""
+    fake, board, dbg = fake_station
+    fake.vic_windows["i"] = (250, 430)
+    fake.sprite_window = (130, 200)          # inside the screen matrix's window (130, 230)
+    spec = SearchSpec(stop=260, step=20, fine=5)
+    margin = Sweep(dbg, KNOBS["p"], _vicrom(fake, board, tmp_path, name="vicrom-high"), spec,
+                   log=lambda m: None).run()
+    assert margin.last_clean <= 200 < margin.first_fail <= 205
+    sprites = margin.probe_info["vicrom-high"]["sprites"]
+    assert sprites["steady"] == 1.0 and sprites["baseline"] == 0
+    bad = next(p for p in margin.points if p.failed)
+    assert any(n.startswith("sprites ") for n in bad.notes[0].split("; ")), bad.notes
+    assert bad.measures["vicrom-high"][0]["sprites"]["count"] > sprites["limit"]
 
 
 def test_vicrom_high_holds_vicdhold_where_a_tr_plus_still_answers(fake_station, tmp_path: Path):
@@ -333,7 +417,7 @@ def test_a_game_that_stops_moving_is_relaunched_and_a_hang_if_it_stays_still(fak
         sweep.apply({"v": 200})
         fake.game = False                        # its cell stops: it hung at some earlier value
         got = probe.sample("tv200", Setting(sweep, {"v": 200}, bracket=False))
-        assert tuple(got) == (0, 1, None, False) and fake.game, "relaunched, moving, clean"
+        assert tuple(got)[:4] == (0, 1, None, False) and fake.game, "relaunched, moving, clean"
         assert at_reset == [KNOB_DEFAULTS["v"]] and fake.knobs["v"] == 200, "relaunched at the defaults, then back"
         sweep.restore()
         probe.remote = "/treadmill/still.crt"    # a relaunch that never moves

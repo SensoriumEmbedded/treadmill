@@ -17,6 +17,11 @@ flagged was 4 pixels over a limit of 101. The median, which backlog 18
 proposed for a looping workload, would miss C64 #14's REU run: its failing
 point had a median of 11 pixels against 0 at the defaults, its worst pair
 177 against 11.
+
+A capture that shows nothing changes nothing between frames, so it would
+pass every point: the setup refuses a frame with no contrast in it, and a
+sample with no frame pairs fails. Each sample's worst pair and its count of
+pairs go in the record.
 """
 
 from __future__ import annotations
@@ -33,6 +38,14 @@ from treadmill.sweeps import Probe, Sample, SweepError
 LEVEL = 48                        # grey levels a pixel must move between frames to count
 FACTOR, FLOOR = 3.0, 100          # a point fails past max(FACTOR x baseline, baseline + FLOOR) pixels
 FRAME_WAIT_S = 2.0
+# Grey levels between a picture's 5th and 95th percentiles: a C64's border against its background, or its
+# text, is several times this; a black or blank capture is under it.
+MIN_CONTRAST = 40
+
+
+def contrast(grey: np.ndarray) -> float:
+    """How far a grey picture's bright pixels stand from its dark ones."""
+    return float(np.percentile(grey, 95) - np.percentile(grey, 5)) if grey.size else 0.0
 
 
 class NoiseProbe:
@@ -58,6 +71,10 @@ class NoiseProbe:
             raise SweepError("the noise probe reads the picture: it needs the station's video and its calibration")
         x, y, w, h = self.calibration.text_area
         self._box = (int(x), int(y), int(x + w), int(y + h))
+        seen = contrast(cv2.cvtColor(self.video.next_frame(timeout=FRAME_WAIT_S).image, cv2.COLOR_BGR2GRAY))
+        if seen < MIN_CONTRAST:
+            raise SweepError(f"noise: the capture shows no picture ({seen:.0f} grey levels between its dark and "
+                             f"bright pixels, under {MIN_CONTRAST}): is the C64's video reaching it?")
         self.before = self._baseline("baseline")
         self.log(f"[sweep] noise baseline at the defaults: {self.before} pixels (limit {self.limit()})")
 
@@ -102,11 +119,13 @@ class NoiseProbe:
     def end(self) -> Sample:
         counts = self._finish()
         if not counts:
-            return Sample(0, 0, "no frame pairs: the capture gave nothing to judge")
+            return Sample(1, 1, "no frame pairs: the capture gave nothing to judge", measure={"pairs": 0})
         worst, limit = max(counts), self.limit()
+        measure = {"worst": worst, "pairs": len(counts)}
         if worst > limit:
-            return Sample(1, 1, f"noise {worst} pixels over the limit {limit} ({len(counts)} frame pairs)")
-        return Sample(0, 1)
+            return Sample(1, 1, f"noise {worst} pixels over the limit {limit} ({len(counts)} frame pairs)",
+                          measure=measure)
+        return Sample(0, 1, measure=measure)
 
     def teardown(self) -> None:
         try:

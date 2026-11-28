@@ -226,6 +226,20 @@ cost or a wart with a known, small fix.
    elsewhere) and refuse with a message that names it: the rung fails
    rather than handing the board over, and a run's flash stops before it
    starts.
+65. **medium** A probe whose setup loses the board ends the sweep with exit 4,
+   past the recovery ladder. `Sweep._start()` (`treadmill/sweeps.py`) tears a
+   failed setup down and re-raises, so a `TransportError` from the setup's
+   own launch reaches `cmd_sweep` as "the station could not be had". On
+   2026-11-27 the TR+ in the C64C (registry 24) stopped answering USB while
+   remote-launching `vicrom-high.crt`, right after failing to open its REU
+   preload file (`Write timeout`, the menu not back in 60 s). The sweep
+   exited 4, and `treadmill compare` skipped the station's remaining steps,
+   the whole tip half among them, although the station has the mains relay
+   and a power cycle brought the board back. Fix: a setup that loses the
+   link goes to the ladder (`ensure_menu()`, the power rung included) and
+   is tried once more; and `compare`, after a step's exit 4 on a station
+   with `power`, cycles the mains once and goes on instead of skipping the
+   rest.
 
 ## Video
 

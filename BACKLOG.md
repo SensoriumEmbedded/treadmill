@@ -333,6 +333,23 @@ cost or a wart with a known, small fix.
    the bank in them, and keep the board's own theme in the run record.
    `SetColorToken` writes the board's EEPROM, so the put-back must run on
    every way out.
+66. **low** On a plain TR, vicrom's progress is its border's steps on
+   video. `VicRomProbe._progress()` in `treadmill/probes/vicrom.py` counts
+   the frames whose border strip, its mean level rounded, differs from the
+   frame before; a strip whose level sits near a half step flips on
+   capture noise alone, so a C64 that hung partway through a sample still
+   shows some progress, and with enough flips the stall rule
+   (`STALL_SHARE` in `treadmill/sweeps.py`) misses the hang. Not seen on
+   the bench. Fix: count a step only when the level moves by more than
+   half the spacing of the program's border colors, learned at the
+   defaults.
+67. **low** vicrom keeps every frame of a sample. `_strays()` in
+   `treadmill/probes/vicrom.py` makes a boolean array a frame for the
+   whole text area, and `sample()` holds them, and the frames, until each
+   area has counted its pixels: tens of MB for a 2 s dwell at the
+   capture's resolution. Fix: count each area's pixels as the frames
+   arrive and keep only the counts, and for the learn a running tally a
+   pixel.
 
 ## Firmware builds
 
@@ -741,3 +758,22 @@ cost or a wart with a known, small fix.
    while a margin run was loading the host. Fix: find what the probe's
    first screen read races with in the fake (the program's first draw, or
    the menu's last), and wait for that instead of the time it takes.
+68. **low** The stall rule lives in each probe. Six probes (idread, the
+   REU loop and cpuwatch, the two in `treadmill/probes/regread.py`, vicrom
+   and krread) each take their rate at the defaults in their setup, call
+   `stalled()` and `with_stall()` from `treadmill/sweeps.py`, and keep a
+   `_stalled` flag of their own for the relaunch; a seventh that leaves one
+   out passes a C64 that hung partway. Fix: a probe reports its progress
+   and its rate with the sample, and `Sweep.probe_at()` applies the rule.
+69. **low** The regread probes repeat the REU loop's skeleton.
+   `RegReadProbe` and `MenuReadProbe` in `treadmill/probes/regread.py` copy
+   `ReuLoopProbe`'s launch and ready poll, its counter deltas modulo 16
+   bits, the relaunch after a stall and the teardown by reset. Fix: one
+   base for the probes that count on the C64 and read their counters by
+   DMA.
+70. **low** compare's estimate for a probe sweep predates one grain for
+   both builds. `SWEEP_MIN` (3 minutes) in `treadmill/compare.py` is the
+   longest probe sweep timed on two C64s, the base's at 1 ns with one
+   sample a point and the tip's at 2 ns with three; both builds' sweeps now
+   bisect to `--fine` with three, and no run has timed that yet. Fix: set
+   it from the first compare at the new grain.

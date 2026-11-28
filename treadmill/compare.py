@@ -2,8 +2,11 @@
 and a tip, in each video standard asked for. For each standard, the full
 margin set (``tests/sweep``) runs on the base, then the sweeps only the
 newer probes reach (vicrom-high, vicrom-cpu, idread with nS_RWnReady held),
-then both again on the tip, bisected finer; at the end the station's margin
-records go to a CSV, and the mains are latched off if asked. Each step is
+then both again on the tip; at the end the station's margin records go to a
+CSV, and the mains are latched off if asked. Both builds are bisected to the
+same grain with the same samples a point, so their windows compare like for
+like: until 2026-11-27 the base ran one sample a point to 5 ns on the slow
+knobs and the tip three to 2 ns, and a single failure decides a point. Each step is
 its own ``treadmill`` command, so one that fails leaves the others' records,
 and the folder holds each step's JSON and log beside ``compare.json``.
 
@@ -63,15 +66,15 @@ def plan(station: str, base: str, tip: str, *, regions: list[str | None], define
          rw_hold: int = RWNREADY_HOLD, probes: bool = True, power_off: bool = False, reports: str = "reports",
          pytest_args: list[str] | None = None) -> list[Step]:
     """The steps, in order: per standard, the base's margin run and probe
-    sweeps, then the tip's (``fine`` ns, three samples a point); the CSV;
-    the mains off."""
+    sweeps, then the tip's, each bisected to ``fine`` ns with three samples
+    a point (0: each test's own grain, on both); the CSV; the mains off."""
     fw_defines = [arg for d in defines for arg in ("--define", d)]
     steps: list[Step] = []
     for region in regions:
         std = (region or "now").lower()
         for side, ref in (("base", base), ("tip", tip)):
             fw = ["--station", station, "--reports", reports, "--fw", f"ref={ref}", *fw_defines]
-            finer = side == "tip" and fine > 0
+            finer = fine > 0
             extra = list(pytest_args or []) + (["--margin-fine", str(fine)] if finer else [])
             steps.append(Step(f"{std}-{side}-margins", ["run", *fw, *(["--region", region] if region else []),
                                                          "--tests", "tests/sweep", "--json",

@@ -109,13 +109,13 @@ def test_the_compare_states_its_plan_before_it_starts(monkeypatch, capsys):
     assert main(args + ["--powered-for", "50", "--dry-run", "--json"]) == EXIT_OK
     pre = json.loads(capsys.readouterr().out)["preflight"]
     assert pre["warm_up"].endswith("on 50 of 30 min; no wait") and pre["at_the_end"] == "mains latched off"
-    assert pre["estimate_min"] == 75 + 160 + 8 * 3
+    assert pre["estimate_min"] == 160 + 160 + 8 * 3, "both builds bisected to 2 ns"
     monkeypatch.setattr(warmup, "relay_is_off", lambda station: True)
     assert main(args + ["--dry-run", "--json"]) == EXIT_OK
     out = json.loads(capsys.readouterr().out)
     assert out["steps"][0][0] == "run", "the compare switches the mains on itself, not as a step"
     assert "the mains go on through the relay now; waiting 30 min" in out["preflight"]["warm_up"]
-    assert out["preflight"]["estimate_min"] == 30 + 75 + 160 + 8 * 3
+    assert out["preflight"]["estimate_min"] == 30 + 160 + 160 + 8 * 3
     with pytest.raises(SystemExit) as e:                            # one way of saying it, not two
         main(args + ["--powered-since", "14:20", "--assume-warm", "--dry-run"])
     assert e.value.code == EXIT_USAGE
@@ -132,7 +132,7 @@ def test_the_preflight_names_the_machine_its_port_setup_and_both_builds():
     lines = compare.preflight_lines(pre)
     assert "  station     rigA-sys24-trplus: #24, C64" in lines and "  port setup  direct" in lines
     assert "  base        53eadf61" in lines and "  tip         fix/x (785bad01)" in lines
-    assert "  at the end  mains left on" in lines and lines[-1] == "  takes about 3 h 55 min"
+    assert "  at the end  mains left on" in lines and lines[-1] == "  takes about 5 h 20 min"
 
 
 def test_the_records_carry_what_the_warm_up_rested_on(monkeypatch):

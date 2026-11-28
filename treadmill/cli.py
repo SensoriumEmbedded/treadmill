@@ -332,11 +332,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
     from treadmill import compare
     from treadmill import warmup as wu
     regions = ["PAL", "NTSC"] if args.region == "BOTH" else [args.region]
-    if args.tip_fine < 0:
-        raise CommandError(f"--tip-fine {args.tip_fine}: give 0 or more", EXIT_USAGE)
+    if args.fine < 0:
+        raise CommandError(f"--fine {args.fine}: give 0 or more", EXIT_USAGE)
     warm, refused = _settle_warmup(args, dry_run=args.dry_run)
     defines = args.define or list(compare.DEFINES)
-    steps = compare.plan(args.station, args.base, args.tip, regions=regions, defines=defines, fine=args.tip_fine,
+    steps = compare.plan(args.station, args.base, args.tip, regions=regions, defines=defines, fine=args.fine,
                          rw_hold=args.rwnready_hold, probes=not args.no_probes, power_off=args.power_off,
                          reports=args.reports, pytest_args=args.pytest_args)
     said = warm.describe() if warm else f"warm-up: the compare would refuse: {refused}"
@@ -1104,8 +1104,9 @@ def build_parser() -> argparse.ArgumentParser:
                        description="For each standard (--region; none: the one the C64 runs now): the full margin "
                                    "set (tests/sweep) on --base, then the sweeps only the newer probes reach "
                                    "(vicrom-high on nS_RWnReady and nS_PLAprop, idread on nS_PLAprop with "
-                                   "nS_RWnReady held, vicrom-cpu on nS_VICDHold), then both on --tip bisected to "
-                                   "--tip-fine ns. Then the station's margin records as CSV, and with --power-off "
+                                   "nS_RWnReady held, vicrom-cpu on nS_VICDHold), then both on --tip; both builds "
+                                   "bisected to --fine ns with three samples a point. Then the station's margin "
+                                   "records as CSV, and with --power-off "
                                    "the mains latched off. Each step is its own treadmill command; one that fails "
                                    "leaves the others. It flashes both builds and drives the station for hours: it "
                                    "needs the go-ahead for the station. The first step waits until the machine has "
@@ -1122,8 +1123,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "C64 runs now")
     s.add_argument("--define", action="append", metavar="NAME",
                    help="debug defines for both builds (repeatable; default: Dbg_SerTimChg and Dbg_SerDMA)")
-    s.add_argument("--tip-fine", type=int, default=2, metavar="NS",
-                   help="the tip's bisection grain, three samples a point (default 2; 0: the base's)")
+    s.add_argument("--fine", "--tip-fine", dest="fine", type=int, default=2, metavar="NS",
+                   help="both builds' bisection grain, three samples a point, so their windows compare like for "
+                        "like (default 2; 0: each test's own grain, on both); --tip-fine is its old name")
     s.add_argument("--rwnready-hold", type=int, default=115, metavar="NS",
                    help="nS_RWnReady for idread's nS_PLAprop sweep, below the default (default 115)")
     s.add_argument("--no-probes", action="store_true", help="the margin runs only")

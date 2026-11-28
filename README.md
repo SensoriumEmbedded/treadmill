@@ -638,7 +638,9 @@ measures two builds on one station, unattended: for each standard, the full
 margin set (`tests/sweep`) on the base, then the sweeps only the newer probes
 reach (vicrom-high on `nS_RWnReady` and `nS_PLAprop`, idread on `nS_PLAprop`
 with `nS_RWnReady` held at `--rwnready-hold`, vicrom-cpu on `nS_VICDHold`),
-then both on the tip, bisected to `--tip-fine` ns with three samples a point.
+then both on the tip, each build bisected to `--fine` ns (2; `--tip-fine`
+is its old name) with three samples a point, so the two compare like for
+like.
 Then the station's records go to `margins.csv`, and `--power-off` latches the
 mains off. Each step is its own `treadmill` command, so a step that fails
 leaves the others' records; a station that cannot be had, or an open Teensy

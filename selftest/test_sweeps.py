@@ -353,7 +353,9 @@ def test_a_default_that_fails_after_the_walk_restarts_the_teensy(fake_station):
     probe.broken = False
     clean = Sweep(dbg, KNOBS["p"], Window(fake, "p", (100, 210)), spec, restart=restart, log=lambda m: None).run()
     assert clean.after == {"clean": True, "restarted": False, "notes": []} and len(restarts) == 1
-    assert Sweep(dbg, KNOBS["p"], Window(fake, "p", (100, 300)), spec, log=lambda m: None).run().after is None
+    walked = Sweep(dbg, KNOBS["p"], Window(fake, "p", (100, 300)), spec, log=lambda m: None).run()
+    assert not any(p.failed for p in walked.points)
+    assert walked.after == {"clean": True, "restarted": False, "notes": []}, "a clean walk is checked as well"
 
 
 def test_a_dma_knob_is_never_probed_by_resetting_the_c64(fake_station):
@@ -711,3 +713,22 @@ def test_a_restart_that_fails_partway_stops_the_walk(fake_station):
                    log=lambda m: None).run()
     assert margin.stopped and "not set up again after the restart before 200" in margin.stopped
     assert margin.edges["up"].open and [p.value for p in margin.points] == [150, 170, 190, 210]
+
+
+def test_a_pass_that_failed_at_the_default_is_found(fake_station):
+    """A later pass of a drifting machine can fail at the default while the
+    check after the walk runs clean: margin_check fails the test on it."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+
+    class SecondTime(Window):
+        def sample(self, label, setting=None):
+            got = super().sample(label, setting)
+            at_default = self.fake.knobs[self.letter] == KNOB_DEFAULTS[self.letter]
+            return Sample(1, 1, "flaked") if at_default and self.seen_default == 2 else got
+
+    margin = Sweep(dbg, KNOBS["p"], SecondTime(fake, "p", (100, 200)), SearchSpec(both=True, step=20, fine=5,
+                                                                                    passes=2),
+                   log=lambda m: None).run()
+    assert margin.after["clean"], "the check after the walk is the third time at the default"
+    assert [(p.pass_no, p.value, p.notes) for p in margin.failed_at_default] == [(2, 150, ["flaked"])]

@@ -81,6 +81,8 @@ class C64Loop:
     bad: float = 0.0
     collapse_ns: int | None = None    # this far outside, the client crashes and counts nothing more
     crashed: bool = False
+    breaks_ns: int | None = None      # this far outside, every round goes bad until a relaunch (BACKLOG 49)
+    broken: bool = False
 
     def advance(self, now: float, reu: bool, dma_outside_ns: int) -> None:
         reu = reu or not self.needs_reu
@@ -90,8 +92,10 @@ class C64Loop:
             self.crashed = True
         if self.crashed:
             return
+        if self.breaks_ns is not None and dma_outside_ns > self.breaks_ns:
+            self.broken = True
         n = dt * REU_ROUNDS_PER_S
-        share = 1.0 if not reu else min(1.0, dma_outside_ns * IDREAD_WRONG_PER_NS)
+        share = 1.0 if not reu or self.broken else min(1.0, dma_outside_ns * IDREAD_WRONG_PER_NS)
         self.bad += n * share
         self.rounds += n * (1.0 - share)
 
@@ -117,6 +121,7 @@ class KrLoop:
     ram: float = 0.0
     rom_first: float = 0.0
     ram_first: float = 0.0
+    stops: float | None = None    # when it hung partway (FakeBoard.until)
 
     def advance(self, now: float, outside_ns: int) -> None:
         dt = max(0.0, now - self.last)
@@ -144,10 +149,10 @@ class IdRead:
     rom_wrong: float = 0.0
     io_wrong: float = 0.0
 
-    def advance(self, now: float, rom_outside_ns: int, io_outside_ns: int) -> None:
+    def advance(self, now: float, rom_outside_ns: int, io_outside_ns: int, pace: float = 1.0) -> None:
         dt = max(0.0, now - self.last)
         self.last = now
-        passes = dt * IDREAD_PASSES_PER_S
+        passes = dt * IDREAD_PASSES_PER_S * pace
         self.passes += passes
         self.rom_wrong += passes * 512 * min(1.0, rom_outside_ns * IDREAD_WRONG_PER_NS)
         self.io_wrong += passes * 256 * min(1.0, io_outside_ns * IDREAD_WRONG_PER_NS)
@@ -163,6 +168,7 @@ REG_ROUNDS_PER_S = 55.0           # reureadback.a with HAMMER: 256 passes of 7 r
 REG_HELD = bytes([0xA5, 0x3C, 0xC3, 0x5A, 0x01, 0x96, 0x69])
 MENU_PASSES_PER_S = 2600.0        # menuread.a: two register reads and the version string a pass
 MENU_ENTRY = (0xC050).to_bytes(2, "little")
+HANG_AFTER_S = 0.1                # faults["hangs_partway_above"]: how long a program runs there before it hangs
 
 
 @dataclass
@@ -177,6 +183,7 @@ class RegHammer:
     rounds: float = 0.0
     late: float = 0.0
     twice: float = 0.0
+    stops: float | None = None    # when it hung partway (FakeBoard.until)
 
     def advance(self, now: float, outside_ns: int) -> None:
         """A read takes about 10 cycles, a miss about 50 more, so a loop that
@@ -208,6 +215,7 @@ class MenuRead:
     passes: float = 0.0
     io: float = 0.0
     string: float = 0.0
+    stops: float | None = None    # when it hung partway (FakeBoard.until)
 
     def advance(self, now: float, outside_ns: int) -> None:
         dt = max(0.0, now - self.last)
@@ -273,7 +281,8 @@ class FakeBoard:
     # cell for every 5 ns, inside the box they cover; None: they go wrong with the screen matrix only.
     sprite_window: tuple | None = None
     ultimax_since: float | None = None
-    vicrom_high: bool = False            # vicrom-high: its screen and sprites read while Phi2 is high
+    vic_stops: float | None = None       # when vicrom's frame count stopped (until)
+    vicrom_high: bool = False           # vicrom-high: its screen and sprites read while Phi2 is high
     vicread: IdRead | None = field(default=None, repr=False)    # vicrom-cpu/-high: the CPU's ROMH reads
     game: bool = False                   # a game: an Ultimax picture with a cell that moves on its own
     idread: IdRead | None = field(default=None, repr=False)
@@ -350,9 +359,11 @@ class FakeBoard:
             self.memory[0xD018] = 0x1C
             self.memory[0x0F04] = 0x5A
             self.ultimax_since = time.monotonic()
+            self.vic_stops = None
         if "reuloop" in name or "cpuwatch" in name or "reureadback" in name:
             self.c64loop = C64Loop(time.monotonic(), needs_reu="cpuwatch" not in name,
-                                   collapse_ns=self.faults.get("reu_collapse_ns"))
+                                   collapse_ns=self.faults.get("reu_collapse_ns"),
+                                   breaks_ns=self.faults.get("reu_breaks_ns"))
             self.memory[0xC104] = 0x5A
         if name.startswith("regread"):
             self.reghammer = RegHammer(time.monotonic(), self.special_io in REU_NAMES)
@@ -622,19 +633,34 @@ class FakeBoard:
             lines.append(f"{head} over ${prior} @ $c000: {n} bad of {total} bytes" + ("  CLEAN\n" if n == 0 else "\n"))
         return "".join(lines)
 
+    def until(self, loop, attr: str = "stops") -> float:
+        """Now, or when ``loop`` hung: past a value of faults["hangs_partway_above"]
+        ({letter: value}) a program hangs faults["hang_after_s"] (HANG_AFTER_S)
+        after it is first counted there, and stays hung until it is launched
+        again, as a C64 that hangs partway through a sample does."""
+        now = time.monotonic()
+        past = self.faults.get("hangs_partway_above") or {}
+        if getattr(loop, attr) is None and any(self.knobs[k] > v for k, v in past.items()):
+            setattr(loop, attr, now + self.faults.get("hang_after_s", HANG_AFTER_S))
+        stops = getattr(loop, attr)
+        return now if stops is None else min(now, stops)
+
     def accrue(self) -> None:
         """idread's and the REU client's counters up to now, at the knobs as
         they have been since the last read or change."""
         if self.idread is not None:
-            self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
+            # faults["idread_slow_above"]: {letter: value}, past which the loop makes a third of its passes, as
+            # a C64 that hangs partway through a sample does on average.
+            slow = any(self.knobs[k] > v for k, v in (self.faults.get("idread_slow_above") or {}).items())
+            self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"), 0.3 if slow else 1.0)
         if self.c64loop is not None:
             self.c64loop.advance(time.monotonic(), self.special_io in REU_NAMES, self.dma_outside())
         if self.reghammer is not None:
-            self.reghammer.advance(time.monotonic(), self.outside("reu"))
+            self.reghammer.advance(self.until(self.reghammer), self.outside("reu"))
         if self.menuread is not None:
-            self.menuread.advance(time.monotonic(), self.outside("io1"))
+            self.menuread.advance(self.until(self.menuread), self.outside("io1"))
         if self.krloop is not None:
-            self.krloop.advance(time.monotonic(), self.sense_outside())
+            self.krloop.advance(self.until(self.krloop), self.sense_outside())
         if self.vicread is not None and self.ultimax_since is not None:
             # The CPU's reads of ROMH go wrong on its own path, or with a VIC-cycle drive held into its half.
             held = max(0, self.knobs["i"] - self.vic_windows["i"][1])
@@ -890,7 +916,7 @@ class FakeBoard:
         if self.krloop is not None:
             self.memory[0xC110:0xC11A] = self.krloop.bytes()
         if self.ultimax_since is not None and not self.vic_outside() > self.faults.get("vic_hang_ns", 10 ** 6):
-            frames = int((time.monotonic() - self.ultimax_since) * 60) & 0xFFFF
+            frames = int((self.until(self, "vic_stops") - self.ultimax_since) * 60) & 0xFFFF
             self.memory[0x0F00:0x0F02] = frames.to_bytes(2, "little")
             if self.vicread is not None:          # wrong CPU reads (24-bit), then rounds of 512 reads
                 b = self.vicread.bytes()

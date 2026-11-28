@@ -135,6 +135,37 @@ def test_a_crashed_reu_client_is_relaunched_at_the_defaults(fake_station, tmp_pa
     assert margin.edges["down"].clean_to == 390 and margin.restored
 
 
+def test_a_reu_loop_left_broken_is_relaunched_and_sampled_again(fake_station, tmp_path: Path):
+    """Backlog 49: past one value the loop counted every round bad from then
+    on, the default included, until it was relaunched. A sample with every
+    round bad is taken again after a relaunch at the defaults, and the
+    second one stands: the edge is the knob's, not the broken loop's."""
+    fake, board, dbg = fake_station
+    fake.special_io = REU
+    fake.faults["reu_breaks_ns"] = 5
+    probe = ReuLoopProbe(board, _reu_program(tmp_path), dwell=0.3, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["e"], probe, SearchSpec(stop=520, step=20, fine=5), log=lambda m: None).run()
+    assert (margin.last_clean, margin.first_fail) == (480, 485)
+    assert margin.after == {"clean": True, "restarted": False, "notes": []}
+
+
+def test_a_sample_that_slows_partway_fails_as_a_collapse(fake_station, tmp_path: Path):
+    """A C64 that hangs partway through a sample counts fewer passes, none of
+    them wrong: under 60% of the rate at the defaults, the sample fails, and
+    the probe relaunches before the next point."""
+    from treadmill.probes import IdReadProbe
+    fake, board, dbg = fake_station
+    fake.faults["idread_slow_above"] = {"p": 200}
+    crt = tmp_path / "idread.crt"
+    crt.write_bytes(b"C64 CARTRIDGE   " + bytes(64))
+    probe = IdReadProbe(board, crt, dwell=0.3, log=lambda m: None)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), log=lambda m: None).run()
+    assert (margin.last_clean, margin.first_fail) == (200, 205), "under the IO window's own edge, 210"
+    slow = next(p for p in margin.points if p.value == 205)
+    assert slow.hung and "stopped or slowed partway" in slow.notes[0] and "io2 0/" in slow.notes[0]
+    assert probe.rate and probe.rate > 1000
+
+
 def _regread(board, tmp_path: Path, **kw) -> "RegReadProbe":
     from treadmill.probes.regread import RegReadProbe
     return RegReadProbe(board, _reu_program(tmp_path), dwell=0.3, log=lambda m: None, **kw)
@@ -216,6 +247,52 @@ def test_regread_menu_reads_the_menu_s_own_io1_in_its_place(fake_station, tmp_pa
         with pytest.raises(SweepError) as e:
             Sweep(dbg, knob, probe, SearchSpec(stop=100), fixed=fixed)
         assert "sweeps nS_PLAprop alone" in str(e.value)
+
+
+def _at(dbg, probe, letter: str, value: int, label: str) -> Sample:
+    """One sample of a probe already set up, at one value, the defaults back after."""
+    dbg.set_knob(letter, value)
+    try:
+        return Sample(*probe.sample(label))
+    finally:
+        dbg.restore_defaults()
+
+
+def test_a_regread_sample_slowed_by_its_wrong_reads_is_no_collapse(fake_station, tmp_path: Path):
+    """A wrong read costs the REU loop time of its own, so far past the edge
+    it reads at a sixth of its rate without having stopped: the sample fails
+    on its count, and the probe does not relaunch. One whose counters stand
+    still after it as well stopped partway, and fails as a collapse."""
+    fake, board, dbg = fake_station
+    fake.special_io = REU
+    probe = _regread(board, tmp_path)
+    probe.setup()
+    try:
+        slow = _at(dbg, probe, "p", 260, "p260")
+        assert slow.failures > 0 and not slow.hung and not probe._stalled, slow
+        fake.faults["hangs_partway_above"] = {"p": 250}
+        stopped = _at(dbg, probe, "p", 260, "p260")
+        assert stopped.hung and probe._stalled and "stopped or slowed partway" in stopped.note, stopped
+        assert "REU register reads wrong" in stopped.note, "the count stands beside the collapse"
+    finally:
+        probe.teardown()
+
+
+def test_regread_menu_that_stops_partway_fails_as_a_collapse(fake_station, tmp_path: Path):
+    """Clean and stopped partway, or failing and stopped: both a collapse."""
+    fake, board, dbg = fake_station
+    fake.faults["hangs_partway_above"] = {"p": 180}
+    probe = _menuread(board, tmp_path)
+    probe.setup()
+    try:
+        for value in (190, 230):            # inside the menu's IO1 window, then past it
+            got = _at(dbg, probe, "p", value, f"p{value}")
+            assert got.hung and probe._stalled and "stopped or slowed partway" in got.note, (value, got)
+            assert ("version string" in got.note) == (value == 230)
+            probe._stalled = False
+            probe.setup()                   # the C64 launched again, as the next sample would
+    finally:
+        probe.teardown()
 
 
 class _Workload:
@@ -556,6 +633,21 @@ def test_a_hung_vicrom_is_relaunched(fake_station, tmp_path: Path):
     assert [(p.value, p.failed) for p in margin.points[2:]] == [(330, False), (370, False)]
 
 
+def test_a_vicrom_that_stops_partway_fails_as_a_collapse(fake_station, tmp_path: Path):
+    """The frames the C64 counts stop a tenth of a second into the sample,
+    the picture still clean: under 60% of the rate, it fails as a collapse."""
+    fake, board, dbg = fake_station
+    fake.faults["hangs_partway_above"] = {"v": 250}
+    probe = _vicrom(fake, board, tmp_path)
+    probe.setup()
+    try:
+        got = _at(dbg, probe, "v", 270, "v270")
+        assert got.hung and probe._stalled and "vicrom made" in got.note and "stopped or slowed" in got.note, got
+        assert probe.rate and probe.rate > 30
+    finally:
+        probe.teardown()
+
+
 def test_the_probe_kernal_inverts_the_longest_filler_run():
     kernal = bytearray(range(256)) * 32
     kernal[0x04B7:0x04D3] = b"\xaa" * 28                     # the stock KERNAL's filler at $E4B7
@@ -650,6 +742,25 @@ def test_krread_keeps_the_first_read_apart_from_the_verdict(fake_station, tmp_pa
     assert passes > 0 and rom_first == passes and ram_first == 0
     assert margin.probe_info["krread"]["first_reads"]["k=35"] == [rom_first, ram_first, passes]
     assert "the first read after the write" in next(n for p in margin.points for n in p.notes if "first" in n)
+
+
+def test_a_krread_that_stops_partway_fails_as_a_collapse(fake_station, tmp_path: Path):
+    """Counts read off the screen: passes that stop partway through a clean
+    sample fail it as a collapse. A read of the screen takes two frames that
+    agree, so the C64 runs longer before it hangs, and the sample is longer."""
+    fake, board, dbg = fake_station
+    fake.special_io, fake.kernal_file = "Kernal Replace", "SD://treadmill/krprobe.bin"
+    fake.knobs["x"] = 0
+    fake.faults.update(hangs_partway_above={"k": 45}, hang_after_s=0.6)
+    probe = _krread(fake, board, tmp_path)
+    probe.dwell = 1.5
+    probe.setup()
+    try:
+        got = _at(dbg, probe, "k", 50, "k50")
+        assert got.hung and probe._stalled and "krread made" in got.note, got
+        assert "without the replacement" not in got.note, "inside the sense window: nothing counted wrong"
+    finally:
+        probe.teardown()
 
 
 def test_krread_touches_no_memory_while_it_runs(fake_station, tmp_path: Path):

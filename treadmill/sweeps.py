@@ -72,6 +72,33 @@ class Sample(NamedTuple):
     measure: dict | None = None   # what the verdict was taken from (a picture's counts), kept in the record
 
 
+# A sample whose workload made less than this share of the progress it makes at the defaults stopped or
+# slowed partway. Judged on what it had counted by then, a C64 that hung partway through a sample passed
+# it as clean, and the next value took the hang.
+STALL_SHARE = 0.6
+
+
+def stalled(name: str, done: float, seconds: float, rate: float | None, unit: str) -> str | None:
+    """Why a sample counts as stopped partway: ``done`` in ``seconds`` is
+    under ``STALL_SHARE`` of ``rate``, the probe's own a second at the
+    defaults. None when it kept up, or with no rate to judge by."""
+    if not rate or seconds <= 0:
+        return None
+    got = done / seconds
+    if got >= STALL_SHARE * rate:
+        return None
+    return (f"{name} made {got:.0f} {unit} a second, {got / rate:.0%} of the {rate:.0f} at the defaults: it "
+            f"stopped or slowed partway")
+
+
+def with_stall(sample: "Sample", why: str | None) -> "Sample":
+    """``sample`` failed as a collapse when ``why`` says it stalled."""
+    if why is None:
+        return sample
+    return Sample(sample.failures + 1, sample.samples + 1, "; ".join(n for n in (sample.note, why) if n), True,
+                  sample.measure)
+
+
 class Probe(Protocol):
     name: str
 
@@ -323,7 +350,7 @@ class Margin:
     limits: tuple[int, int] | None = None
     probe_info: dict[str, dict] = field(default_factory=dict)   # what a probe keeps besides counts (baselines)
     fixed: dict[str, int] = field(default_factory=dict)         # other knobs set for the whole sweep, by letter
-    after: dict | None = None     # a walk that failed: the default checked after it (clean, restarted, notes)
+    after: dict | None = None     # the default checked after the walk (clean, restarted, notes)
     stopped: str | None = None    # why the walk ended before its edges were found; its points stand
     checks: list[dict] = field(default_factory=list)   # the default checked after a failed point (leaves_state)
 
@@ -362,6 +389,13 @@ class Margin:
         if edge is None or edge.clean_to is None or edge.first_fail is None:
             return None
         return abs(edge.clean_to - self.default)
+
+    @property
+    def failed_at_default(self) -> list[Point]:
+        """The walk's points at the default that failed, in any pass: a
+        drifting machine's later pass can fail there while the check after
+        the walk runs clean, and its edges are not the knob's."""
+        return [p for p in self.points if p.value == self.default and p.failed]
 
     def to_dict(self) -> dict:
         s = self.spec
@@ -896,13 +930,15 @@ class Sweep:
                                   f"the edges are measured from it")
 
     def _after_walk(self, started: list[Probe]) -> dict:
-        """After a walk that failed somewhere, or after a failed point for a
-        probe that ``leaves_state`` (``walk_at``): the defaults back, one
-        point at the default. A failure there is the TeensyROM's own state
-        left bad, not the knob (an IO1 read past its edge garbled the menu
-        until the Teensy restarted, backlog 53), and what is probed next
-        would fail at its default too: restart the Teensy, set the probes up
-        again, and check once more."""
+        """After every walk, or after a failed point for a probe that
+        ``leaves_state`` (``walk_at``): the defaults back, one point at the
+        default. A walk that ended clean can still leave a loop broken (a REU
+        loop counting every round bad from one value on, BACKLOG 49), so the
+        check runs whether or not a point failed. A failure there is the
+        TeensyROM's own state left bad, not the knob (an IO1 read past its
+        edge garbled the menu until the Teensy restarted, backlog 53), and
+        what is probed next would fail at its default too: restart the
+        Teensy, set the probes up again, and check once more."""
         default = self.defaults[self.knob.letter]
         at_defaults = {letter: self.pins.get(letter, self.defaults[letter]) for letter in self.setting_for(default)}
         self.restore()
@@ -957,7 +993,7 @@ class Sweep:
                 else:
                     for n in range(1, spec.passes + 1):
                         points += self._scan(n)
-                if any(p.failed for p in points):
+                if points:
                     after = self._after_walk(started)
             except TreadmillError as e:
                 # A probe that could not get its program back (the menu still booting, a relaunch that

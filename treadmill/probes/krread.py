@@ -24,7 +24,9 @@ sense's own cycle, while the rest show whether the verdict was right, which is
 what a point is judged on. The image is chosen as the Kernal file and Special
 IO set to Kernal Replace by the caller (``Settings.kernal_file``,
 ``Settings.special_io``), and ``KSenseMode`` set (``ksense_mode``), since
-``td`` leaves it alone.
+``td`` leaves it alone. A sample whose passes a second fall under
+``STALL_SHARE`` of those counted at the defaults in the setup stopped
+partway, and fails as a collapse.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from treadmill.board import Board
 from treadmill.link import DebugCommands
 from treadmill.observe.channels import CONFIDENCE_FLOOR, ScreenChannel
 from treadmill.probes.idread import SHOW_DIGITS
-from treadmill.sweeps import Sample, Setting, SweepError, at_defaults, relaunch_reset
+from treadmill.sweeps import Sample, Setting, SweepError, at_defaults, relaunch_reset, stalled, with_stall
 
 KERNAL, KERNAL_SIZE = 0xE000, 0x2000
 READY, READY_VALUE = 0xC104, 0x5A
@@ -104,6 +106,7 @@ class KrReadProbe:
         self.drive = drive
         self.remote = remote
         self.log = log
+        self.rate: float | None = None    # passes a second at the defaults
         self._stalled = False
         # per value under test ("k=35"): first reads missed with HIRAM set, with it clear, and passes
         self.first_reads: dict[str, list[int]] = {}
@@ -157,11 +160,22 @@ class KrReadProbe:
                 moves += 1
                 if moves >= 2:
                     self._stalled = False
+                    self.rate = self._rate()
                     return
             seen = passes if passes is not None else seen
             time.sleep(CHECK_S / 4)
         shown = [r.strip() for r in self.screen.read_video().rows() if r.strip()][:4]
         raise SweepError(f"krread is not counting on the C64's top row; the screen shows {shown}")
+
+    def _rate(self) -> float | None:
+        """Passes a second over CHECK_S, each count taken when its read came back."""
+        try:
+            before, t0 = self.counters(), time.monotonic()
+            time.sleep(CHECK_S)
+            after, t1 = self.counters(), time.monotonic()
+        except SweepError:
+            return None
+        return ((after[0] - before[0]) & 0xFFFF) / max(t1 - t0, 1e-6)
 
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
@@ -170,9 +184,9 @@ class KrReadProbe:
                 relaunch_reset(self.board, "krread", self.log)
                 self.setup()
         try:
-            before = self.counters()
+            before, t0 = self.counters(), time.monotonic()
             time.sleep(self.dwell)
-            after = self.counters()
+            after, t1 = self.counters(), time.monotonic()
         except SweepError as e:
             self._stalled = True
             return Sample(1, 1, f"krread stopped: {e}", hung=True)
@@ -191,7 +205,10 @@ class KrReadProbe:
         if rom_first or ram_first:
             notes.append(f"the first read after the write: {rom_first}/{passes} without the replacement, "
                          f"{ram_first}/{passes} with it over RAM")
-        return Sample(rom + ram, 2 * reads, "; ".join(notes) or None)
+        why = stalled("krread", passes, t1 - t0, self.rate, "passes")
+        if why:
+            self._stalled = True
+        return with_stall(Sample(rom + ram, 2 * reads, "; ".join(notes) or None), why)
 
     def info(self) -> dict:
         return {"first_reads": self.first_reads}

@@ -398,15 +398,25 @@ first; a value counts as clean only if it was clean in every pass, and an
 edge that moves between passes is marked drifting. The defaults are restored
 whatever happened, and the result is each edge (how far it is clean, where
 it fails, which probe failed there) and every point of every pass, as text
-or `--json` and as `margins.json` in the run's folder. A walk that failed
-anywhere ends with one more point at the default, the defaults back: if that
+or `--json` and as `margins.json` in the run's folder. Every walk ends with
+one more point at the default, the defaults back, failed or not (a REU loop
+once kept every round bad from one value on, BACKLOG 49): if that
 fails, the TeensyROM's own state was left bad (an IO1 read past its edge once
 garbled the menu until the Teensy restarted), so the Teensy is restarted
 through the USB reboot, when the run knows the board's hex, and the default
 checked again (`after_walk` in the record). The menu probe, whose failures
 can leave that state, has the default checked the same way before each point
 that follows a failed one, so no value is judged on a board a failure left
-wrong (`default_checks`).
+wrong (`default_checks`). The probes that count on the C64 (idread,
+the REU loop, cpuwatch, the regread probes, vicrom, krread) take their rate
+at the defaults as they start, and a sample that made under 60% of it
+stopped or slowed partway: it fails as a collapse, and the probe relaunches
+before the next point. Judged on what it had counted, a C64 that hung
+partway through a sample passed it, and the next value took the hang. A REU
+loop that counts every round bad, or rounds at over one and a half times its
+rate, is taken as broken rather than failing: relaunched at the defaults,
+the point is sampled again, and the second sample stands. A margin test also
+fails when any pass fails at the default.
 
 `treadmill/knobs.py` is the knob table: each knob's letter, digits, unit,
 the bus path it times, the images and boards that take it (`tx` and `tn`,

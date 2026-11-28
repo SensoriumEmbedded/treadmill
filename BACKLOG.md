@@ -600,8 +600,13 @@ cost or a wart with a known, small fix.
    idle past the timeout still counts; a thread that calls
    `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` every minute resets the
    idle timer and would not depend on either.
-49. **medium** A REU loop that fails every round is never relaunched.
-   `ReuLoopProbe` (`treadmill/probes/reuloop.py`) relaunches the loop only
+49. **closed 2026-11-27, with the stall rule and the check after every walk.**
+   A REU loop sample with every round bad, or rounds at over 1.5 times the
+   rate counted at the defaults, is resampled after a relaunch there; a
+   sample under 60 % of that rate fails as a collapse; the default is
+   probed after every walk; and a margin test fails when any pass fails at
+   the default. The item as it was: A REU loop that fails every round is
+   never relaunched. `ReuLoopProbe` (`treadmill/probes/reuloop.py`) relaunches the loop only
    after a hang. On the C128 Marco1 on 2026-11-22, `nS_DMASetup` 490 left
    the loop running with every round bad (2,713 of 2,713, twice the normal
    round rate), and it stayed that way at every later point, the default

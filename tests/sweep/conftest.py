@@ -67,6 +67,8 @@ def margin_check(station, firmware, run_dir, artifacts, warn):
     the same station, knob, edge and probes on another build is a warning.
     A default that still fails after the walk, with the Teensy restarted
     or no restart at hand, fails the test: what runs next would fail too.
+    So does a pass that failed at the default, as a later pass of a
+    drifting machine can, since its edges are not edges of the knob.
     ``floor=False`` for a sweep the knob's floor is not for (one under USB
     load). Returns the record."""
 
@@ -82,6 +84,10 @@ def margin_check(station, firmware, run_dir, artifacts, warn):
         assert margin.restored, "td not confirmed: the board still runs the last value"
         assert (margin.after or {}).get("clean", True), (f"{margin.knob.name} fails at its default after the walk: "
                                                          + "; ".join(margin.after.get("notes") or []))
+        at_default = margin.failed_at_default
+        assert not at_default, (f"{margin.knob.name} fails at its default {margin.default} in pass "
+                                + ", ".join(str(p.pass_no) for p in at_default) + ": "
+                                + "; ".join(n for p in at_default for n in p.notes))
         problems = margins.floor_problems(record, station.margins.get(margin.knob.name) if floor else None)
         assert not problems, "\n".join(problems) + "\n" + margin.describe()
         return record

@@ -12,12 +12,13 @@ from treadmill.link import LinkError, TransportError
 from treadmill.observe.channels import CONFIDENCE_FLOOR, ScreenChannel
 from treadmill.programs.build import CHIP_SIZE
 from treadmill.probes.usbload import usb_load
-from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
+from treadmill.sweeps import Sample, Setting, SweepError, at_defaults, stalled, with_stall
 
 IDREAD_RESULTS = 0xC000           # idread.a's counters: passes (16-bit), wrong ROM reads, wrong IO2 reads (24-bit)
 IDREAD_ROM_READS_PER_PASS = 512   # two ROM pages, 256 rounds
 IDREAD_IO_READS_PER_PASS = 256    # the IO2 page, 256 rounds
 IDREAD_START_S = 6.0
+RATE_S = 1.0                      # passes counted at the defaults once the loop runs: its rate, for stalls
 MINIMAL_BANK = 64                 # a chip this high makes the main image hand the cartridge to MinimalBoot
 DROP_S = 20.0                     # the launch, to the main image restarting as MinimalBoot
 MINIMAL_S = 20.0                  # MinimalBoot answering once the port is back
@@ -37,7 +38,9 @@ class IdReadProbe:
     both paths' shares in its note. Its writes count through the reads:
     each pass writes the IO2 page a new pattern and ``$DE00`` the other
     bank, so a wrong IO2 write is a wrong IO2 read and a wrong bank write
-    a pass of wrong ROM reads (512)."""
+    a pass of wrong ROM reads (512). A sample whose passes a second fall
+    under ``STALL_SHARE`` of the rate counted at the defaults in the setup
+    stopped partway, and fails as a collapse."""
 
     name = "idread"
 
@@ -52,7 +55,15 @@ class IdReadProbe:
             self.name = f"{self.name}-usbload"
         self.remote = remote
         self.log = log
+        self.rate: float | None = None    # passes a second at the defaults
         self._stalled = False
+
+    def _rate(self) -> float:
+        """Passes a second over RATE_S of the workload."""
+        before = self.counters()
+        self.workload(RATE_S)
+        after = self.counters()
+        return ((after[0] - before[0]) & 0xFFFF) / max(after[-1] - before[-1], 1e-6)
 
     def setup(self) -> None:
         if not self.board.dma_allowed():
@@ -72,13 +83,14 @@ class IdReadProbe:
                 seen, moves = passes, moves + 1
                 if moves >= 2:
                     self._stalled = False
+                    self.rate = self._rate()
                     return
         raise SweepError("idread is not running on the C64: its pass counter does not move")
 
-    def counters(self) -> tuple[int, int, int]:
-        """(passes, wrong ROM reads, wrong IO2 reads)."""
+    def counters(self) -> tuple[int, int, int, float]:
+        """(passes, wrong ROM reads, wrong IO2 reads, when they were read)."""
         b = self.board.link.read_memory(IDREAD_RESULTS, 8)
-        return b[0] | b[1] << 8, b[2] | b[3] << 8 | b[4] << 16, b[5] | b[6] << 8 | b[7] << 16
+        return b[0] | b[1] << 8, b[2] | b[3] << 8 | b[4] << 16, b[5] | b[6] << 8 | b[7] << 16, time.monotonic()
 
     def sample(self, label: str, setting: Setting | None = None) -> Sample:
         if self._stalled:
@@ -92,14 +104,15 @@ class IdReadProbe:
             after = self.counters()
         return self.delta(before, after)
 
-    def workload(self) -> None:
+    def workload(self, seconds: float | None = None) -> None:
         """What runs while the C64 counts: ``dwell`` seconds, under USB load if asked."""
+        seconds = self.dwell if seconds is None else seconds
         if self.usb_load:
-            usb_load(self.board.link, self.dwell)
+            usb_load(self.board.link, seconds)
         else:
-            time.sleep(self.dwell)
+            time.sleep(seconds)
 
-    def delta(self, before: tuple[int, int, int], after: tuple[int, int, int]) -> Sample:
+    def delta(self, before: tuple, after: tuple) -> Sample:
         """The counts between two readings, each modulo its counter's width."""
         passes = (after[0] - before[0]) & 0xFFFF
         rom = (after[1] - before[1]) & 0xFFFFFF
@@ -108,7 +121,10 @@ class IdReadProbe:
             self._stalled = True
             return Sample(1, 1, "idread stopped: the C64 hung", hung=True)
         rom_reads, io_reads = passes * IDREAD_ROM_READS_PER_PASS, passes * IDREAD_IO_READS_PER_PASS
-        return Sample(rom + io, rom_reads + io_reads, f"rom {rom}/{rom_reads}, io2 {io}/{io_reads}")
+        why = stalled(self.name, passes, after[-1] - before[-1], self.rate, "passes")
+        if why:
+            self._stalled = True
+        return with_stall(Sample(rom + io, rom_reads + io_reads, f"rom {rom}/{rom_reads}, io2 {io}/{io_reads}"), why)
 
     def teardown(self) -> None:
         self.board.ensure_menu()
@@ -139,7 +155,7 @@ class MinimalIdReadProbe(IdReadProbe):
         self.screen = screen
         self.name = "idread-minimal" + ("-usbload" if usb_load else "")
 
-    def counters(self) -> tuple[int, int, int]:
+    def counters(self) -> tuple[int, int, int, float]:
         for _ in range(SHOW_READS):
             read = self.screen.read_video()
             values = []
@@ -150,7 +166,7 @@ class MinimalIdReadProbe(IdReadProbe):
                     break
                 values.append(int("".join("%x" % SHOW_DIGITS[int(read.codes[i])] for i in cells), 16))
             else:
-                return values[0], values[1], values[2]
+                return values[0], values[1], values[2], time.monotonic()
             time.sleep(0.2)
         raise SweepError("idread's counters on the top row do not read whole")
 
@@ -179,6 +195,7 @@ class MinimalIdReadProbe(IdReadProbe):
                 moves += 1
                 if moves >= 2:
                     self._stalled = False
+                    self.rate = self._rate()
                     return
             seen = passes if passes is not None else seen
             time.sleep(0.3)

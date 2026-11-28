@@ -20,7 +20,9 @@ baseline + 100)``: with baselines of 48,000 to 104,000 pixels a point failed
 only with a quarter to a half of the text area wrong. Every sample's count,
 its worst frame and its frames go in the record. The C64 counts frames at
 $0F00 and steps the border once a frame: the probe reads the count by DMA
-on a TR+, else watches the border, and a C64 that stopped is a hang.
+on a TR+, else watches the border, and a C64 that stopped is a hang. One
+that made under ``STALL_SHARE`` of the frames a second it made over the
+baseline stopped partway, and fails as a collapse too.
 
 ``vicrom-high`` is ``vicrom.a`` built with ``HIGH``: the screen matrix and
 eight sprites are in ROMH too, and the VIC reads those while Phi2 is high,
@@ -53,7 +55,7 @@ from treadmill.board import Board
 from treadmill.observe.calibrate import Calibration
 from treadmill.observe.capture import FrameSource
 from treadmill.probes.noise import LEVEL, MIN_CONTRAST, contrast
-from treadmill.sweeps import Sample, Setting, SweepError, at_defaults
+from treadmill.sweeps import Sample, Setting, SweepError, at_defaults, stalled, with_stall
 
 PASSES, READY, READY_VALUE = 0x0F00, 0x0F04, 0x5A
 COUNTERS = 10                     # $0F00-$0F09: frames, ready, wrong CPU reads (24-bit), rounds (16-bit)
@@ -123,6 +125,7 @@ class VicRomProbe:
         self.log = log
         self.reference: np.ndarray | None = None
         self.areas: list[Area] = []
+        self.rate: float | None = None    # frames a second over the baseline
         self._stalled = False
 
     # -- the picture ----------------------------------------------------------------
@@ -171,12 +174,20 @@ class VicRomProbe:
 
     # -- the C64 ----------------------------------------------------------------------
 
-    def _counters(self) -> tuple[int, int, int]:
-        """(frames, wrong CPU reads, rounds); the last two stay 0 without CPU."""
+    def _counters(self) -> tuple[int, int, int, float]:
+        """(frames, wrong CPU reads, rounds, when they were read); the middle two stay 0 without CPU."""
         b = self.board.link.read_memory(PASSES, COUNTERS if self.cpu else 2)
         if not self.cpu:
-            return b[0] | b[1] << 8, 0, 0
-        return b[0] | b[1] << 8, b[5] | b[6] << 8 | b[7] << 16, b[8] | b[9] << 8
+            return b[0] | b[1] << 8, 0, 0, time.monotonic()
+        return b[0] | b[1] << 8, b[5] | b[6] << 8 | b[7] << 16, b[8] | b[9] << 8, time.monotonic()
+
+    def _progress(self, frames, before, after) -> tuple[int, float]:
+        """The frames the C64 made, and over how long: its own count by DMA,
+        else the steps its border took on video."""
+        if before is not None:
+            return (after[0] - before[0]) & 0xFFFF, after[-1] - before[-1]
+        steps = sum(round(self._border(a)) != round(self._border(b)) for a, b in zip(frames[1:], frames))
+        return steps, frames[-1].at - frames[0].at if len(frames) > 1 else 0.0
 
     def _launch(self) -> None:
         self.board.ensure_menu()
@@ -210,11 +221,17 @@ class VicRomProbe:
         if not learn:
             raise SweepError(f"{self.name}: no frames to learn the steady pixels from")
         self.areas = self._areas(np.mean(learn, axis=0) <= STEADY)
-        baseline = self._strays(self._frames(self.dwell))
+        dma = self.board.dma_allowed()
+        before = self._counters() if dma else None
+        shot = self._frames(self.dwell)
+        after = self._counters() if dma else None
+        baseline = self._strays(shot)
         if not baseline:
             raise SweepError(f"{self.name}: no frames for the baseline")
         for area in self.areas:
             area.learn(baseline)
+        done, seconds = self._progress(shot, before, after)
+        self.rate = done / seconds if seconds > 0 else None
         self._stalled = False
         self.log(f"[sweep] {self.name} reference at the defaults; " + "; ".join(
             f"{a.name}: {a.steady.mean():.0%} steady, baseline {a.base:.0f} pixels, spread {a.spread:.0f} "
@@ -244,6 +261,9 @@ class VicRomProbe:
         if not frames:
             return Sample(1, 1, f"{self.name}: no frames in {self.dwell} s: the capture gave nothing to judge",
                           measure={"frames": 0})
+        why = stalled(self.name, *self._progress(frames, before, after if dma else None), self.rate, "frames")
+        if why:
+            self._stalled = True
         failures, samples, notes = 0, len(self.areas), []
         strays = self._strays(frames)
         measure: dict = {"frames": len(frames)}
@@ -259,7 +279,7 @@ class VicRomProbe:
             wrong, reads = (after[1] - before[1]) & 0xFFFFFF, rounds * READS_PER_ROUND
             failures, samples = failures + wrong, samples + reads
             notes.append(f"cpu {wrong}/{reads}")
-        return Sample(failures, samples, "; ".join(notes) or None, measure=measure)
+        return with_stall(Sample(failures, samples, "; ".join(notes) or None, measure=measure), why)
 
     def teardown(self) -> None:
         self.board.reset()

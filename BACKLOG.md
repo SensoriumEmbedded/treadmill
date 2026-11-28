@@ -240,6 +240,11 @@ cost or a wart with a known, small fix.
    is tried once more; and `compare`, after a step's exit 4 on a station
    with `power`, cycles the mains once and goes on instead of skipping the
    rest.
+   The cycle itself must go through the relay alone: `treadmill power
+   cycle` opens the station first, so on 2026-11-27, with the TR's COM port
+   dead ("semaphore timeout"), every cycle failed without switching anything.
+   A recovery that fails ends the run with the mains latched off, instead of
+   letting every later step fail in turn.
 
 ## Video
 

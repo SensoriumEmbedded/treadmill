@@ -376,7 +376,9 @@ flashed build ships with, and fails on a single wrong count or hang:
 treadmill run --station <id> --fw ref=<branch> --tests tests/soak --soak 10
 ```
 
-idread, the REU loop with and without sprites, vicrom, vicrom-high and
+idread, the REU loop with and without sprites, the REU's registers read
+back with and without the host's DMA jobs beside them (regread,
+regread-jobs), the menu's own IO1 (regread-menu), vicrom, vicrom-high and
 idread under MinimalBoot, each where the station can run it. The C64's
 round and pass counters are 16-bit (the REU client's wrap about every
 460 s), so a soak reads them every 10 s and adds the differences, back to
@@ -541,6 +543,26 @@ edge short of the station's floor fails the test, and where a floor is set
 the `menu` probe runs at it too. On the fake board the sweeps count for a
 tenth of a second a sample, once a point (the `pace` fixture), since its
 edges hold still.
+
+idread's IO2 page is the EasyFlash handler's, about the shortest read the
+firmware has, and a handler that runs more code first fails at a lower
+`nS_PLAprop`: on the 250407 C64 in NTSC the REU's registers failed from 209,
+where idread was clean to 230. So on a TR+ the test sweeps `nS_PLAprop` on
+three slower reads as well (`treadmill/probes/regread.py`). `regread` runs
+`reureadback.a` built with `HAMMER`, Special IO at the REU (set and put
+back): the C64 sets $DF02-$DF08 once and reads them back every 9 cycles,
+counting the wrong reads, with a CIA2 NMI storing to $D418 every 200
+cycles. `regread-jobs` runs the host's WriteC64Spans jobs beside it, 1 KB
+at $6000 a job, each 33-byte slice started on that store, and checks the
+last job landed: the load under which the REU's registers read wrong at the
+defaults (BACKLOG 21). `regread-menu` reads the menu's own IO1 handler:
+with the menu waiting for a key it writes `menuread.a` at $C000 by DMA and
+points $0314 at it, so the C64 runs it in the menu's place, reading the
+presence registers and the version string (the serial-string path the
+menu's banner comes over) against a copy of its first pass. Its one write,
+the string's select, could land in a register kept in EEPROM if its
+address were read early, so it sweeps `nS_PLAprop` alone. All three take
+`--probe` in `treadmill sweep` and run in the soaks.
 
 A station's floors are in its `[margins]` table, per edge, as knob values:
 `nS_PLAprop = { up = 200, down = 140 }` means the up edge must be clean at

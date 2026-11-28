@@ -1,0 +1,107 @@
+; menuread.a: the C64 side of the regread-menu probe, run in place of the TeensyROM
+; menu while the menu's own handler (IOH_TeensyROM) keeps serving IO1. The probe
+; writes this at ORIGIN by DMA while the menu waits for a key, then points $0314 at
+; ORIGIN + ENTRY: the menu's next interrupt comes here and never returns, so nothing
+; of the menu runs while it counts, and a reset brings the menu back.
+;
+; Each pass reads the presence registers ($DE05 $55, $DE06 $AA) through the
+; handler's plain register read, then selects the version string (3 to $DE17,
+; rsstVersionNum) and reads it out through the serial-string read, the slower path,
+; against the copy its first pass made. Its only write is that select; the others
+; would land in registers the firmware keeps in EEPROM if one were misdecoded, so the
+; probe sweeps nS_PLAprop alone, where the address is read in time.
+;
+; ORIGIN + $00/01  passes, 16-bit
+;          $02-04  wrong presence reads, 24-bit
+;          $05-07  wrong string bytes, 24-bit
+;          $08     the copy's length, not counting its 0
+;          $09     $5A once the copy is made
+;          $10-4F  the copy, up to 63 bytes and its 0
+
+* = ORIGIN
+
+PRESENCE1 = $de05
+PRESENCE2 = $de06
+SERIAL    = $de17                 ; rwRegSerialString
+VERSION   = 3                     ; rsstVersionNum
+MAXLEN    = 63
+
+passes:  !byte 0, 0
+wrongio: !byte 0, 0, 0
+wrongst: !byte 0, 0, 0
+length:  !byte 0
+ready:   !byte 0
+         !fill ORIGIN + $10 - *, 0
+copy:    !fill MAXLEN + 1, 0
+
+entry:
+        sei
+        cld
+        ldx #$ff
+        txs                       ; the interrupt's frame is never returned to
+        lda #<nmi
+        sta $0318
+        lda #>nmi
+        sta $0319
+        lda #$7f
+        sta $dd0d                 ; no CIA2 interrupts
+        lda $dd0d
+        lda #0
+        ldx #9
+-       sta passes,x
+        dex
+        bpl -
+        lda #VERSION              ; the first pass: the copy
+        sta SERIAL
+        ldx #0
+-       lda SERIAL
+        sta copy,x
+        beq +
+        inx
+        cpx #MAXLEN
+        bne -
+        lda #0                    ; no 0 within MAXLEN: the probe refuses this length
+        sta copy,x
++       stx length
+        lda #$5a
+        sta ready
+
+loop    lda PRESENCE1
+        cmp #$55
+        beq +
+        jsr badio
++       lda PRESENCE2
+        cmp #$aa
+        beq +
+        jsr badio
++       lda #VERSION
+        sta SERIAL
+        ldx #0
+-       lda SERIAL
+        cmp copy,x
+        beq +
+        jsr badst
++       lda copy,x                ; its 0 read too, then the pass ends
+        beq +
+        inx
+        bne -
++       inc passes
+        bne loop
+        inc passes+1
+        jmp loop
+
+badio   inc wrongio
+        bne +
+        inc wrongio+1
+        bne +
+        inc wrongio+2
++       rts
+
+badst   inc wrongst
+        bne +
+        inc wrongst+1
+        bne +
+        inc wrongst+2
++       rts
+
+nmi     rti

@@ -46,7 +46,7 @@ def test_the_baseline_tier_runs_without_dma(pytester: pytest.Pytester, lab: Path
 
 def test_margin_fine_narrows_every_edge_with_three_samples(pytester: pytest.Pytester, lab: Path):  # noqa: F811
     import json
-    result = _run(pytester, lab, "--margin-fine", "2", "-k", "test_cpu_margin and nS_PLAprop")
+    result = _run(pytester, lab, "--margin-fine", "2", "-k", "test_cpu_margin and nS_PLAprop and not handler")
     outcomes = result.parseoutcomes()
     assert outcomes.get("passed", 0) == 1 and outcomes.get("failed", 0) == 0, result.stdout.str()
     record = json.loads(next((lab / "reports").rglob("margins.json")).read_text(encoding="utf-8"))

@@ -135,6 +135,89 @@ def test_a_crashed_reu_client_is_relaunched_at_the_defaults(fake_station, tmp_pa
     assert margin.edges["down"].clean_to == 390 and margin.restored
 
 
+def _regread(board, tmp_path: Path, **kw) -> "RegReadProbe":
+    from treadmill.probes.regread import RegReadProbe
+    return RegReadProbe(board, _reu_program(tmp_path), dwell=0.3, log=lambda m: None, **kw)
+
+
+def _menuread(board, tmp_path: Path) -> "MenuReadProbe":
+    from treadmill.probes.regread import MenuReadProbe
+    payload = tmp_path / "menuread.bin"
+    payload.write_bytes(bytes(0x50) + b"\x78")              # the fake runs the vector write, not the bytes
+    return MenuReadProbe(board, payload, dwell=0.3, log=lambda m: None)
+
+
+def test_regread_finds_the_reu_registers_edge_inside_idread_s(fake_station, tmp_path: Path):
+    """The REU's registers run more code before the byte goes out than the
+    EasyFlash IO2 page: their reads go wrong at a lower nS_PLAprop."""
+    fake, board, dbg = fake_station
+    fake.special_io = REU
+    probe = _regread(board, tmp_path)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), log=lambda m: None).run()
+    assert (margin.last_clean, margin.first_fail) == (200, 205)
+    assert fake.windows["reu"][1] < fake.windows["io"][1]
+    bad = next(p for p in margin.points if p.failed)
+    assert "REU register reads wrong" in bad.notes[0] and "$DF02" in bad.notes[0]
+    assert margin.probe_info["regread"]["held"]["$DF02"] == "$A5" and not margin.probe_info["regread"]["jobs"]
+    assert fake.memory[0xDD0E] == 0x11, "the CIA2 NMI that stores to $D418 is running"
+    assert fake.reghammer is None and margin.restored, "the C64 is reset to the menu after the sweep"
+
+
+def test_regread_wants_an_reu_at_special_io(fake_station, tmp_path: Path):
+    fake, board, dbg = fake_station
+    with pytest.raises(SweepError) as e:
+        _regread(board, tmp_path).setup()
+    assert "is Special IO set to an REU" in str(e.value)
+
+
+def test_regread_jobs_counts_what_the_host_s_dma_costs_the_c64_s_reads(fake_station, tmp_path: Path):
+    """At the defaults the quiet loop is clean, and the loop beside the
+    host's locked jobs is not (BACKLOG 21)."""
+    fake, board, dbg = fake_station
+    fake.special_io = REU
+    fake.faults["reg_wrong_per_job"] = 2
+    quiet, loaded = _regread(board, tmp_path), _regread(board, tmp_path, jobs=True)
+    for probe in (quiet, loaded):
+        probe.setup()
+        try:
+            got = probe.sample("p150")
+        finally:
+            probe.teardown()
+        if probe is quiet:
+            assert got.failures == 0 and got.note is None
+        else:
+            assert got.failures > 0 and "host jobs" in got.note, got
+    assert loaded.name == "regread-jobs" and fake.memory[0x6000:0x6400] == loaded._jobs.last
+
+
+def test_a_host_job_that_did_not_land_is_found():
+    from treadmill.probes.hostjobs import Jobs, landed
+
+    class _Link:
+        def read_memory(self, address, length):
+            return bytes(length)
+
+    assert landed(_Link(), Jobs()) and landed(_Link(), Jobs(sent=1, last=bytes(4)))
+    assert not landed(_Link(), Jobs(sent=1, last=b"\x01\x02\x03\x04"))
+
+
+def test_regread_menu_reads_the_menu_s_own_io1_in_its_place(fake_station, tmp_path: Path):
+    """The menu's IO1 reads go wrong lower still; the probe goes in through
+    the menu's interrupt and sweeps nS_PLAprop alone."""
+    fake, board, dbg = fake_station
+    probe = _menuread(board, tmp_path)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), log=lambda m: None).run()
+    assert (margin.last_clean, margin.first_fail) == (195, 200)
+    bad = next(p for p in margin.points if p.failed)
+    assert "version string" in bad.notes[0]
+    assert margin.probe_info["regread-menu"]["version_bytes"] == len(fake.version_string())
+    assert fake.memory[0x0314:0x0316] == b"\x50\xc0" and fake.menuread is None, "reset to the menu after"
+    for knob, fixed in ((KNOBS["r"], None), (KNOBS["p"], {"r": 100})):
+        with pytest.raises(SweepError) as e:
+            Sweep(dbg, knob, probe, SearchSpec(stop=100), fixed=fixed)
+        assert "sweeps nS_PLAprop alone" in str(e.value)
+
+
 class _Workload:
     """A probe that only takes time, clean, for a companion to run beside."""
 
@@ -199,6 +282,22 @@ def test_sweep_command_with_the_dma_probes(lab: Path, capsys):  # noqa: F811
     assert (payload["edges"]["down"]["clean_to"], payload["edges"]["up"]["clean_to"]) == (380, 480)
     assert main(base + ["--probe", "noise"]) == EXIT_USAGE
     assert "runs beside another" in _error_json(capsys.readouterr().err)["error"]
+
+
+def test_sweep_command_with_the_register_probes(lab: Path, capsys):  # noqa: F811
+    """regread with Special IO set to the REU for the sweep and put back, and
+    regread-menu, refused for a knob other than nS_PLAprop."""
+    from treadmill.cli import EXIT_OK, EXIT_USAGE, main
+    import json
+    common = ["--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg", "--json",
+              "--assume-warm", "--step", "20", "--fine", "5", "--dwell", "0.2"]
+    code = main(["sweep", "p", *common, "--to", "220", "--probe", "regread"])
+    out, err = capsys.readouterr()
+    assert code == EXIT_OK, err
+    payload = json.loads(out)
+    assert payload["probes"] == ["regread"] and payload["edges"]["up"]["first_fail"] == 205
+    code = main(["sweep", "r", *common, "--to", "100", "--probe", "regread-menu"])
+    assert code == EXIT_USAGE and "sweeps nS_PLAprop alone" in _error_json(capsys.readouterr().err)["error"]
 
 
 def test_a_grid_maps_dmasetup_by_dmadatahold_with_the_latch_held(fake_station):

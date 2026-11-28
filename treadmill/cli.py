@@ -197,6 +197,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     from treadmill.probes.game import GameProbe
     from treadmill.probes.krread import DMA, KERNAL, KERNAL_SIZE, SKOE, KrReadProbe, ksense_mode, probe_kernal
     from treadmill.probes.noise import NoiseProbe
+    from treadmill.probes.regread import MenuReadProbe, RegReadProbe
     from treadmill.probes.reuloop import ReuLoopProbe
     from treadmill.probes.vicrom import VicRomProbe
     from treadmill.probes.zpattern import ZPatternProbe
@@ -245,7 +246,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             raise CommandError("the game probe needs --game: the cartridge to launch", EXIT_USAGE)
         if names == ["noise"]:
             raise CommandError("the noise probe runs beside another: add --probe idread, zpattern, reuloop, "
-                               "reuloop-sprites or cpuwatch", EXIT_USAGE)
+                               "reuloop-sprites, cpuwatch or regread", EXIT_USAGE)
 
         def program(name: str):
             try:
@@ -285,6 +286,11 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                 probes.append(GameProbe(board, ns["video"], getattr(ns["screen"], "calib", None), args.game,
                                         kbd=ns.get("kbd"), keys=args.game_keys, settle=args.game_settle,
                                         learn=args.game_learn, dwell=args.dwell, log=log))
+            elif name in ("regread", "regread-jobs"):
+                probes.append(RegReadProbe(board, program("reureadback_hammer"), dwell=args.dwell,
+                                           jobs=name == "regread-jobs", log=log))
+            elif name == "regread-menu":
+                probes.append(MenuReadProbe(board, program("menuread"), dwell=args.dwell, log=log))
             elif name == "krread":
                 image, defines = probe_kernal(board.link.read_memory(KERNAL, KERNAL_SIZE))
                 board.link.push_file(image, KRREAD_KERNAL, "sd")
@@ -298,7 +304,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             probes.append(NoiseProbe(ns["video"], getattr(screen, "calib", None), probes[0], log=log))
         with contextlib.ExitStack() as stack:
             settings = Settings(ns["screen"], ns["keys"], log=log)
-            if any(isinstance(p, ReuLoopProbe) and not isinstance(p, CpuWatchProbe) for p in probes):
+            if any(isinstance(p, ReuLoopProbe) and not isinstance(p, CpuWatchProbe) or isinstance(p, RegReadProbe)
+                   for p in probes):
                 stack.enter_context(settings.special_io(REU))
             if any(isinstance(p, KrReadProbe) for p in probes):
                 stack.enter_context(settings.kernal_file(MenuDriver(ns["screen"], ns["keys"], board),
@@ -1034,7 +1041,8 @@ def build_parser() -> argparse.ArgumentParser:
     _warmup_args(s)
     s.add_argument("knob", help="the knob: its letter (p), the command (tp) or the variable (nS_PLAprop)")
     s.add_argument("--probe", choices=["idread", "menu", "zpattern", "reuloop", "reuloop-sprites", "cpuwatch",
-                                       "noise", "vicrom", "vicrom-cpu", "vicrom-high", "game", "krread"],
+                                       "noise", "vicrom", "vicrom-cpu", "vicrom-high", "game", "krread", "regread",
+                                       "regread-jobs", "regread-menu"],
                    action="append",
                    help="idread (default), menu, zpattern (z###, needs Dbg_SerDMA), reuloop or reuloop-sprites (the "
                         "C64's REU loop; Special IO is set to the REU for the sweep and put back), cpuwatch (the "
@@ -1045,7 +1053,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "while it runs), game (a game cartridge "
                         "by video, what moves on its own masked out: --game), krread (Kernal Replace's "
                         "HIRAM sense, its counters read by video: the probe KERNAL, Special IO and KSenseMode are "
-                        "set for the sweep and put back); repeat it for several probes at each point")
+                        "set for the sweep and put back), regread (the C64 reads the REU's registers back in a loop, "
+                        "a slower handler than idread's IO2 page; Special IO is set to the REU and put back), "
+                        "regread-jobs (the same with the host's DMA write jobs beside it), regread-menu (the "
+                        "TeensyROM menu's IO1 handler, read by code put in the menu's place by DMA; nS_PLAprop "
+                        "only); repeat it for several probes at each point")
     s.add_argument("--z-pages", type=int, default=100, help="zpattern and cpuwatch: z### pages a sample (default 100)")
     s.add_argument("--game", metavar="FILE|sd:/PATH",
                    help="game probe: the cartridge, a file here (pushed to the card) or one on the board's card or "
@@ -1084,7 +1096,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fine", type=int, default=1, help="bisect until clean and failing are this close (default 1)")
     s.add_argument("--repeat", type=int, default=1, help="samples a point, each probe (default 1)")
     s.add_argument("--dwell", type=float, default=1.0,
-                   help="idread, reuloop, vicrom, game, krread: seconds of counting per sample (default 1)")
+                   help="idread, reuloop, vicrom, game, krread, regread: seconds of counting per sample (default 1)")
     s.set_defaults(func=cmd_sweep, screen_on=True)
 
     s = sub.add_parser("compare", help="one station's margins on a base build and a tip build, each standard, "

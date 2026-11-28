@@ -387,10 +387,12 @@ cost or a wart with a known, small fix.
    in each 600 s phase of the PR #99 soak, about 67,000 rounds) unwrap.
    Left: `tools/bench/reuspans.py`'s load, host WriteC64Spans jobs beside
    the REU loop, the quickest check of a DMA timing change. `Link`
-   (`treadmill/link/trlink.py`) has no WriteC64Spans to run its jobs, and
-   the bench library opens the port with `termios`, so the script does not
-   run on Windows (the PR #99 soak ran through a pyserial shim). Fix:
-   WriteC64Spans in `Link`, and the REU-loop soak with jobs beside it.
+   (`treadmill/link/trlink.py`) has had WriteC64Spans (`write_spans`) since
+   the REU read-back soak script of 2026-11-23, and since 2026-11-27
+   `regread-jobs` (`treadmill/probes/hostjobs.py`) runs the C64's reads of
+   the REU's registers beside locked jobs, in the CPU margin test and the
+   soaks. Fix: the REU loop's own transfers beside the same jobs, with a
+   client that stores to $D418 in its NMI for the jobs to lock to.
 22. **closed 2026-11-19, with the DMA probes and the margin map.** No
    view compared a knob's margins across machines. `treadmill margins map`
    draws every stored `margins.json` (`treadmill/report/margin_map.py`),
@@ -458,7 +460,11 @@ cost or a wart with a known, small fix.
    handler's registers back in a loop while it steps `nS_PLAprop`. Fix: a
    `regread` probe in `treadmill/probes/` on that program, the handler set
    through the Settings driver, swept in `test_cpu_margins.py` for each
-   handler a station's machine uses.
+   handler a station's machine uses. Since 2026-11-27 `regread` covers the
+   REU's registers (`reureadback.a` with `HAMMER`) and `regread-menu` the
+   TeensyROM menu's own IO1 handler, both swept there on a TR+. Left:
+   SwiftLink, the MIDI handlers and the other Special IO handlers, each a
+   register map of its own to read back.
 36. **low** MinimalBoot's DMA assert time has no knob. The EasyFlash
    bank-swap pause MinimalBoot runs for large images asserts /DMA at the
    compiled `nS_DMAAssert`, and MinimalBoot's `t` takes no `ta`

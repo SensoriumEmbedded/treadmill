@@ -24,12 +24,22 @@ knob's default is checked once more under load after its sweep. The load
 runs beside idread, so on a plain TR those parts skip. The loaded sweep is
 recorded (its probe is idread-usbload, so its shrink check compares like
 with like) but not held to the station's floor, which is for the knob
-without load."""
+without load.
+
+idread's IO2 page is the EasyFlash handler's, about the shortest read the
+firmware has, so on a TR+ ``nS_PLAprop`` is also swept on the slower ones
+(``treadmill.probes.regread``): the REU's registers (Special IO set to the
+REU and put back), the same beside the host's DMA write jobs, and the
+TeensyROM menu's own IO1 handler."""
+
+import contextlib
 
 import pytest
 
+from treadmill.c64.settings import REU, Settings
 from treadmill.knobs import KNOBS
 from treadmill.probes import IdReadProbe, MenuProbe
+from treadmill.probes.regread import MenuReadProbe, RegReadProbe
 from treadmill.sweeps import SearchSpec, Sweep
 
 pytestmark = [pytest.mark.needs_fw("Dbg_SerTimChg"), pytest.mark.timing_sensitive, pytest.mark.duration(4)]
@@ -41,6 +51,10 @@ ALIKE = {("r", False), ("s", False), ("h", False), ("m", False)}
 CASES = [pytest.param(letter, load, id=KNOBS[letter].name + ("-usbload" if load else ""),
                       marks=[pytest.mark.alike] if (letter, load) in ALIKE else [])
          for letter, load in [(letter, False) for letter in STEPS] + [("m", True)]]
+# regread-jobs differs from regread only in the host's jobs beside it.
+HANDLERS = [pytest.param("regread", id="nS_PLAprop-regread"),
+            pytest.param("regread-jobs", id="nS_PLAprop-regread-jobs", marks=pytest.mark.alike),
+            pytest.param("regread-menu", id="nS_PLAprop-regread-menu")]
 
 
 @pytest.mark.parametrize("letter, load", CASES)
@@ -71,3 +85,24 @@ def test_cpu_margin(letter, load, at_menu, dbg, screen, programs, goldens, artif
         point, = Sweep(dbg, knob, loaded, SearchSpec(repeat=pace.repeat), log=print).spot([margin.default])
         assert not point.failed, f"the default {knob.name} {margin.default} fails under USB load: {point.notes}"
     margin_check(margin, board, floor=not load)
+
+
+@pytest.mark.needs("dma")
+@pytest.mark.parametrize("probe_name", HANDLERS)
+def test_handler_margin(probe_name, at_menu, dbg, screen, keys, programs, pace, margin_check, restart):
+    board = at_menu
+    knob = KNOBS["p"]
+    if probe_name == "regread-menu":
+        probe = MenuReadProbe(board, programs("menuread"), dwell=pace.dwell, log=print)
+        special = contextlib.nullcontext()
+    else:
+        probe = RegReadProbe(board, programs("reureadback_hammer"), dwell=pace.dwell,
+                             jobs=probe_name == "regread-jobs", log=print)
+        special = Settings(screen, keys, log=print).special_io(REU)
+    spec = SearchSpec(both=True, step=STEPS["p"], fine=pace.fine, repeat=pace.repeat)
+    with special:
+        margin = Sweep(dbg, knob, probe, spec, restart=restart, log=print).run()
+    print(margin.describe())
+    assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails the {probe.name} probe: "
+                                         + "; ".join(margin.points[0].notes))
+    margin_check(margin, board)

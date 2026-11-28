@@ -78,6 +78,20 @@ def test_payloads_assemble_raw_at_their_origin(tmp_path: Path):
         assemble("asidlog", tmp_path, acme=_acme())
 
 
+@pytest.mark.skipif(_acme() is None, reason="no ACME: set TREADMILL_ACME or TREADMILL_FW_REPO")
+def test_menuread_enters_where_the_probe_points_the_interrupt(tmp_path: Path):
+    from treadmill.probes import regread
+    assert PAYLOADS["menuread"][2] == regread.MENU_ORIGIN
+    code = assemble("menuread", tmp_path, acme=_acme()).read_bytes()
+    entry = regread.MENU_ENTRY - regread.MENU_ORIGIN
+    assert code[:entry] == bytes(entry), "the counters, the length, ready and the copy start at 0"
+    assert code[entry:entry + 2] == bytes([0x78, 0xD8])                    # sei, cld
+    assert regread.MENU_READY - regread.MENU_ORIGIN == 9 and regread.MAX_COPY == 62
+    assert bytes([0xA9, 0x03, 0x8D, 0x17, 0xDE]) in code                    # lda #3, sta $DE17: its only IO1 write
+    io1_stores = [code[i + 1] for i in range(len(code) - 2) if code[i] == 0x8D and code[i + 2] == 0xDE]
+    assert io1_stores == [0x17, 0x17], "sta $DExx: the select, on the first pass and in the loop"
+
+
 def test_crt_image_lays_out_the_header_and_chips():
     rom = bytes(range(256)) * 64
     data = crt_image(rom, "NAME", CRT_EASYFLASH, (0x8000, 0xA000), (1, 0))

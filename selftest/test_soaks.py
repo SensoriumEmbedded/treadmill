@@ -158,3 +158,22 @@ def test_idread_soaks_on_the_fake_board(lab, monkeypatch, tmp_path: Path):  # no
         assert broken.failures > 0 and not broken.hangs and "io2" in broken.intervals[0].note
     finally:
         board.close()
+
+
+def test_regread_jobs_soaks_on_the_fake_board(lab, monkeypatch, tmp_path: Path):  # noqa: F811
+    """The REU's registers read back beside the host's jobs, each interval's
+    counts added; the jobs' cost shows as wrong reads (BACKLOG 21)."""
+    from treadmill.probes.regread import RegReadProbe
+    monkeypatch.setattr(dbgcmds, "TEXT_REPLY", (3.0, 0.05, 20.0))
+    fake, stream = start_fake_board(special_io="512KB REU")
+    board = Board.open(load_station("s1"), link_factory=lambda: Link(stream))
+    prg = tmp_path / "regread.prg"
+    prg.write_bytes(bytes([0x01, 0x08]) + bytes(16))
+    try:
+        clean = soak(RegReadProbe(board, prg, jobs=True, log=lambda m: None), 1.0, 0.3, log=lambda m: None)
+        assert clean.clean and len(clean.intervals) >= 3 and clean.samples > 10000
+        fake.faults["reg_wrong_per_job"] = 1
+        costly = soak(RegReadProbe(board, prg, jobs=True, log=lambda m: None), 1.0, 0.3, log=lambda m: None)
+        assert costly.failures > 0 and not costly.hangs and "host jobs" in costly.intervals[0].note
+    finally:
+        board.close()

@@ -159,6 +159,70 @@ class IdRead:
                       io & 0xFF, (io >> 8) & 0xFF, io >> 16])
 
 
+REG_ROUNDS_PER_S = 55.0           # reureadback.a with HAMMER: 256 passes of 7 reads, about 71 cycles a pass
+REG_HELD = bytes([0xA5, 0x3C, 0xC3, 0x5A, 0x01, 0x96, 0x69])
+MENU_PASSES_PER_S = 2600.0        # menuread.a: two register reads and the version string a pass
+MENU_ENTRY = (0xC050).to_bytes(2, "little")
+
+
+@dataclass
+class RegHammer:
+    """reureadback.a built with HAMMER: its counters at $C110 advanced by the
+    clock. With no REU at Special IO most reads are open bus; with one, a
+    share go wrong while the REU read path's window misses the sample point,
+    each counted as late or, one in ten, wrong twice. ``late`` takes what the
+    host's jobs add as well."""
+    last: float
+    reu: bool
+    rounds: float = 0.0
+    late: float = 0.0
+    twice: float = 0.0
+
+    def advance(self, now: float, outside_ns: int) -> None:
+        """A read takes about 10 cycles, a miss about 50 more, so a loop that
+        misses often reads slower, and its 16-bit counts last a few seconds."""
+        dt = max(0.0, now - self.last)
+        self.last = now
+        share = 0.75 if not self.reu else min(1.0, outside_ns * IDREAD_WRONG_PER_NS)
+        reads = dt * REG_ROUNDS_PER_S * 256 * 7 / (1.0 + 5.0 * share)
+        self.rounds += reads * (1.0 - share) / (256 * 7)
+        self.late += reads * share * 0.9
+        self.twice += reads * share * 0.1
+
+    def bytes(self) -> bytes:
+        """$C110-$C146: rounds, bad pages, seed, then $DF02's late and twice counts (the others' zero)."""
+        out = bytearray(0x37)
+        rounds, late, twice = int(self.rounds) & 0xFFFF, int(self.late) & 0xFFFF, int(self.twice) & 0xFFFF
+        out[0:2] = rounds.to_bytes(2, "little")
+        out[0x10], out[0x18] = late & 0xFF, late >> 8
+        out[0x28], out[0x30] = twice & 0xFF, twice >> 8
+        return bytes(out)
+
+
+@dataclass
+class MenuRead:
+    """menuread.a in the menu's place: its counters at $C000, a share of each
+    pass's reads wrong while the menu's IO1 read path misses the sample point."""
+    last: float
+    length: int
+    passes: float = 0.0
+    io: float = 0.0
+    string: float = 0.0
+
+    def advance(self, now: float, outside_ns: int) -> None:
+        dt = max(0.0, now - self.last)
+        self.last = now
+        passes = dt * MENU_PASSES_PER_S
+        share = min(1.0, outside_ns * IDREAD_WRONG_PER_NS)
+        self.passes += passes
+        self.io += passes * 2 * share
+        self.string += passes * (self.length + 1) * share
+
+    def bytes(self) -> bytes:
+        return ((int(self.passes) & 0xFFFF).to_bytes(2, "little") + (int(self.io) & 0xFFFFFF).to_bytes(3, "little")
+                + (int(self.string) & 0xFFFFFF).to_bytes(3, "little"))
+
+
 @dataclass
 class FakeBoard:
     image: str = "main"                  # main | minimal
@@ -188,7 +252,10 @@ class FakeBoard:
     # is inside its window. IO goes wrong first both ways: its selects settle later (a decoder after
     # the PLA) and its data leaves later (after both ROM tests and a handler call). Outside the IO
     # window the menu shows wrong item-type marks and idread counts wrong IO2 reads.
-    windows: dict = field(default_factory=lambda: {"io": (146, 210), "rom": (130, 230)})
+    # The REU's registers ("reu") and the menu's own IO1 reads ("io1") run more code before they drive the
+    # byte than the EasyFlash IO2 page does, so their windows end lower.
+    windows: dict = field(default_factory=lambda: {"io": (146, 210), "rom": (130, 230), "reu": (146, 200),
+                                                   "io1": (146, 195)})
     # The other CPU-cycle knobs, each with a window of its own: outside any of them a path's reads go
     # wrong too. nS_DataSetup latches the C64's writes, so it counts against IO (idread's IO2 page) only.
     knob_windows: dict = field(default_factory=lambda: {"s": (160, 330), "h": (330, 460), "m": (930, 1100)})
@@ -214,6 +281,8 @@ class FakeBoard:
     host_stream: object = field(default=None, repr=False)   # the host's side of the pipe now (a re-enumeration
                                                             # makes a new one)
     c64loop: C64Loop | None = field(default=None, repr=False)
+    reghammer: RegHammer | None = field(default=None, repr=False)
+    menuread: MenuRead | None = field(default=None, repr=False)   # menuread.a in the menu's place
     special_io: str = "None"             # the Settings page's Special IO: what a launched PRG runs beside
     kernal_file: str | None = None       # the Kernal Replace file the menu's K chose ("SD:/path")
     krloop: KrLoop | None = field(default=None, repr=False)
@@ -285,6 +354,10 @@ class FakeBoard:
             self.c64loop = C64Loop(time.monotonic(), needs_reu="cpuwatch" not in name,
                                    collapse_ns=self.faults.get("reu_collapse_ns"))
             self.memory[0xC104] = 0x5A
+        if name.startswith("regread"):
+            self.reghammer = RegHammer(time.monotonic(), self.special_io in REU_NAMES)
+            self.memory[0xC104] = 0x5A
+            self.memory[0xF7:0xF7 + len(REG_HELD)] = REG_HELD
         if path.lower().endswith("hello.prg"):
             self.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES] = b"\x20" * SCREEN_BYTES
             self.memory[0xD018] = 0x17
@@ -373,6 +446,8 @@ class FakeBoard:
             self.heartbeat = False
             self.idread = None
             self.c64loop = None
+            self.reghammer = None
+            self.menuread = None
             self.krloop = None
             self.ultimax_since = None
             self.booting_for = self.boot_polls
@@ -554,6 +629,10 @@ class FakeBoard:
             self.idread.advance(time.monotonic(), self.outside("rom"), self.outside("io"))
         if self.c64loop is not None:
             self.c64loop.advance(time.monotonic(), self.special_io in REU_NAMES, self.dma_outside())
+        if self.reghammer is not None:
+            self.reghammer.advance(time.monotonic(), self.outside("reu"))
+        if self.menuread is not None:
+            self.menuread.advance(time.monotonic(), self.outside("io1"))
         if self.krloop is not None:
             self.krloop.advance(time.monotonic(), self.sense_outside())
         if self.vicread is not None and self.ultimax_since is not None:
@@ -780,6 +859,8 @@ class FakeBoard:
         self.heartbeat = False
         self.idread = None
         self.c64loop = None
+        self.reghammer = None
+        self.menuread = None
         self.krloop = None
         self.ultimax_since = None
         with self.lock:
@@ -802,6 +883,10 @@ class FakeBoard:
             self.memory[IDREAD_RESULTS:IDREAD_RESULTS + 8] = self.idread.bytes()
         if self.c64loop is not None:
             self.memory[0xC110:0xC114] = self.c64loop.bytes()
+        if self.reghammer is not None:
+            self.memory[0xC110:0xC147] = self.reghammer.bytes()
+        if self.menuread is not None:
+            self.memory[0xC000:0xC008] = self.menuread.bytes()
         if self.krloop is not None:
             self.memory[0xC110:0xC11A] = self.krloop.bytes()
         if self.ultimax_since is not None and not self.vic_outside() > self.faults.get("vic_hang_ns", 10 ** 6):
@@ -835,6 +920,13 @@ class FakeBoard:
         data = end.read(length, WAIT_S)
         self.memory[address:address + len(data)] = data
         self._reply(end, ACK)
+        if address == 0x0314 and data == MENU_ENTRY and not self.busy and self.program is None:
+            # menuread.a written at $C000 and the menu's interrupt pointed at it: it copies the version
+            # string, says it is ready, and counts in the menu's place, the menu's handler serving IO1.
+            text = self.version_string().encode("latin-1")
+            self.menuread = MenuRead(time.monotonic(), len(text))
+            self.memory[0xC008], self.memory[0xC009] = len(text), 0x5A
+            self.memory[0xC010:0xC010 + len(text) + 1] = text + b"\0"
         if address <= KEYCOUNT < address + len(data) and self.memory[KEYCOUNT] and self.getin_live() and (
                 self.program is not None or not self.busy):
             # The menu's GETIN loop, or a launched program's, takes the keys as soon as they are in the buffer.
@@ -873,6 +965,8 @@ class FakeBoard:
         self._reply(end, ACK)
         for address, length in spans:
             self.memory[address:address + length] = end.read(length, WAIT_S)
+        if self.reghammer is not None:          # faults["reg_wrong_per_job"]: what each job costs the C64's reads
+            self.reghammer.late += self.faults.get("reg_wrong_per_job", 0)
         self._reply(end, ACK)
 
     def _snoop_tap(self, end: PipeEnd) -> None:

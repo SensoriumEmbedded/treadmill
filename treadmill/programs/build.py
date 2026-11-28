@@ -40,6 +40,7 @@ PROGRAMS = {
 PAYLOADS = {
     "tputecho": ("tputecho.a", {}, 0xC000),
     "asidlog": ("asidlog.a", {}, 0xC000),
+    "menuread": ("menuread.a", {}, 0xC000),
 }
 
 

@@ -493,6 +493,12 @@ class Sweep:
                 if self.fixed.get(letter, value) != value or self.pins.get(letter, value) != value:
                     raise usage_error(f"the {probe.name} probe holds {name} at {value}; it cannot be set otherwise")
                 self.pins[letter] = value
+        for probe in self.probes:
+            only = getattr(probe, "only", None)
+            if only is not None and (knob.letter not in only or set(self.fixed) - set(self.pins)):
+                raise usage_error(f"the {probe.name} probe sweeps {' or '.join(KNOBS[l].name for l in sorted(only))} "
+                                  f"alone, with no other knob set: a C64 write it makes could be decoded at the "
+                                  f"wrong address otherwise")
         self.fixed.update(self.pins)
         moved = {knob.letter} | ({HELD_SUMS[n][0][1] for n in HELD_SUMS} if self.hold or spec.grid else set())
         for letter, value in self.fixed.items():

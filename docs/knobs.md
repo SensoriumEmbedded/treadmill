@@ -90,7 +90,7 @@ records that set the same, and gives no floor.
 |---|---|---|---|---|
 | `nS_MaxAdj` | below the cycle every cycle is pulled back; reads fail when the shift eats a margin | late interrupts go uncorrected; shows only under USB load | idread, and idread under USB load | `test_cpu_margins.py`, `test_minimalboot_margins.py` (both without load and under it) |
 | `nS_RWnReady` | address or R/W read before valid: a write taken as a read is dropped | stops at `nS_PLAprop` | idread; vicrom-high | the same two |
-| `nS_PLAprop` | selects sampled before asserted (IO first) | data leaves late (IO first) | idread; the menu at the floors; vicrom-high | the same two |
+| `nS_PLAprop` | selects sampled before asserted (IO first) | data leaves late (IO first; a handler with more code before its drive first of all) | idread; the menu at the floors; vicrom-high; regread, regread-jobs and regread-menu on a TR+ | the same two |
 | `nS_DataSetup` | write latched before the data is valid | latched after the fall | idread (a wrong IO2 write is a wrong IO2 read; a wrong `$DE00` write a pass of wrong ROM reads) | the same two |
 | `nS_DataHold` | data released before the C64 latches | drive into the VIC's half (capped) | idread | the same two |
 | `nS_VICStart` | ROMH sampled before the VIC's address is valid | the VIC latches before the data arrives | vicrom | `test_vic_margins.py` |
@@ -119,6 +119,9 @@ nothing resets the C64 (a C128 can hang on DMA right after a reset).
 | `zpattern` | the firmware's `z###`: host DMA writes and reads at $C000, five patterns | bad bytes, pre-fill included; a stall is a hang | `Dbg_SerDMA`, a TR+ |
 | `reuloop`, `reuloop-sprites` | `reuclient.a`: REU stash, fetch and compare, the C64's own DMA; all eight sprites on for the second | bad rounds | Special IO at the REU (set and put back), a TR+ |
 | `cpuwatch` | `cpuwatch.a` checks its own writes while `z###` runs beside it | passes with a wrong byte | `Dbg_SerDMA`, a TR+ |
+| `regread` | `reureadback.a` with `HAMMER`: the REU's registers $DF02-$DF08 read back every 9 cycles, a CIA2 NMI storing to $D418 | wrong reads | Special IO at the REU (set and put back), a TR+ |
+| `regread-jobs` | the same, with the host's WriteC64Spans jobs at $6000 beside it, each slice started on the NMI's store | wrong reads; refused jobs; a last job that did not land | the same |
+| `regread-menu` | `menuread.a`, written by DMA and entered from the menu's interrupt: the menu's IO1 presence registers and version string | wrong reads | a TR+; `nS_PLAprop` only, nothing else set |
 | `noise` | beside another probe: pixels that change by more than 48 levels between frames | three times the baseline and 100 pixels above it; no frame pairs | video, with contrast in it |
 | `vicrom` | `vicrom.a`, an Ultimax cartridge whose glyphs the VIC fetches from ROMH | the 95th-percentile frame's steady pixels off the reference, past the baseline by four times its spread and a quarter cell at least; no frames | video with contrast in it, any TR |
 | `vicrom-cpu` | the same, and the C64 reads two pages of ROMH from a loop in RAM, counting the wrong answers | the picture, or wrong CPU reads | video, any TR; the CPU's counts by DMA, on a TR+ |

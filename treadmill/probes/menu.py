@@ -18,10 +18,14 @@ class MenuProbe:
     golden: the item-type marks are what the NTSC misread broke, and the
     read works by video on a plain TR. A menu that does not come back is a
     failure too. It resets the C64, so it is not for a knob that times DMA
-    (a C128 can hang on DMA right after a reset)."""
+    (a C128 can hang on DMA right after a reset). The menu acts on what it
+    reads over IO1, so reads past an edge can leave the TeensyROM's own
+    state bad until the Teensy restarts (BACKLOG 53): a sweep checks the
+    default before each point that follows a failure (``leaves_state``)."""
 
     name = "menu"
     resets = True
+    leaves_state = True
 
     def __init__(self, board: Board, screen: ScreenChannel, golden: Golden, artifacts: Path | None = None,
                  *, boot_timeout: float = MENU_BOOT_S, settle_timeout: float = 10.0):

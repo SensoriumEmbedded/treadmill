@@ -169,7 +169,7 @@ def test_sweep_of_the_fake_s_pla_margin_by_idread(fake_station, tmp_path: Path):
     d = margin.to_dict()
     assert d["edges"]["up"]["margin"] == margin.last_clean - KNOB_DEFAULTS["p"]
     assert len(d["points"]) == len(margin.points)
-    assert d["edges"]["up"]["probes"] == ["idread"] and d["limits"] == [143, 270]
+    assert d["edges"]["up"]["probes"] == ["idread"] and d["limits"] == [143, 330]
 
 
 def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, tmp_path: Path):
@@ -185,7 +185,7 @@ def test_sweep_down_finds_the_select_edge_and_stops_at_rwn_ready(fake_station, t
     assert "nS_PLAprop: clean down to" in margin.describe() and margin.restored
     with pytest.raises(SweepError) as e:
         Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"] - 30), log=lambda m: None).run()
-    assert e.value.code == EXIT_USAGE and "past the sweep limits 143..270" in str(e.value)
+    assert e.value.code == EXIT_USAGE and "past the sweep limits 143..330" in str(e.value)
     fake.windows["io"] = (100, 210)                                  # selects in time at any reachable value
     clean = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=KNOB_DEFAULTS["r"], step=20, fine=1),
                   log=lambda m: None).run()
@@ -272,10 +272,10 @@ def test_another_knob_set_for_the_sweep_moves_the_limits(fake_station):
             return Sample(0 if max(self.fake.knobs["p"], self.fake.knobs["r"]) >= 130 else 1, 1)
 
     plain = Sweep(dbg, KNOBS["p"], window, SearchSpec(stop=KNOB_DEFAULTS["r"]), log=lambda m: None).run()
-    assert plain.limits == (143, 270) and plain.to_dict()["set"] == {}
+    assert plain.limits == (143, 330) and plain.to_dict()["set"] == {}
     margin = Sweep(dbg, KNOBS["p"], Watching(fake, "p", (0, 999)), SearchSpec(stop=100, step=10, fine=1),
                    fixed={"r": 100}, log=lambda m: None).run()
-    assert margin.limits == (100, 270) and (margin.last_clean, margin.first_fail) == (130, 129)
+    assert margin.limits == (100, 330) and (margin.last_clean, margin.first_fail) == (130, 129)
     assert all(k["r"] == 100 for k in seen[:-1]) and all(p.held == {"r": 100} for p in margin.points)
     assert seen[-1]["r"] == KNOB_DEFAULTS["r"], "the check after a failed walk runs at the true defaults"
     assert margin.to_dict()["set"] == {"nS_RWnReady": 100} and "nS_RWnReady set to 100" in margin.describe()
@@ -521,7 +521,7 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
                  "--probe", "idread", "--to", "130", "--set", "nS_RWnReady=120", "--step", "20", "--fine", "5",
                  "--dwell", "0.2", "--json", "--assume-warm"]) == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
-    assert payload["set"] == {"nS_RWnReady": 120} and payload["limits"] == [120, 270]
+    assert payload["set"] == {"nS_RWnReady": 120} and payload["limits"] == [120, 330]
     assert payload["edges"]["down"]["first_fail"] is not None
     # The stored records, read back.
     assert main(["margins", "table", "--reports", str(lab / "reports")]) == EXIT_OK
@@ -613,3 +613,101 @@ def test_a_relaunch_whose_menu_is_late_goes_on_to_the_station_s_recovery():
 
     relaunch_reset(Late(), "reuloop", logs.append)
     assert calls == ["reset"] and "recovery is next" in logs[0]
+
+
+def test_a_side_clean_to_its_limit_has_no_margin(fake_station):
+    """nS_RWnReady's up side stops at nS_PLAprop, 7 ns away, and nS_VICDHold's
+    at its default: neither found an edge, and the record says the limit
+    instead of a margin. A side whose limit is the default is recorded too."""
+    from treadmill import margins
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    rw = Sweep(dbg, KNOBS["r"], Window(fake, "r", (100, 300)), SearchSpec(both=True, step=20, fine=5),
+               log=lambda m: None).run()
+    up, down = rw.edges["up"].to_dict(rw.default), rw.edges["down"].to_dict(rw.default)
+    assert (up["clean_to"], up["first_fail"], up["limit"], up["margin"]) == (150, None, 150, None)
+    assert down["limit"] is None and down["margin"] == rw.default - down["clean_to"]
+    assert "nS_RWnReady: up ends at its limit 150, clean to there: no edge found, so no margin" in rw.describe()
+    hold = Sweep(dbg, KNOBS["i"], Window(fake, "i", (300, 430)), SearchSpec(both=True, step=20, fine=5),
+                 log=lambda m: None).run()
+    assert hold.edges["up"].limit == 370 and hold.edges["up"].clean_to == 370
+    assert "(the limit is the start: not walked)" in hold.describe()
+    records = [margins.build(m.to_dict(), {"station": "s1", "machine": {"id": "14"}}) for m in (rw, hold)]
+    assert [r["limit"] for r in margins.rows(records)] == ["up=150", "up=370"]
+    old = {**records[0], "edges": {"up": {k: v for k, v in up.items() if k != "limit"}}}
+    assert margins.rows([old])[0]["limit"] == "up=150", "an older record's limit is read from its stop"
+    assert margins.suggest(records, "s1")["nS_VICDHold"].up is None, "a side not walked gives no floor"
+
+
+class Garbling(Window):
+    """The menu after a read past an IO1 edge (backlog 53): a value in
+    ``garbles`` leaves every later sample failed until the Teensy restarts."""
+    leaves_state = True
+    broken = False
+
+    def __init__(self, fake, letter, window, garbles):
+        super().__init__(fake, letter, window)
+        self.garbles = garbles
+
+    def sample(self, label, setting=None):
+        if self.garbles(self.fake.knobs[self.letter]):
+            self.broken = True
+        return Sample(1, 1, "garbled") if self.broken else super().sample(label, setting)
+
+    def restart(self):
+        self.broken = False
+
+
+def test_a_probe_that_leaves_state_has_the_default_checked_after_a_failed_point(fake_station):
+    """Backlog 53 again: the menu acts on what it reads over IO1, so a read
+    past its edge can leave the TeensyROM's state bad, and every value
+    probed after it would fail. Such a probe has the default checked, and
+    the Teensy restarted, before each point that follows a failure, so the
+    edge stands where it is; the record keeps the checks."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Garbling(fake, "p", (100, 300), lambda v: v > 200)
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), restart=probe.restart,
+                   log=lambda m: None).run()
+    assert (margin.last_clean, margin.first_fail) == (200, 205), "bisected on a board the restart put right"
+    assert margin.checks == [{"before": 200, "after": 210, "clean": True, "restarted": True, "notes": ["garbled"]}]
+    assert margin.to_dict()["default_checks"] == margin.checks
+    assert ("before probing 200 after 210 failed, the default failed (garbled): the Teensy was restarted"
+            in margin.describe())
+    plain = Window(fake, "p", (100, 200))
+    quiet = Sweep(dbg, KNOBS["p"], plain, SearchSpec(stop=260, step=20, fine=5), log=lambda m: None).run()
+    assert quiet.checks == [] and (quiet.last_clean, quiet.first_fail) == (200, 205), "no check without the flag"
+
+
+def test_every_point_after_a_garbling_failure_is_checked_both_ways(fake_station):
+    """A bisection point that fails garbles the menu again, and the other
+    side's walk starts right after the last one: each is checked, so both
+    edges stand where the window puts them. A point after a clean one is
+    not checked."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Garbling(fake, "s", (100, 400), lambda v: v < 100)
+    margin = Sweep(dbg, KNOBS["s"], probe, SearchSpec(both=True, step=40, fine=5), restart=probe.restart,
+                   log=lambda m: None).run()
+    down, up = margin.edges["down"], margin.edges["up"]
+    assert (down.clean_to, down.first_fail) == (101, 96)
+    assert (up.clean_to, up.first_fail) == (396, 401), "the up side ran on a board put right after 96"
+    assert [(c["before"], c["after"], c["restarted"]) for c in margin.checks] == [
+        (81, 61, True), (91, 81, True), (96, 91, True), (261, 96, True), (401, 421, False), (391, 401, False)]
+    assert all(c["clean"] for c in margin.checks)
+
+
+def test_a_restart_that_fails_partway_stops_the_walk(fake_station):
+    """A check whose restart fails leaves the probes torn down: the walk
+    stops there with its points, rather than sampling probes not set up."""
+    fake, board = fake_station
+    dbg = DebugCommands(board.link, {"Dbg_SerTimChg"})
+    probe = Garbling(fake, "p", (100, 300), lambda v: v > 200)
+
+    def restart():
+        raise SweepError("the Teensy did not come back")
+
+    margin = Sweep(dbg, KNOBS["p"], probe, SearchSpec(stop=260, step=20, fine=5), restart=restart,
+                   log=lambda m: None).run()
+    assert margin.stopped and "not set up again after the restart before 200" in margin.stopped
+    assert margin.edges["up"].open and [p.value for p in margin.points] == [150, 170, 190, 210]

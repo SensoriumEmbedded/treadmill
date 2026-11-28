@@ -49,7 +49,7 @@ def test_the_held_sums_are_pr99s():
 
 def test_couplings_follow_the_other_knob():
     at = _defaults("NTSC")
-    assert limits(KNOBS["p"], "NTSC", at) == (143, 270)
+    assert limits(KNOBS["p"], "NTSC", at) == (143, 330)
     assert limits(KNOBS["r"], "NTSC", {**at, "p": 120})[1] == 120
     assert limits(KNOBS["n"], "NTSC", at) == (50, 404 - 20)
     assert limits(KNOBS["m"], "PAL", _defaults("PAL"))[0] == 1015 - 120

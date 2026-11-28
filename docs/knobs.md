@@ -57,7 +57,7 @@ knob's value; the cycle is 1015 ns on PAL and 978 ns on NTSC.
 |---|---|---|---|
 | `nS_MaxAdj` | the cycle less 120 | 1200 | far below the cycle every wait collapses into contention |
 | `nS_RWnReady` | 0 | `nS_PLAprop` | past it, it is `nS_PLAprop` that sets the sample point; every machine swept was clean down to 60, the floor until then |
-| `nS_PLAprop` | `nS_RWnReady` | its default plus 120 | below `nS_RWnReady` the wait returns at once |
+| `nS_PLAprop` | `nS_RWnReady` | its default plus 180 | below `nS_RWnReady` the wait returns at once; at plus 120 the up side of several machines ended at the limit, clean |
 | `nS_DataSetup` | 0 | 480 | no lower edge is expected: the wait has run out by the time a handler reads the data |
 | `nS_DataHold` | 250 | 520 | a Phi2 check caps the drive near fall plus 50 anyway |
 | `nS_VICStart` | 60 | 310 | at 320 a TR+ on NTSC stopped answering on USB until a power cycle (BACKLOG 39) |
@@ -82,7 +82,14 @@ sweep, and the limits above follow it. `nS_PLAprop`'s lower edge needs it: at
 the default `nS_RWnReady` (143) the address read already lands where the
 selects are read, so the walk stops there; with `--set nS_RWnReady=0` it goes
 down to 0. A record made that way carries `set`, is compared only with
-records that set the same, and gives no floor.
+records that set the same, and gives no floor. `test_cpu_margins.py` sweeps
+`nS_PLAprop` down that way as a case of its own, with `nS_RWnReady` at 0.
+
+A side that walked to its limit and stayed clean has no edge: its record
+says `limit` with the value and gives no `margin`, and the table's `limit`
+column names it, since how far that side's window goes is not known. A side
+whose limit is the default (`nS_VICDHold` up, while its cap is its default)
+is recorded that way too, rather than left out.
 
 ## What breaks each way, and what finds it
 

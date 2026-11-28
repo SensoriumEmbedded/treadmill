@@ -106,6 +106,16 @@ def edge(record: Mapping, way: str) -> dict | None:
     return (record.get("edges") or {}).get(way)
 
 
+def limit_of(e: Mapping) -> int | None:
+    """The limit a side walked to and stayed clean at, where it found no
+    edge; records before ``limit`` was kept say it by a clean side's end
+    lying at its stop."""
+    if "limit" in e:
+        return e["limit"]
+    clean = e.get("first_fail") is None and not e.get("open")
+    return e.get("stop") if clean and e.get("clean_to") is not None and e.get("clean_to") == e.get("stop") else None
+
+
 def _same(a: Mapping, b: Mapping, way: str) -> bool:
     return (a.get("station") == b.get("station")
             and (a.get("knob") or {}).get("name") == (b.get("knob") or {}).get("name")
@@ -178,8 +188,10 @@ def suggest(records: Iterable[Mapping], station: str, *, last: int = 5) -> dict[
         rs = rs[-last:]
         values: dict[str, int | None] = {}
         for way in WAYS:
+            # A side whose limit is the default was not walked: it says nothing a floor could hold.
             ends = [(e["clean_to"], r) for r in rs
-                    if (e := edge(r, way)) and e.get("clean_to") is not None and not e.get("open")]
+                    if (e := edge(r, way)) and e.get("clean_to") is not None and not e.get("open")
+                    and limit_of(e) != r.get("default")]
             if not ends:
                 values[way] = None
                 continue
@@ -202,7 +214,8 @@ def floors_toml(floors: Mapping[str, Floor]) -> str:
 
 
 COLUMNS = ("when", "station", "machine", "standard", "board", "port_setup", "build", "image", "knob", "probes", "set",
-           "mode", "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "open", "path")
+           "mode", "passes", "default", "down_clean", "down_fail", "up_clean", "up_fail", "drifting", "open", "limit",
+           "path")
 
 
 def set_text(record: Mapping) -> str:
@@ -226,7 +239,10 @@ def rows(records: Iterable[Mapping]) -> list[dict]:
             "down_clean": down.get("clean_to"), "down_fail": down.get("first_fail"),
             "up_clean": up.get("clean_to"), "up_fail": up.get("first_fail"),
             "drifting": ",".join(drifting),
-            "open": ",".join(way for way in WAYS if (edge(r, way) or {}).get("open")), "path": r.get("_path"),
+            "open": ",".join(way for way in WAYS if (edge(r, way) or {}).get("open")),
+            "limit": ",".join(f"{way}={limit_of(edge(r, way))}" for way in WAYS
+                              if edge(r, way) and limit_of(edge(r, way)) is not None),
+            "path": r.get("_path"),
         })
     return out
 

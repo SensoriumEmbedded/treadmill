@@ -649,7 +649,11 @@ cost or a wart with a known, small fix.
    (`Board.restart_teensy()`), sets the probes up again and checks once
    more, and the record keeps what happened (`after_walk`). A margin test
    whose default still fails afterwards fails, and a run that does not
-   know the board's hex has no restart and says so. The item as it was: A
+   know the board's hex has no restart and says so. Since 2026-11-27 the
+   menu probe (`leaves_state`) also has the default checked, and the
+   Teensy restarted if it fails, before each point that follows a failed
+   one, so a garbled menu no longer fails the values probed after it
+   (`default_checks` in the record). The item as it was: A
    sweep past an IO1 edge can leave the TeensyROM's state bad for the rest
    of the run. On the plain TR in C64 #14 on 2026-11-24,
    `nS_PLAprop` 215 and 220 (main image, menu probe) garbled the menu's

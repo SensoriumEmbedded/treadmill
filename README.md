@@ -403,7 +403,10 @@ anywhere ends with one more point at the default, the defaults back: if that
 fails, the TeensyROM's own state was left bad (an IO1 read past its edge once
 garbled the menu until the Teensy restarted), so the Teensy is restarted
 through the USB reboot, when the run knows the board's hex, and the default
-checked again (`after_walk` in the record).
+checked again (`after_walk` in the record). The menu probe, whose failures
+can leave that state, has the default checked the same way before each point
+that follows a failed one, so no value is judged on a board a failure left
+wrong (`default_checks`).
 
 `treadmill/knobs.py` is the knob table: each knob's letter, digits, unit,
 the bus path it times, the images and boards that take it (`tx` and `tn`,
@@ -585,7 +588,12 @@ partway, because a probe could not get its program back (the menu still
 booting after its reset, the board gone from USB), keeps the points it
 walked: the record's `stopped` says why, the side it was on is marked
 `open` (the `open` column of `margins csv`; no end on the map, only how far
-it got), and the margin test and `treadmill sweep` fail after writing it.
+it got), and the margin test and `treadmill sweep` fail after writing it. A
+side that walked to its limit and stayed clean found no edge: its record
+says `limit` with the value and gives no `margin` (the `limit` column), since
+how far its window goes is not known. A side whose limit is the default
+(`nS_VICDHold` up, while its cap is its default) is recorded that way too,
+and gives `suggest` no floor.
 
 `treadmill margins map` draws every record as `<reports>/margin-map.html`. It
 opens with an overview per machine: the latest record of each knob, image and

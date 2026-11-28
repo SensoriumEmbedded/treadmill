@@ -259,8 +259,16 @@ class Edge:
     per_pass: list[dict] = field(default_factory=list)
     open: bool = False            # the walk stopped before this side was found: clean_to is as far as it got
 
+    @property
+    def limit(self) -> int | None:
+        """The stop, when the side was clean all the way to it: the walk ran
+        out of range, so how far the clean window goes is not known."""
+        return self.stop if self.first_fail is None and not self.open and self.clean_to == self.stop else None
+
     def margin(self, origin: int) -> int | None:
-        return None if self.clean_to is None else abs(self.clean_to - origin)
+        """How far the side is clean from ``origin``; None where it ended at
+        a limit, which is the knob table's reach, not the machine's edge."""
+        return None if self.clean_to is None or self.limit is not None else abs(self.clean_to - origin)
 
     def finished(self, fine: int) -> bool:
         """Found: bisected to ``fine``, failing at the first value probed, or clean through the stop."""
@@ -270,8 +278,8 @@ class Edge:
 
     def to_dict(self, default: int) -> dict:
         return {"way": self.way, "stop": self.stop, "clean_to": self.clean_to, "first_fail": self.first_fail,
-                "margin": self.margin(default), "probes": self.probes, "drifting": self.drifting,
-                "per_pass": self.per_pass, "open": self.open}
+                "margin": self.margin(default), "limit": self.limit, "probes": self.probes,
+                "drifting": self.drifting, "per_pass": self.per_pass, "open": self.open}
 
 
 def _edge_values(points: Sequence[Point], origin: int, sign: int) -> tuple[int | None, int | None]:
@@ -317,6 +325,7 @@ class Margin:
     fixed: dict[str, int] = field(default_factory=dict)         # other knobs set for the whole sweep, by letter
     after: dict | None = None     # a walk that failed: the default checked after it (clean, restarted, notes)
     stopped: str | None = None    # why the walk ended before its edges were found; its points stand
+    checks: list[dict] = field(default_factory=list)   # the default checked after a failed point (leaves_state)
 
     @property
     def probe(self) -> str:
@@ -368,7 +377,7 @@ class Margin:
             "passes": s.passes, "restored": self.restored, "seconds": round(self.seconds, 1),
             "edges": {way: e.to_dict(self.default) for way, e in self.edges.items()},
             "probe_info": self.probe_info, "after_walk": self.after, "stopped": self.stopped,
-            "points": [p.to_dict() for p in self.points],
+            "default_checks": self.checks, "points": [p.to_dict() for p in self.points],
         }
 
     def describe(self) -> str:
@@ -398,8 +407,9 @@ class Margin:
             if e.open:
                 lines.append(f"{name}: {way} not finished: clean to {e.clean_to}"
                              + (f", fails from {e.first_fail}" if e.first_fail is not None else ""))
-            elif e.first_fail is None:
-                lines.append(f"{name}: clean {way} through {e.clean_to}; no edge within the range")
+            elif e.limit is not None:
+                lines.append(f"{name}: {way} ends at its limit {e.limit}, clean to there: no edge found, so no "
+                             f"margin" + (" (the limit is the start: not walked)" if e.limit == self.start else ""))
             elif e.clean_to is None:
                 lines.append(f"{name}: fails at {e.first_fail}, the first value probed")
             else:
@@ -408,6 +418,13 @@ class Margin:
             if e.drifting:
                 lines.append(f"  drifting between passes: " + ", ".join(
                     f"pass {x['pass']} clean to {x['clean_to']}, fails from {x['first_fail']}" for x in e.per_pass))
+        for check in self.checks:
+            if not check["clean"] or check["restarted"]:
+                lines.append(f"before probing {check['before']} after {check['after']} failed, the default "
+                             f"failed (" + "; ".join(check.get("notes") or []) + "): "
+                             + ("the Teensy was restarted and the default ran clean" if check["clean"]
+                                else "it failed again after a Teensy restart" if check["restarted"]
+                                else "no restart was at hand, so the walk went on with it"))
         if self.after and self.after.get("restarted"):
             lines.append("after the walk the default failed (" + "; ".join(self.after.get("notes") or []) + "): "
                          + ("the Teensy was restarted and the default ran clean" if self.after["clean"]
@@ -477,6 +494,11 @@ class Sweep:
         self.low = self.high = 0
         self._now: dict[str, int] = {}
         self._walked: list[Point] = []    # every point probed, kept for a walk that stops partway
+        self._started: list[Probe] = []   # the probes set up, for a check of the default partway
+        self.checks: list[dict] = []
+        # A probe whose failures can leave the TeensyROM's own state bad has the default checked before
+        # each point that follows a failure, so no value is judged on a board a failure left wrong.
+        self.leaves_state = any(getattr(p, "leaves_state", False) for p in self.probes)
         if self.hold and knob.letter != "e":
             raise usage_error(f"only nS_DMASetup moves with sums held, not {knob.name}")
         if spec.grid is not None and knob.letter != "e":
@@ -718,10 +740,25 @@ class Sweep:
             self.on_point(point)
         return point
 
+    def walk_at(self, value: int, pass_no: int, setting: dict[str, int] | None = None) -> Point:
+        """A walk's point. When the point before it failed and a probe
+        ``leaves_state``, the default is checked first (``_after_walk``), so
+        a failure that left the TeensyROM's state bad, the menu garbled by an
+        IO1 read past its edge (BACKLOG 53), is put right before this value
+        is judged: in a bisection, on a walk's other side, in the next pass."""
+        last = self._walked[-1] if self._walked else None
+        if self.leaves_state and last is not None and last.failed and last.pass_no:
+            check = {"before": value, "after": last.value, **self._after_walk(self._started)}
+            self.checks.append(check)
+            if len(self._started) < len(self.probes):    # a restart that failed left them torn down
+                raise SweepError(f"the probes are not set up again after the restart before {value}: "
+                                 + "; ".join(check["notes"]))
+        return self.probe_at(value, pass_no, setting)
+
     # -- the modes ---------------------------------------------------------------------
 
     def _both(self, start: int, pass_no: int) -> list[Point]:
-        points = [self.probe_at(start, pass_no)]
+        points = [self.walk_at(start, pass_no)]
         if points[0].failed:
             self.log(f"[sweep] {self.knob.name} fails at {start} itself: no edges to look for")
             return points
@@ -730,7 +767,7 @@ class Sweep:
             stop = self.low if way == "down" else self.high
             if stop == start:
                 continue
-            found, _, _ = search(lambda v: self.probe_at(v, pass_no), start, replace(self.spec, stop=stop),
+            found, _, _ = search(lambda v: self.walk_at(v, pass_no), start, replace(self.spec, stop=stop),
                                  probe_start=False)
             points += found
         return points
@@ -750,7 +787,7 @@ class Sweep:
                 setting = {**self.fixed, "e": e, "w": w, "y": latch - e}
                 if not self.allowed_setting(setting):
                     continue
-                point = self.probe_at(e, pass_no, setting)
+                point = self.walk_at(e, pass_no, setting)
                 points.append(point)
                 seen_clean = seen_clean or not point.failed
                 collapses = collapses + 1 if point.hung else 0
@@ -767,7 +804,7 @@ class Sweep:
         points: list[Point] = []
         collapses, seen_clean = 0, False
         for value in values:
-            point = self.probe_at(value, pass_no)
+            point = self.walk_at(value, pass_no)
             points.append(point)
             seen_clean = seen_clean or not point.failed
             collapses = collapses + 1 if point.hung else 0
@@ -859,12 +896,13 @@ class Sweep:
                                   f"the edges are measured from it")
 
     def _after_walk(self, started: list[Probe]) -> dict:
-        """After a walk that failed somewhere: the defaults back, one point at
-        the default. A failure there is the TeensyROM's own state left bad,
-        not the knob (an IO1 read past its edge garbled the menu until the
-        Teensy restarted, backlog 53), and the next sweep would fail at its
-        default too: restart the Teensy, set the probes up again, and check
-        once more."""
+        """After a walk that failed somewhere, or after a failed point for a
+        probe that ``leaves_state`` (``walk_at``): the defaults back, one
+        point at the default. A failure there is the TeensyROM's own state
+        left bad, not the knob (an IO1 read past its edge garbled the menu
+        until the Teensy restarted, backlog 53), and what is probed next
+        would fail at its default too: restart the Teensy, set the probes up
+        again, and check once more."""
         default = self.defaults[self.knob.letter]
         at_defaults = {letter: self.pins.get(letter, self.defaults[letter]) for letter in self.setting_for(default)}
         self.restore()
@@ -900,6 +938,8 @@ class Sweep:
         restored = False
         stopped = None
         self._walked = []
+        self._started = started
+        self.checks = []
         try:
             try:
                 self._pin()
@@ -907,7 +947,7 @@ class Sweep:
                     if probe not in started:
                         self._start(probe, started)
                 if spec.mode == "one":
-                    points, _, _ = search(lambda v: self.probe_at(v, 1), start, spec)
+                    points, _, _ = search(lambda v: self.walk_at(v, 1), start, spec)
                 elif spec.mode == "both":
                     for n in range(1, spec.passes + 1):
                         points += self._both(start, n)
@@ -957,15 +997,17 @@ class Sweep:
         else:
             origin = start if spec.mode == "both" else default
             low, high = (self.low, self.high) if spec.mode == "both" else spec.scan
+            # A side whose limit is the origin is kept when the origin was probed: it ends at its limit.
             edges = {way: edge_of(points, origin, way, stop, spec.fine)
-                     for way, stop in (("down", low), ("up", high)) if stop != origin}
+                     for way, stop in (("down", low), ("up", high))
+                     if stop != origin or any(p.value == origin for p in points)}
         if stopped:
             for e in edges.values():
                 e.open = not e.finished(spec.fine)
         info = {p.name: p.info() for p in self.probes if hasattr(p, "info")}
         margin = Margin(self.knob, [p.name for p in self.probes], default, start, spec, points, edges, restored,
                         time.monotonic() - t0, self.standard, dict(self.defaults), self.sums, (self.low, self.high),
-                        info, dict(self.fixed), after, stopped)
+                        info, dict(self.fixed), after, stopped, list(self.checks))
         if not restored and not stopped:     # a stopped walk goes back with its record; the caller fails it
             raise SweepError("td not confirmed: the board is still running the last value\n" + margin.describe())
         return margin

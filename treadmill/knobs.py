@@ -113,7 +113,10 @@ HELD_SUMS = {"release": (("e", "w"), 60), "latch": (("e", "y"), 20)}
 # Margins one knob keeps from another (couplings), in ns.
 KSENSE_BELOW_LATCH = 20           # nS_KSenseSample stays this far before nS_DMADataSetup
 MAXADJ_BELOW_CYCLE = 120          # nS_MaxAdj goes no lower than the cycle minus this
-PLAPROP_ABOVE_DEFAULT = 120       # nS_PLAprop goes no higher than its default plus this
+# nS_PLAprop goes no higher than its default plus this. At 120 (270 ns) its up side ended at the limit,
+# clean, on several machines, and the PAL edge is likely past it. A walk past an IO1 edge can leave the
+# TeensyROM's state bad until it restarts (BACKLOG 53): the sweep's checks of the default restart it.
+PLAPROP_ABOVE_DEFAULT = 180
 
 
 def standard_of(machine: str | None, video: str | None) -> str:

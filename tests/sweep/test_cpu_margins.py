@@ -26,6 +26,12 @@ recorded (its probe is idread-usbload, so its shrink check compares like
 with like) but not held to the station's floor, which is for the knob
 without load.
 
+``nS_PLAprop``'s floor is ``nS_RWnReady``, which at its default already lands
+where the selects are read, so its walk down stops 7 ns below its default.
+It is swept down once more with ``nS_RWnReady`` set to 0 for the sweep, to
+the PLA's own edge or wherever the C64 fails first. That record carries
+``set``, so it is held to no floor.
+
 idread's IO2 page is the EasyFlash handler's, about the shortest read the
 firmware has, so on a TR+ ``nS_PLAprop`` is also swept on the slower ones
 (``treadmill.probes.regread``): the REU's registers (Special IO set to the
@@ -106,3 +112,20 @@ def test_handler_margin(probe_name, at_menu, dbg, screen, keys, programs, pace, 
     assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails the {probe.name} probe: "
                                          + "; ".join(margin.points[0].notes))
     margin_check(margin, board)
+
+
+def test_plaprop_down_with_rwnready_at_0(at_menu, dbg, screen, programs, goldens, artifacts, request, pace,
+                                         margin_check, restart):
+    board = at_menu
+    knob = KNOBS["p"]
+    if board.station.has("dma"):
+        request.getfixturevalue("sd_card")
+        probe = IdReadProbe(board, programs("idread"), dwell=pace.dwell, log=print)
+    else:
+        probe = MenuProbe(board, screen, goldens.load("menu/root"), artifacts)
+    spec = SearchSpec(stop=0, step=STEPS["p"], fine=pace.fine, repeat=pace.repeat)
+    margin = Sweep(dbg, knob, probe, spec, fixed={"r": 0}, restart=restart, log=print).run()
+    print(margin.describe())
+    assert not margin.points[0].failed, (f"the default {knob.name} {margin.default} fails the {probe.name} probe "
+                                         f"with nS_RWnReady at 0: " + "; ".join(margin.points[0].notes))
+    margin_check(margin, board, floor=False)

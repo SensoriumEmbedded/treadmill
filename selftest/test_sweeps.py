@@ -11,6 +11,7 @@ import pytest
 import treadmill.link.dbgcmds as dbgcmds
 from selftest.fake_board import KNOB_DEFAULTS, start_fake_board
 from selftest.test_plugin import lab  # noqa: F401  (the fake station and environment)
+from selftest.test_probes import _error_json
 from treadmill.board import Board
 from treadmill.cli import EXIT_OK, EXIT_USAGE, main
 from treadmill.link import DebugCommands, Link, LinkError
@@ -482,7 +483,8 @@ def test_a_value_the_board_does_not_take_is_an_error(fake_station, tmp_path: Pat
 
 def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
     code = main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
-                 "--probe", "idread", "--to", "260", "--step", "20", "--fine", "5", "--dwell", "0.2", "--json"])
+                 "--probe", "idread", "--to", "260", "--step", "20", "--fine", "5", "--dwell", "0.2", "--json",
+                 "--assume-warm"])
     out, err = capsys.readouterr()
     assert code == EXIT_OK, err
     payload = json.loads(out)
@@ -498,14 +500,15 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
     assert "no timing knob" in json.loads(capsys.readouterr().err)["error"]
     assert main(["sweep", "x", "--station", "s1", "--json"]) == EXIT_USAGE
     assert "a mode" in json.loads(capsys.readouterr().err)["error"]
-    assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--json"]) == EXIT_USAGE
-    assert "lacks Dbg_SerTimChg" in json.loads(capsys.readouterr().err)["error"]
+    assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--json",
+                 "--assume-warm"]) == EXIT_USAGE
+    assert "lacks Dbg_SerTimChg" in _error_json(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
                  "--fine", "0", "--json"]) == EXIT_USAGE
     assert "fine must be at least 1" in json.loads(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
-                 "--to", "400", "--json"]) == EXIT_USAGE
-    assert "past the sweep limits" in json.loads(capsys.readouterr().err)["error"]
+                 "--to", "400", "--json", "--assume-warm"]) == EXIT_USAGE
+    assert "past the sweep limits" in _error_json(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--both", "--to", "200", "--json"]) == EXIT_USAGE
     assert "one of --to, --both and --scan" in json.loads(capsys.readouterr().err)["error"]
     assert main(["sweep", "p", "--station", "s1", "--set", "r", "--json"]) == EXIT_USAGE
@@ -516,7 +519,7 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
     assert "KSenseMode is a mode" in json.loads(capsys.readouterr().err)["error"], "the reason, not the syntax"
     assert main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
                  "--probe", "idread", "--to", "130", "--set", "nS_RWnReady=120", "--step", "20", "--fine", "5",
-                 "--dwell", "0.2", "--json"]) == EXIT_OK
+                 "--dwell", "0.2", "--json", "--assume-warm"]) == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
     assert payload["set"] == {"nS_RWnReady": 120} and payload["limits"] == [120, 270]
     assert payload["edges"]["down"]["first_fail"] is not None
@@ -530,7 +533,7 @@ def test_sweep_command_against_the_fake(lab: Path, capsys):  # noqa: F811
 
 def test_sweep_command_with_the_menu_probe_both_ways(lab: Path, capsys):  # noqa: F811
     code = main(["sweep", "p", "--station", "s1", "--reports", str(lab / "reports"), "--fw-defines", "Dbg_SerTimChg",
-                 "--probe", "menu", "--both", "--step", "20", "--fine", "5", "--json"])
+                 "--probe", "menu", "--both", "--step", "20", "--fine", "5", "--json", "--assume-warm"])
     out, err = capsys.readouterr()
     assert code == EXIT_OK, err
     payload = json.loads(out)

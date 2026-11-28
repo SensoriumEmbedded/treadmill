@@ -745,7 +745,8 @@ and with it the REU's size):
 4. External reset: the station's keyboard board pulses the C64's /RESET
    when its reset output is fitted; otherwise, or when it does not answer
    (with a warning saying why), the operator presses the C64's reset
-   button. The TR+ must log `Button detected` and bring the menu back. The
+   button, asked on the C64's bottom row as well as on the console. The
+   TR+ must log `Button detected` and bring the menu back. The
    C64 resets whether the TR+ senses it or not: its screen changing with
    no `Button detected` 2 s later fails the step then, not at
    `reset_timeout_s`.

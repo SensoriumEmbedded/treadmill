@@ -43,6 +43,7 @@ from treadmill.observe.capture import CaptureTimeout
 from treadmill.observe.channels import ScreenChannel
 from treadmill.report.artifacts import RunDir
 from treadmill.station import load_station
+from treadmill.station.kbd import KbdNotFound
 
 BANNER = "  FW: {v}\r\n      {d}, {t}\r\n  Teensy: 816MHz 50.0C  UID: 1\r\n  C64  NTSC Vid  60 Hz\n  Boot: complete\n"
 
@@ -703,15 +704,37 @@ def _keyboard_station(lab: Path, kawari_open: str | None = "PAL") -> None:
         f'[tr]\nuid = "19277260"\n[keyboard]\nchip = "14470230"\n{said}', encoding="utf-8")
 
 
+def _bottom_row_at_reset(bench: FakeBench) -> list[tuple[str, bool, set[int]]]:
+    """The C64's bottom row as each of its resets lands, the operator's or
+    the keyboard board's: its text, whether all of it is in reverse video,
+    and its colors."""
+    seen, power_on = [], bench._power_on
+
+    def watched():
+        power_on()
+        fake, reset = bench.fake, bench.fake.external_reset
+
+        def snap():
+            screen = bytes(fake.memory[SCREEN_RAM_DEFAULT:SCREEN_RAM_DEFAULT + SCREEN_BYTES])
+            seen.append((screen_rows(screen)[24].rstrip(), all(c & 0x80 for c in screen[24 * 40:]),
+                         set(fake.memory[COLOR_RAM + 24 * 40:COLOR_RAM + SCREEN_BYTES])))
+            reset()
+        fake.external_reset = bench.kbd.on_reset = snap
+    bench._power_on = watched
+    return seen
+
+
 def test_the_keyboard_board_switches_the_standard_and_resets_the_c64(lab: Path):  # noqa: F811
     """Backlog 16: the external reset is the keyboard board's R, with nobody
-    at the bench. A C64 powered on in PAL is switched by V, and the board
-    starts over without leaving USB: one power-on."""
+    at the bench, so nobody is asked for it, on the console or on the C64.
+    A C64 powered on in PAL is switched by V, and the board starts over
+    without leaving USB: one power-on."""
     _keyboard_station(lab)
     profile = MfgProfile.load(_profile(lab / "mfg"))
     console, out = _console()
     pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
     bench = FakeBench(console, boards=[{"banner": pal}])
+    shown = _bottom_row_at_reset(bench)
     video = bench.video_kit()
     try:
         summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
@@ -724,6 +747,7 @@ def test_the_keyboard_board_switches_the_standard_and_resets_the_c64(lab: Path):
     text = out.getvalue()
     assert "The keyboard board switches the C64 to NTSC (V closed)" in text
     assert INSTRUCTIONS[SET_STANDARD] not in text and INSTRUCTIONS[RESET_BUTTON] not in text
+    assert shown[-1][0] == " Both LEDs on." and not any(INSTRUCTIONS[RESET_BUTTON] in row for row, _, _ in shown)
 
 
 @pytest.mark.parametrize("kawari_open", ["NTSC", None])
@@ -775,11 +799,14 @@ def test_a_switch_that_does_not_take_gets_one_try_then_the_operator(lab: Path): 
 
 
 def test_a_keyboard_board_that_cannot_reset_or_switch_leaves_both_to_the_operator(lab: Path):  # noqa: F811
+    """The operator is asked for the reset where the LED questions were, on
+    the C64's bottom row, as well as on the console."""
     _keyboard_station(lab)
     profile = MfgProfile.load(_profile(lab / "mfg"))
     console, out = _console()
     pal = FAKE_BANNER.replace("NTSC Vid  60 Hz", "PAL Vid  50 Hz")
     bench = FakeBench(console, boards=[{"banner": pal}, {}], kbd_fitted={"tod"})
+    shown = _bottom_row_at_reset(bench)
     video = bench.video_kit()
     try:
         summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
@@ -793,6 +820,33 @@ def test_a_keyboard_board_that_cannot_reset_or_switch_leaves_both_to_the_operato
     assert "The keyboard board did not reset the C64: it has no reset output fitted." in text
     assert INSTRUCTIONS[SET_STANDARD] in text and INSTRUCTIONS[RESET_BUTTON] in text
     assert bench.count == 2 and bench.kbd.switches == [] and bench.kbd.resets == []
+    assert shown == [(" " + INSTRUCTIONS[RESET_BUTTON], True, {mfg.YELLOW})]
+
+
+def test_a_keyboard_board_that_is_not_on_usb_leaves_the_reset_to_the_operator(lab: Path):  # noqa: F811
+    """The station names a keyboard board and none is on USB: the console
+    says why, and the operator is asked for the reset on the C64's bottom
+    row and on the console."""
+    _keyboard_station(lab)
+    profile = MfgProfile.load(_profile(lab / "mfg"))
+    console, out = _console()
+    bench = FakeBench(console)
+    shown = _bottom_row_at_reset(bench)
+
+    def missing(station):
+        raise KbdNotFound(f"no keyboard board with chip id {station.keyboard.chip} on USB")
+    bench.open_keyboard = missing
+    video = bench.video_kit()
+    try:
+        summary = run_session(load_station("kbm"), profile, bench, console, video, RunDir(lab / "reports"),
+                              boards=1, log=lambda m: None)
+    finally:
+        video.close()
+    assert summary["counts"][PASS] == 1, summary["boards"][0]["reason"]
+    assert shown == [(" " + INSTRUCTIONS[RESET_BUTTON], True, {mfg.YELLOW})]
+    text = out.getvalue()
+    assert "The keyboard board did not reset the C64: no keyboard board with chip id" in text
+    assert INSTRUCTIONS[RESET_BUTTON] in text and bench.kbd.resets == []
 
 
 def test_a_failed_time_fetch_is_named_in_the_clock_failure(lab: Path):  # noqa: F811

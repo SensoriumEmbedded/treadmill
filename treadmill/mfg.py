@@ -14,7 +14,8 @@ and runs the checks a board gets before it ships, in order:
    fetch over Ethernet and the RTC), and the operator answers Y on the C64's
    keyboard for each of its two LEDs;
 4. external reset: the TR+ senses a reset it did not make (the keyboard
-   board's, or else the operator's) and returns to the menu;
+   board's, or else the operator's, asked for on the C64's bottom row) and
+   returns to the menu;
 5. Expansion Port: the built-in test passes three times;
 6. SD root: the card's root matches a snapshot of the master image;
 7. REU: hot key 2 launches the REU checker with a 512K REU and it passes.
@@ -580,12 +581,14 @@ class ExternalReset(Protocol):
 
 
 class OperatorReset:
-    """The operator presses the C64's reset button."""
+    """The operator presses the C64's reset button, asked on the C64's bottom
+    row, where the LED questions were just answered, and on the console."""
 
     def __init__(self, bench: Bench):
         self.bench = bench
 
     def apply(self, board: Board) -> None:
+        prompt_on_c64(board.link, INSTRUCTIONS[RESET_BUTTON])
         self.bench.do(RESET_BUTTON)
 
 
@@ -1466,6 +1469,16 @@ def ask_on_c64(c: Ctx, row: int, charset: str, question: str, ended: Callable[[]
         if time.monotonic() >= deadline:
             return None
         time.sleep(OPERATOR_POLL_S)
+
+
+def prompt_on_c64(link, text: str) -> None:
+    """``text`` on the C64's bottom row, as an LED question is shown: yellow,
+    in reverse video."""
+    dump = link.read_screen()
+    charset = dump.charset if dump.charset == CHARSET_LOWER_UPPER else CHARSET_UPPER_GRAPHICS
+    link.write_memory(COLOR_RAM + LED_ROW * SCREEN_COLUMNS, bytes([YELLOW]) * SCREEN_COLUMNS)
+    link.write_memory(dump.address + LED_ROW * SCREEN_COLUMNS,
+                      bytes(b | REVERSE_VIDEO for b in screen_codes(f" {text}", charset)))
 
 
 def rows_differ(a: str, b: str) -> int:
